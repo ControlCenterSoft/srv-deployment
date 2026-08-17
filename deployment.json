@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "1.3.0",
-  "release_id": "1.3.0",
-  "release_path": "releases/1.3.0",
-  "manifest": "releases/1.3.0/manifest.json",
-  "preflight": "releases/1.3.0/preflight.sh",
-  "apply": "releases/1.3.0/apply.sh",
-  "acceptance": "releases/1.3.0/acceptance-real-server.sh",
-  "rollback": "releases/1.3.0/rollback.sh",
-  "description": "SRV Control Center 1.3.0 production release: Samba AD domain/share administration with portable domain backup/restore, Samba service management, Minecraft multi-server/update/player control, and real-server restored-domain acceptance hotfix."
+  "release": "1.3.1",
+  "release_id": "1.3.1",
+  "release_path": "releases/1.3.1",
+  "manifest": "releases/1.3.1/manifest.json",
+  "preflight": "releases/1.3.1/preflight-1.3.1.sh",
+  "apply": "releases/1.3.1/apply-1.3.1.sh",
+  "acceptance": "releases/1.3.1/acceptance-1.3.1.sh",
+  "rollback": "releases/1.3.1/rollback-1.3.1.sh",
+  "description": "SRV Control Center 1.3.1 production release: cumulative 1.3.0 functionality plus GitHub update attempt and successful-update timestamps."
 }
