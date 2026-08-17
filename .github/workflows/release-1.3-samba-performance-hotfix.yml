@@ -2,7 +2,9 @@ name: SRV Control Center 1.3.0 Samba performance hotfix
 
 on:
   push:
-    branches: [hotfix/1.3.0-samba-domain-performance]
+    branches:
+      - hotfix/1.3.0-samba-domain-performance
+      - hotfix/1.3.0-samba-monitor-sandbox
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -20,6 +22,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           monitor='releases/1.3.0/system/srv-control-samba-monitor'
+          monitor_service='releases/1.3.0/system/srv-control-samba-monitor.service'
           agent_service='releases/1.3.0/system/srv-control-samba-agent.service'
           timer='releases/1.3.0/system/srv-control-samba-monitor.timer'
           python3 -m py_compile "$monitor"
@@ -29,11 +32,14 @@ jobs:
           grep -Fq 'DIRECTORY_FILTER' "$monitor"
           grep -Fq 'local-samdb-bulk' "$monitor"
           grep -Fq 'primaryGroupID' "$monitor"
+          grep -Fq 'ProtectSystem=strict' "$monitor_service"
+          grep -Fq 'ReadWritePaths=/var/lib/srv-control /var/lib/samba' "$monitor_service"
+          grep -Fq 'ReadWritePaths=-/var/cache/samba -/run/samba' "$monitor_service"
           grep -Fq 'ExecStartPost=/usr/bin/systemctl start --no-block srv-control-samba-monitor.service' "$agent_service"
           grep -Fq 'OnBootSec=10s' "$timer"
           grep -Fq 'OnUnitActiveSec=30s' "$timer"
 
-      - name: Install Samba AD stack
+      - name: Install Samba AD stack and production collector unit
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
@@ -42,6 +48,8 @@ jobs:
           sudo groupadd --system srv-control || true
           sudo install -d -m 0750 -o root -g srv-control /var/lib/srv-control
           sudo install -m 0755 releases/1.3.0/system/srv-control-samba-monitor /usr/local/libexec/srv-control-samba-monitor
+          sudo install -m 0644 releases/1.3.0/system/srv-control-samba-monitor.service /etc/systemd/system/srv-control-samba-monitor.service
+          sudo systemctl daemon-reload
 
       - name: Provision performance lab domain
         run: |
@@ -58,6 +66,26 @@ jobs:
           sudo samba-tool group add PerfGroup >/dev/null
           members="$(printf 'perfuser%s,' $(seq 1 20) | sed 's/,$//')"
           sudo samba-tool group addmembers PerfGroup "$members" >/dev/null
+
+      - name: Validate collector inside production systemd sandbox
+        run: |
+          set -Eeuo pipefail
+          sudo rm -f /var/lib/srv-control/samba-domain-status.json
+          sudo systemctl start srv-control-samba-monitor.service
+          sudo systemctl status srv-control-samba-monitor.service --no-pager -l || true
+          sudo python3 - <<'PY'
+          import json
+          data=json.load(open('/var/lib/srv-control/samba-domain-status.json',encoding='utf-8'))
+          assert data['error'] is None,data
+          assert data['directory_source']=='local-samdb-bulk',data
+          users={u['username']:u for u in data['users']}
+          groups={g['name']:g for g in data['groups']}
+          assert len([name for name in users if name.startswith('perfuser')]) == 20,data
+          assert 'PerfGroup' in groups,data
+          assert 'perfuser1' in groups['PerfGroup']['members'],groups['PerfGroup']
+          assert 'Domain Users' in users['perfuser1']['groups'],users['perfuser1']
+          print('SYSTEMD SANDBOX PASS users=',len(users),'groups=',len(groups),'collection_ms=',data['collection_ms'])
+          PY
 
       - name: Validate bulk directory snapshot correctness and latency
         run: |

@@ -14,7 +14,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/srv-control
+# Local Samba/LDB reads use lock and runtime files even when the directory
+# operation is logically read-only. Keep the filesystem sandbox strict and
+# expose only Samba's own mutable state plus the SRV snapshot destination.
+ReadWritePaths=/var/lib/srv-control /var/lib/samba
+ReadWritePaths=-/var/cache/samba -/run/samba
 
 [Install]
 WantedBy=multi-user.target
