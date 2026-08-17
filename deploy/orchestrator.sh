@@ -40,6 +40,12 @@ write_status() {
     mv -f "$tmp" "$STATUS_FILE"
 }
 
+status_value() {
+    local key="$1"
+    [[ -s "$STATUS_FILE" ]] || return 0
+    awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$STATUS_FILE"
+}
+
 [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
 [[ -f "$CONFIG" ]] || fail "deployment config is missing: $CONFIG"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
@@ -158,6 +164,30 @@ RUN_LOG="${RUN_ROOT}/${RUN_ID}.log"
 exec > >(tee -a "$RUN_LOG") 2>&1
 
 log "DEPLOY START: release=${RELEASE_ID} sha=${REMOTE_SHA} project=${PROJECT}"
+
+# Crash-loop protection: if this exact commit/release already completed apply and
+# acceptance, never restart the application again merely because a later
+# transport healthcheck failed. Re-run acceptance only; this lets the outer
+# GitHub agent acknowledge the commit without another service interruption.
+previous_result="$(status_value result)"
+previous_stage="$(status_value stage)"
+previous_release="$(status_value release_id)"
+previous_sha="$(status_value remote_sha)"
+
+if [[ "$previous_result" == "success" \
+      && "$previous_stage" == "acceptance" \
+      && "$previous_release" == "$RELEASE_ID" \
+      && "$previous_sha" == "$REMOTE_SHA" ]]; then
+    log "DEPLOY RECHECK: release already applied; skipping apply/restart"
+
+    if bash "$ACCEPTANCE" "$PROJECT" "$REMOTE_SHA"; then
+        write_status "success" "acceptance" "$RELEASE_ID"
+        log "DEPLOY PASS: previously applied release revalidated without restart"
+        exit 0
+    fi
+
+    log "DEPLOY WARN: previous success no longer passes acceptance; performing full deployment"
+fi
 
 if ! bash "$PREFLIGHT" "$PROJECT" "$REMOTE_SHA"; then
     write_status "failed" "preflight" "$RELEASE_ID"
