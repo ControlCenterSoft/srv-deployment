@@ -77,8 +77,12 @@ def prepare_image(payload: dict) -> str:
             boot_wim = mount / 'sources/boot.wim'
             install_wim = mount / 'sources/install.wim'
             install_esd = mount / 'sources/install.esd'
+            bcd = mount / 'boot/BCD'
+            boot_sdi = mount / 'boot/boot.sdi'
             if not boot_wim.is_file():
                 raise RuntimeError('Windows ISO does not contain sources/boot.wim')
+            if not bcd.is_file() or not boot_sdi.is_file():
+                raise RuntimeError('Windows ISO is incomplete for PXE: boot/BCD and boot/boot.sdi are required')
             source_install = install_wim if install_wim.is_file() else install_esd
             if not source_install.is_file():
                 raise RuntimeError('Windows ISO does not contain sources/install.wim or install.esd')
@@ -87,12 +91,10 @@ def prepare_image(payload: dict) -> str:
             if install_arch != architecture:
                 raise RuntimeError(f'Windows boot.wim architecture {architecture} does not match install image {install_arch}')
             shutil.copy2(boot_wim, image_dir / 'boot.wim')
+            shutil.copy2(bcd, image_dir / 'BCD')
+            shutil.copy2(boot_sdi, image_dir / 'boot.sdi')
             ext = source_install.suffix.lower()
             shutil.copy2(source_install, image_dir / f'install{ext}')
-            for rel, name in (('boot/BCD', 'BCD'), ('boot/boot.sdi', 'boot.sdi')):
-                item = mount / rel
-                if item.is_file():
-                    shutil.copy2(item, image_dir / name)
             metadata.update({
                 'boot_wim': 'boot.wim',
                 'install_image': f'install{ext}',
