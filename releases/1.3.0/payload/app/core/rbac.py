@@ -9,7 +9,8 @@ from app.database import engine
 
 
 MODULES = {
-    "samba": "Домен / Samba",
+    "samba": "Домен Samba",
+    "shares": "Общий / сетевой доступ",
     "pxe": "PXE сервер",
     "minecraft": "Minecraft",
     "docker": "Docker",
