@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 
@@ -47,6 +48,18 @@ USER_ATTRIBUTES = (
     "whenCreated",
     "lastLogonTimestamp",
     "lockoutTime",
+)
+DIRECTORY_ATTRIBUTES = (
+    "objectClass",
+    *USER_ATTRIBUTES,
+    "member",
+    "objectSid",
+)
+DIRECTORY_FILTER = (
+    "(|"
+    "(&(objectClass=user)(!(objectClass=computer))(sAMAccountName=*))"
+    "(&(objectClass=group)(sAMAccountName=*))"
+    ")"
 )
 
 
@@ -102,7 +115,7 @@ def parse_domain_sid() -> str | None:
 
 
 def parse_domain_levels() -> dict[str, str | None]:
-    code, output = run(["samba-tool", "domain", "level", "show"], 20)
+    code, output = run(["samba-tool", "domain", "level", "show"], 12)
     result: dict[str, str | None] = {
         "forest": None,
         "domain": None,
@@ -126,7 +139,7 @@ def parse_domain_levels() -> dict[str, str | None]:
 
 
 def parse_password_policy() -> dict[str, Any]:
-    code, output = run(["samba-tool", "domain", "passwordsettings", "show"], 20)
+    code, output = run(["samba-tool", "domain", "passwordsettings", "show"], 12)
     if code != 0:
         return {"error": output[-1200:] or "unable to read password policy"}
     mapping = {
@@ -198,82 +211,211 @@ def parse_ldif(text: str) -> dict[str, Any]:
     return result
 
 
-def user_record(username: str) -> dict[str, Any]:
+def parse_ldif_records(text: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    current: list[str] = []
+    for line in _unfold_ldif(text):
+        if not line:
+            if current:
+                record = parse_ldif("\n".join(current))
+                if record:
+                    records.append(record)
+                current = []
+            continue
+        current.append(line)
+    if current:
+        record = parse_ldif("\n".join(current))
+        if record:
+            records.append(record)
+    return records
+
+
+def values(record: dict[str, Any], key: str) -> list[str]:
+    raw = record.get(key)
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item)]
+    value = str(raw)
+    return [value] if value else []
+
+
+def normalized_dn(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def integer(record: dict[str, Any], key: str, default: int = 0) -> int:
+    try:
+        return int(str(record.get(key) or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def samdb_location() -> Path | None:
+    private_dir = testparm_value("private dir") or "/var/lib/samba/private"
+    path = Path(private_dir) / "sam.ldb"
+    return path if path.is_file() else None
+
+
+def naming_context(samdb: Path) -> str | None:
     code, output = run(
-        [
-            "samba-tool",
-            "user",
-            "show",
-            username,
-            "--attributes=" + ",".join(USER_ATTRIBUTES),
-        ],
-        15,
+        ["ldbsearch", "-H", str(samdb), "-b", "", "-s", "base", "defaultNamingContext"],
+        8,
     )
-    record = parse_ldif(output) if code == 0 else {"sAMAccountName": username}
-    sam = str(record.get("sAMAccountName") or username)
-    try:
-        uac = int(str(record.get("userAccountControl") or "0"))
-    except ValueError:
-        uac = 0
-    try:
-        lockout = int(str(record.get("lockoutTime") or "0"))
-    except ValueError:
-        lockout = 0
-    groups_code, groups_output = run(["samba-tool", "user", "getgroups", sam], 15)
-    groups = [line.strip() for line in groups_output.splitlines() if line.strip()] if groups_code == 0 else []
-    return {
-        "username": sam,
-        "dn": record.get("distinguishedName"),
-        "given_name": record.get("givenName"),
-        "surname": record.get("sn"),
-        "display_name": record.get("displayName"),
-        "email": record.get("mail"),
-        "phone": record.get("telephoneNumber"),
-        "home_drive": record.get("homeDrive"),
-        "home_directory": record.get("homeDirectory"),
-        "profile_path": record.get("profilePath"),
-        "script_path": record.get("scriptPath"),
-        "description": record.get("description"),
-        "account_expires": record.get("accountExpires"),
-        "primary_group_id": record.get("primaryGroupID"),
-        "created_at": record.get("whenCreated"),
-        "last_logon_timestamp": record.get("lastLogonTimestamp"),
-        "enabled": not bool(uac & 0x2),
-        "locked": lockout > 0,
-        "groups": groups,
-        "protected": sam.casefold() in PROTECTED_USERS,
+    if code != 0:
+        return None
+    value = parse_ldif(output).get("defaultNamingContext")
+    return str(value) if value else None
+
+
+def directory_snapshot() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    """Read users, groups and memberships with one local SamDB query.
+
+    Release 1.3.0 originally spawned two samba-tool processes per user and one
+    per group. A normal AD therefore required dozens of Python/Samba process
+    startups every refresh. Local ldbsearch returns the same directory data in
+    one read transaction; memberships are reconstructed from group member DNs
+    and primaryGroupID.
+    """
+    samdb = samdb_location()
+    if samdb is None:
+        return [], [], "Samba SamDB not found"
+    base_dn = naming_context(samdb)
+    if not base_dn:
+        return [], [], "Samba default naming context not found"
+
+    command = [
+        "ldbsearch",
+        "-H",
+        str(samdb),
+        "-b",
+        base_dn,
+        "-s",
+        "sub",
+        DIRECTORY_FILTER,
+        *DIRECTORY_ATTRIBUTES,
+    ]
+    code, output = run(command, 15)
+    if code != 0:
+        return [], [], (output[-1600:] or "unable to read Samba directory")
+
+    user_records: list[dict[str, Any]] = []
+    group_records: list[dict[str, Any]] = []
+    for record in parse_ldif_records(output):
+        classes = {item.casefold() for item in values(record, "objectClass")}
+        sam = str(record.get("sAMAccountName") or "").strip()
+        if not sam:
+            continue
+        if "computer" in classes:
+            continue
+        if "group" in classes:
+            group_records.append(record)
+        elif "user" in classes:
+            user_records.append(record)
+
+    users_by_dn: dict[str, str] = {}
+    groups_by_dn: dict[str, str] = {}
+    group_rids: dict[int, str] = {}
+    for record in user_records:
+        sam = str(record.get("sAMAccountName") or "").strip()
+        dn = normalized_dn(record.get("distinguishedName") or record.get("dn"))
+        if dn:
+            users_by_dn[dn] = sam
+    for record in group_records:
+        name = str(record.get("sAMAccountName") or "").strip()
+        dn = normalized_dn(record.get("distinguishedName") or record.get("dn"))
+        if dn:
+            groups_by_dn[dn] = name
+        sid = str(record.get("objectSid") or "")
+        match = re.search(r"-(\d+)$", sid)
+        if match:
+            group_rids[int(match.group(1))] = name
+
+    direct_group_members: dict[str, list[str]] = {}
+    direct_user_groups: dict[str, set[str]] = {
+        str(record.get("sAMAccountName") or "").strip(): set() for record in user_records
     }
+    for record in group_records:
+        group_name = str(record.get("sAMAccountName") or "").strip()
+        members: list[str] = []
+        for member_dn in values(record, "member"):
+            key = normalized_dn(member_dn)
+            principal = users_by_dn.get(key) or groups_by_dn.get(key)
+            if not principal:
+                continue
+            members.append(principal)
+            user_name = users_by_dn.get(key)
+            if user_name:
+                direct_user_groups.setdefault(user_name, set()).add(group_name)
+        direct_group_members[group_name] = sorted(set(members), key=str.casefold)
 
+    # primaryGroupID (normally Domain Users / RID 513) is not represented in
+    # the group's member attribute, so add it explicitly.
+    for record in user_records:
+        sam = str(record.get("sAMAccountName") or "").strip()
+        primary_name = group_rids.get(integer(record, "primaryGroupID"))
+        if primary_name:
+            direct_user_groups.setdefault(sam, set()).add(primary_name)
 
-def users_snapshot() -> list[dict[str, Any]]:
-    code, output = run(["samba-tool", "user", "list"], 20)
-    if code != 0:
-        return []
-    users = sorted({line.strip() for line in output.splitlines() if line.strip()}, key=str.casefold)
-    return [user_record(username) for username in users]
+    # Preserve the effective-group behaviour of `samba-tool user getgroups` by
+    # propagating membership through nested groups.
+    changed = True
+    while changed:
+        changed = False
+        for username, memberships in direct_user_groups.items():
+            inherited: set[str] = set()
+            for parent, members in direct_group_members.items():
+                if any(member in memberships for member in members if member in direct_group_members):
+                    inherited.add(parent)
+            before = len(memberships)
+            memberships.update(inherited)
+            changed = changed or len(memberships) != before
 
-
-def groups_snapshot() -> list[dict[str, Any]]:
-    code, output = run(["samba-tool", "group", "list"], 20)
-    if code != 0:
-        return []
-    groups = sorted({line.strip() for line in output.splitlines() if line.strip()}, key=str.casefold)
-    result: list[dict[str, Any]] = []
-    for group_name in groups:
-        member_code, member_output = run(["samba-tool", "group", "listmembers", group_name], 15)
-        members = [line.strip() for line in member_output.splitlines() if line.strip()] if member_code == 0 else []
-        result.append(
+    users: list[dict[str, Any]] = []
+    for record in user_records:
+        sam = str(record.get("sAMAccountName") or "").strip()
+        uac = integer(record, "userAccountControl")
+        lockout = integer(record, "lockoutTime")
+        users.append(
             {
-                "name": group_name,
-                "members": members,
-                "protected": group_name.casefold() in PROTECTED_GROUPS,
+                "username": sam,
+                "dn": record.get("distinguishedName") or record.get("dn"),
+                "given_name": record.get("givenName"),
+                "surname": record.get("sn"),
+                "display_name": record.get("displayName"),
+                "email": record.get("mail"),
+                "phone": record.get("telephoneNumber"),
+                "home_drive": record.get("homeDrive"),
+                "home_directory": record.get("homeDirectory"),
+                "profile_path": record.get("profilePath"),
+                "script_path": record.get("scriptPath"),
+                "description": record.get("description"),
+                "account_expires": record.get("accountExpires"),
+                "primary_group_id": record.get("primaryGroupID"),
+                "created_at": record.get("whenCreated"),
+                "last_logon_timestamp": record.get("lastLogonTimestamp"),
+                "enabled": not bool(uac & 0x2),
+                "locked": lockout > 0,
+                "groups": sorted(direct_user_groups.get(sam, set()), key=str.casefold),
+                "protected": sam.casefold() in PROTECTED_USERS,
             }
         )
-    return result
+
+    groups = [
+        {
+            "name": str(record.get("sAMAccountName") or "").strip(),
+            "members": direct_group_members.get(str(record.get("sAMAccountName") or "").strip(), []),
+            "protected": str(record.get("sAMAccountName") or "").strip().casefold() in PROTECTED_GROUPS,
+        }
+        for record in group_records
+    ]
+    users.sort(key=lambda item: str(item.get("username") or "").casefold())
+    groups.sort(key=lambda item: str(item.get("name") or "").casefold())
+    return users, groups, None
 
 
 def replication_snapshot() -> dict[str, Any]:
-    code, output = run(["samba-tool", "drs", "showrepl", "--summary"], 25)
+    code, output = run(["samba-tool", "drs", "showrepl", "--summary"], 12)
     if code != 0:
         return {"available": False, "healthy": None, "summary": output[-2000:] or None}
     lower = output.casefold()
@@ -307,15 +449,18 @@ def write_json(payload: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    started = time.monotonic()
     samba_tool = shutil.which("samba-tool")
     samba_binary = shutil.which("samba")
     unit, state = systemd_state()
     installed = bool(samba_tool and samba_binary)
     payload: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "installed": installed,
         "state": state,
         "checked_at": now(),
+        "collection_ms": None,
+        "directory_source": None,
         "service": unit,
         "version": scalar(["samba", "--version"], None) if samba_binary else None,
         "domain": {},
@@ -335,9 +480,14 @@ def main() -> int:
             "functional_levels": parse_domain_levels(),
         }
         payload["password_policy"] = parse_password_policy()
-        payload["users"] = users_snapshot()
-        payload["groups"] = groups_snapshot()
+        users, groups, directory_error = directory_snapshot()
+        payload["users"] = users
+        payload["groups"] = groups
+        payload["directory_source"] = "local-samdb-bulk"
+        if directory_error:
+            payload["error"] = directory_error
         payload["replication"] = replication_snapshot()
+    payload["collection_ms"] = int((time.monotonic() - started) * 1000)
     write_json(payload)
     return 0
 

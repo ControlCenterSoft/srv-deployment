@@ -2,9 +2,9 @@
 Description=Refresh SRV Control Center Samba AD snapshot
 
 [Timer]
-OnBootSec=45s
-OnUnitActiveSec=60s
-AccuracySec=10s
+OnBootSec=10s
+OnUnitActiveSec=30s
+AccuracySec=5s
 Persistent=true
 Unit=srv-control-samba-monitor.service
 
