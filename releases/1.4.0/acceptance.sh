@@ -11,7 +11,8 @@ p=json.loads(sys.argv[1]); assert p.get('ok') is True,p; assert (p.get('data') o
 PY
 
 python3 "$RELEASE_DIR/tests/pxe_contract.py" || fail "PXE firmware/safety contract failed"
-python3 -m py_compile /usr/local/libexec/srv-control-release14-agent || fail "installed release14 root agent syntax invalid"
+python3 "$RELEASE_DIR/tests/pxe_transport_contract.py" || fail "PXE transport contract failed"
+python3 -m py_compile /usr/local/libexec/srv-control-release14-agent /usr/local/libexec/srv-control-pxe-probe || fail "installed PXE executables syntax invalid"
 runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 "$PROJECT/venv/bin/python" - <<'PY' || fail "release14 imports failed"
 import app.main
 from app.core import release14
@@ -27,6 +28,7 @@ done
 systemctl is-enabled --quiet srv-control-release14-agent.path || fail "release14 action path disabled"
 systemctl is-active --quiet srv-control-release14-agent.path || fail "release14 action path inactive"
 systemctl is-enabled --quiet srv-control-backup-retention.path || fail "backup retention path disabled"
+[[ -x /usr/local/libexec/srv-control-pxe-probe ]] || fail "PXE live probe executable missing"
 
 # Deny-by-default must hold for every firmware class without exposing a boot payload.
 for query in \
@@ -45,7 +47,7 @@ sentinel="/srv/pxe/profiles/.srvcc-acceptance-private-$$"
 install -d -m 0750 -o root -g srv-control /srv/pxe/profiles
 printf 'private\n' > "$sentinel"
 chmod 0640 "$sentinel"
-cleanup(){ rm -f -- "$sentinel"; }
+cleanup(){ rm -f -- "$sentinel" /tmp/srvcc-pxe-validation.txt /tmp/srvcc-pxe-live-probe.json; }
 trap cleanup EXIT
 code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:8876/pxe/files/profiles/$(basename "$sentinel")")" || true
 [[ "$code" == 404 ]] || fail "private PXE profile leaked through static media root: HTTP $code"
@@ -56,11 +58,19 @@ code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 'http://127.0.0.1:
 # PXE installation is preserved during the Control Center upgrade and can be
 # explicitly upgraded from Services; it must not roll back the whole 1.4 release.
 if [[ -f /srv/pxe/media/boot/entry.ipxe ]]; then
-  /usr/local/libexec/srv-control-release14-agent --validate-pxe >/tmp/srvcc-pxe-validation.txt || fail "managed live PXE runtime validation failed"
+  /usr/local/libexec/srv-control-release14-agent --validate-pxe > /tmp/srvcc-pxe-validation.txt || fail "managed live PXE runtime validation failed"
   grep -q 'PXE runtime validation passed' /tmp/srvcc-pxe-validation.txt || fail "live PXE validation did not report success"
-  rm -f /tmp/srvcc-pxe-validation.txt
+  /usr/local/libexec/srv-control-pxe-probe --json > /tmp/srvcc-pxe-live-probe.json || fail "live PXE TFTP/HTTP transport probe failed"
+  python3 - /tmp/srvcc-pxe-live-probe.json <<'PY' || exit 1
+import json,sys
+p=json.load(open(sys.argv[1],encoding='utf-8'))
+assert p.get('server'),p
+assert len(p.get('tftp') or {}) >= 6,p
+assert len(p.get('http') or {}) >= 5,p
+assert (p.get('deny') or {}).get('synthetic_mac') == '02:00:00:FE:ED:01',p
+PY
 elif systemctl is-active --quiet tftpd-hpa.service; then
   echo "ACCEPTANCE INFO: legacy/unmanaged PXE runtime detected; Control Center upgrade preserved it and PXE repair is required before 1.4 runtime guarantees apply"
 fi
 
-echo "ACCEPTANCE PASS: release=1.4.0 migration=14f0a1400001 deny-by-default=ok firmware-contract=ok private-profiles=ok"
+echo "ACCEPTANCE PASS: release=1.4.0 migration=14f0a1400001 deny-by-default=ok firmware-contract=ok private-profiles=ok live-transport=ok-or-legacy"
