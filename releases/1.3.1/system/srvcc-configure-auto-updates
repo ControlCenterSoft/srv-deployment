@@ -102,24 +102,52 @@ LAST_FINGERPRINT="${AGENT_ROOT}/last-release-fingerprint"
 STATE_PUBLISHER="/usr/local/sbin/srvcc-github-agent.state-publisher"
 LOG="/var/log/srvcc-agent.log"
 LOCK="${AGENT_ROOT}/update.lock"
+UPDATE_ATTEMPT_AT=""
 
 log() { printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG"; }
 
 write_status() {
-    python3 - "$UPDATE_STATUS" "$1" "$2" "${3:-}" "${4:-}" "${5:-}" "${6:-false}" "$REPO_URL" <<'PY'
+    python3 - "$UPDATE_STATUS" "$RELEASE_META" "$1" "$2" "${3:-}" "${4:-}" "${5:-}" "${6:-false}" "$REPO_URL" "$UPDATE_ATTEMPT_AT" <<'PY'
 import json, pathlib, sys, tempfile
 from datetime import datetime, timezone
+
 path=pathlib.Path(sys.argv[1])
+release_path=pathlib.Path(sys.argv[2])
+result=sys.argv[3]
+now=datetime.now(timezone.utc).isoformat()
+
+try:
+    previous=json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(previous,dict): previous={}
+except Exception:
+    previous={}
+
+last_attempt=sys.argv[10] or previous.get("last_update_attempt_at")
+last_success=previous.get("last_successful_update_at")
+if not last_success and previous.get("result") == "updated":
+    last_success=previous.get("checked_at")
+if not last_success:
+    try:
+        release=json.loads(release_path.read_text(encoding="utf-8"))
+        if isinstance(release,dict):
+            last_success=release.get("synced_at") or release.get("installed_at")
+    except Exception:
+        pass
+if result == "updated":
+    last_success=now
+
 payload={
-  "schema_version":2,
-  "checked_at":datetime.now(timezone.utc).isoformat(),
-  "result":sys.argv[2],
-  "detail":sys.argv[3],
-  "remote_sha":sys.argv[4] or None,
-  "release_id":sys.argv[5] or None,
-  "release_version":sys.argv[6] or None,
-  "update_available":sys.argv[7].lower()=="true",
-  "source":sys.argv[8],
+  "schema_version":3,
+  "checked_at":now,
+  "result":result,
+  "detail":sys.argv[4],
+  "remote_sha":sys.argv[5] or None,
+  "release_id":sys.argv[6] or None,
+  "release_version":sys.argv[7] or None,
+  "update_available":sys.argv[8].lower()=="true",
+  "source":sys.argv[9],
+  "last_update_attempt_at":last_attempt or None,
+  "last_successful_update_at":last_success or None,
 }
 path.parent.mkdir(parents=True,exist_ok=True)
 with tempfile.NamedTemporaryFile(mode="w",encoding="utf-8",dir=path.parent,prefix=path.name+".tmp.",delete=False) as h:
@@ -230,6 +258,10 @@ printf '%s\n' "$remote_sha" > "$LAST_SEEN_SHA"
 chmod 0640 "$LAST_SEEN_SHA"
 publish_state
 [[ "$OPERATION" == "check" ]] && exit 0
+
+UPDATE_ATTEMPT_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+write_status updating 'product update attempt started' "$remote_sha" "$release_id" "$release_version" true
+publish_state
 
 if backup_required; then
     [[ -x "$BACKUP_WORKER" ]] || { write_status error 'pre-update backup worker missing' "$remote_sha" "$release_id" "$release_version" true; exit 1; }

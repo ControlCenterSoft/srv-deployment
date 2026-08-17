@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Minecraft — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.3.0-rc1">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.3.0-rc1">
+    <link rel="stylesheet" href="/static/css/minecraft-1.3.css?v=1.3.0-rc1">
+</head>
+<body>
+<div class="page">
+    <header class="page-header">
+        <div>
+            <h1>Minecraft</h1>
+            <p>Несколько Minecraft Bedrock Server: запуск, публикация, параметры, обновления и игроки.</p>
+        </div>
+    </header>
+
+    <div class="minecraft-layout">
+        <section class="panel minecraft-list-panel">
+            <div class="minecraft-toolbar">
+                <input class="grow" id="minecraftSearch" type="search" placeholder="Поиск сервера">
+                <button class="action-button" id="minecraftNew" type="button">Новый сервер</button>
+            </div>
+            <div class="minecraft-instance-list" id="minecraftInstanceList"></div>
+        </section>
+
+        <section class="panel minecraft-editor-panel">
+            <div class="action-message" id="minecraftMessage"></div>
+            <div id="minecraftEditor">
+                <div class="mc-empty">Выберите Minecraft-сервер или создайте новый.</div>
+            </div>
+        </section>
+    </div>
+</div>
+<script src="/static/js/minecraft.js?v=1.3.0-rc1"></script>
+</body>
+</html>
