@@ -36,20 +36,48 @@ def _linux_layout(mount: Path) -> tuple[str, str, str, str]:
     raise RuntimeError('Linux ISO kernel/initrd layout is not supported (Ubuntu casper or Debian amd64/i386/arm64 expected)')
 
 
+def _first_existing(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
 def _copy_linux_shims(mount: Path, image_dir: Path) -> dict:
+    """Copy a distro Secure Boot shim when present.
+
+    Prefer files explicitly named shim*.efi.  BOOT*.EFI is accepted only as a
+    last-resort fallback on x64/ARM64 installation media because some distro
+    ISOs expose their signed shim under the removable-media boot filename.
+    IA32 is intentionally excluded from the Secure Boot capability map: the
+    managed iPXE first stage is signed only for x64 and ARM64.
+    """
+    candidates = {
+        'amd64': [
+            mount / 'EFI/ubuntu/shimx64.efi',
+            mount / 'EFI/debian/shimx64.efi',
+            mount / 'EFI/BOOT/shimx64.efi',
+            mount / 'efi/boot/shimx64.efi',
+            mount / 'EFI/BOOT/BOOTX64.EFI',
+            mount / 'efi/boot/bootx64.efi',
+        ],
+        'arm64': [
+            mount / 'EFI/ubuntu/shimaa64.efi',
+            mount / 'EFI/debian/shimaa64.efi',
+            mount / 'EFI/BOOT/shimaa64.efi',
+            mount / 'efi/boot/shimaa64.efi',
+            mount / 'EFI/BOOT/BOOTAA64.EFI',
+            mount / 'efi/boot/bootaa64.efi',
+        ],
+    }
     found = {}
-    for name, arch in (
-        ('BOOTX64.EFI', 'amd64'),
-        ('BOOTIA32.EFI', 'i386'),
-        ('BOOTAA64.EFI', 'arm64'),
-    ):
-        candidates = [mount / 'EFI/BOOT' / name, mount / 'efi/boot' / name.lower(), mount / 'EFI/boot' / name]
-        for source in candidates:
-            if source.is_file():
-                target = image_dir / f'shim-{arch}.efi'
-                shutil.copy2(source, target)
-                found[arch] = target.name
-                break
+    for arch, choices in candidates.items():
+        source = _first_existing(choices)
+        if source is None:
+            continue
+        target = image_dir / f'shim-{arch}.efi'
+        shutil.copy2(source, target)
+        found[arch] = target.name
     return found
 
 
@@ -115,7 +143,7 @@ def prepare_image(payload: dict) -> str:
                 'architecture': architecture,
                 'firmware_modes': ['uefi'] if architecture == 'arm64' else ['bios', 'uefi'],
                 'secure_boot_shims': shims,
-                'secure_boot_capable': architecture in shims,
+                'secure_boot_capable': architecture in {'amd64', 'arm64'} and architecture in shims,
             })
     finally:
         _umount(mount)
