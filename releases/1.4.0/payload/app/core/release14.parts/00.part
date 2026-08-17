@@ -142,11 +142,3 @@ def enqueue(action: str, actor: str, client_ip: str | None, payload: dict | None
         'schema_version': 1,
         'request_id': request_id,
         'action': action,
-        'actor': actor,
-        'client_ip': client_ip,
-        'payload': payload if isinstance(payload, dict) else {},
-        'created_at': now(),
-    }
-    target = ACTION_DIR / f'{request_id}.json'
-    write_json_atomic(target, body)
-    return {'request_id': request_id, 'action': action, 'queued': True}
