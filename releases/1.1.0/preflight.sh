@@ -38,6 +38,7 @@ for file in \
     "$PAYLOAD/app/core/system_admin.py" \
     "$PAYLOAD/app/routers/admin.py" \
     "$PAYLOAD/migrations/versions/11f0a1100001_system_auth_rbac.py" \
+    "$PAYLOAD/migrations/versions/11f0a1100002_user_rbac_subjects.py" \
     "$PAYLOAD/templates/login.html" \
     "$PAYLOAD/templates/access.html" \
     "$PAYLOAD/templates/system.html" \
