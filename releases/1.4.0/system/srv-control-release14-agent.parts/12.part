@@ -115,19 +115,19 @@ def remove_pxe_samba_share() -> None:
 def validate_pxe_runtime() -> str:
     required = [
         TFTP_ROOT / 'undionly.kpxe',
-        TFTP_ROOT / 'i386-efi/snponly.efi',
-        TFTP_ROOT / 'x86_64-efi/snponly.efi',
+        TFTP_ROOT / 'i386/snponly.efi',
+        TFTP_ROOT / 'x86_64/snponly.efi',
         TFTP_ROOT / 'x86_64-sb/snponly-shim.efi',
         TFTP_ROOT / 'x86_64-sb/snponly.efi',
-        TFTP_ROOT / 'arm32-efi/snponly.efi',
-        TFTP_ROOT / 'arm64-efi/snponly.efi',
+        TFTP_ROOT / 'arm32/snponly.efi',
+        TFTP_ROOT / 'arm64/snponly.efi',
         TFTP_ROOT / 'arm64-sb/snponly-shim.efi',
         TFTP_ROOT / 'arm64-sb/snponly.efi',
         PXE_MEDIA / 'boot/wimboot',
         PXE_MEDIA / 'boot/wimboot.i386',
         PXE_MEDIA / 'boot/wimboot.arm64',
     ]
-    for directory in ('', 'i386-efi', 'x86_64-efi', 'x86_64-sb', 'arm32-efi', 'arm64-efi', 'arm64-sb'):
+    for directory in ('', 'i386', 'x86_64', 'x86_64-sb', 'arm32', 'arm64', 'arm64-sb'):
         required.append((TFTP_ROOT / directory / 'autoexec.ipxe') if directory else TFTP_ROOT / 'autoexec.ipxe')
     missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
     if missing:
@@ -140,8 +140,18 @@ def validate_pxe_runtime() -> str:
         for arch in ('0', '6', '7', '9', '10', '11'):
             if f'option:client-arch,{arch}' not in text_value:
                 raise RuntimeError(f'DHCP PXE architecture option 93 value {arch} is missing')
-        if 'tag:ipxe,autoexec.ipxe' not in text_value:
-            raise RuntimeError('DHCP iPXE loop-break chain is missing')
+        required_boot_rules = (
+            'tag:bios,undionly.kpxe',
+            'tag:efi32,i386/snponly.efi',
+            'tag:efi64,x86_64-sb/snponly-shim.efi',
+            'tag:arm32,arm32/snponly.efi',
+            'tag:arm64,arm64-sb/snponly-shim.efi',
+            'tag:pxe-noarch,undionly.kpxe',
+            'tag:ipxe,autoexec.ipxe',
+        )
+        for rule in required_boot_rules:
+            if rule not in text_value:
+                raise RuntimeError(f'DHCP PXE boot rule is missing: {rule}')
     return 'PXE runtime validation passed for BIOS + UEFI IA32/x64/ARM32/ARM64 and x64/ARM64 Secure Boot assets'
 
 
