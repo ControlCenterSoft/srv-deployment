@@ -11,15 +11,15 @@
     },
     "apply": {
       "path": "apply.sh",
-      "sha256": "746e74bae44d3aa33ea2fffaa48ef795e1a7b1a3a0fc14dc4ac5648cc3532dbd"
+      "sha256": "6c277a8f784983408a57ad244c87f4623e3e2d52211a930ea15f3376f6b6f518"
     },
     "acceptance": {
       "path": "acceptance.sh",
-      "sha256": "4bb6d8f2b63cb2c625ca05d4407722e2fb6dad8e3b27b593075218313a3019b2"
+      "sha256": "a4f1c456068d0ca7d3ee3a797babbf08260d6a77329bb9a628c08885672101fd"
     },
     "rollback": {
       "path": "rollback.sh",
-      "sha256": "12b75c42356c94550661856420bf4a8be8fa242ea333d303d819e9a211e26307"
+      "sha256": "644388cde433352b79b9e15144843b2a5ae2868271e5ab80d564ba138836e155"
     }
   }
 }
