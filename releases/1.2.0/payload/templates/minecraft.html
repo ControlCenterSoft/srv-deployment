@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Minecraft — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.2.0-rc1">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.2.0-rc1">
+    <link rel="stylesheet" href="/static/css/service-config-1.2.css?v=1.2.0-rc1">
+</head>
+<body>
+<div class="page">
+    <header class="page-header">
+        <div>
+            <h1>Minecraft</h1>
+            <p>Состояние и настройки Minecraft Bedrock Server.</p>
+        </div>
+    </header>
+
+    <section class="panel">
+        <div class="status-grid" id="minecraftStatus"></div>
+        <div class="service-actions" id="minecraftActions"></div>
+        <div class="action-message" id="minecraftMessage"></div>
+    </section>
+
+    <section class="panel config-panel" id="minecraftConfigPanel">
+        <div class="panel-title">Параметры сервера</div>
+        <form id="minecraftConfigForm">
+            <div class="config-grid minecraft-config-grid">
+                <label><span>Имя сервера</span><input id="mcServerName" name="server-name" type="text" maxlength="80"></label>
+                <label><span>Режим игры</span><select id="mcGamemode" name="gamemode"><option value="survival">Survival</option><option value="creative">Creative</option><option value="adventure">Adventure</option></select></label>
+                <label><span>Сложность</span><select id="mcDifficulty" name="difficulty"><option value="peaceful">Peaceful</option><option value="easy">Easy</option><option value="normal">Normal</option><option value="hard">Hard</option></select></label>
+                <label><span>Максимум игроков</span><input id="mcMaxPlayers" name="max-players" type="number" min="1" max="1000" step="1"></label>
+                <label><span>IPv4 порт</span><input id="mcPort" name="server-port" type="number" min="1" max="65535" step="1"></label>
+                <label><span>IPv6 порт</span><input id="mcPortV6" name="server-portv6" type="number" min="1" max="65535" step="1"></label>
+                <label><span>Дальность прорисовки</span><input id="mcViewDistance" name="view-distance" type="number" min="5" max="64" step="1"></label>
+                <label><span>Tick distance</span><input id="mcTickDistance" name="tick-distance" type="number" min="4" max="12" step="1"></label>
+                <label><span>Таймаут бездействия, мин</span><input id="mcIdleTimeout" name="player-idle-timeout" type="number" min="0" max="100000" step="1"></label>
+                <label><span>Мир</span><input id="mcLevelName" name="level-name" type="text" maxlength="80"></label>
+                <label><span>Online mode</span><select id="mcOnlineMode" name="online-mode"><option value="true">Включён</option><option value="false">Выключен</option></select></label>
+                <label><span>Allow list</span><select id="mcAllowList" name="allow-list"><option value="true">Включён</option><option value="false">Выключен</option></select></label>
+                <label><span>Читы</span><select id="mcAllowCheats" name="allow-cheats"><option value="false">Запрещены</option><option value="true">Разрешены</option></select></label>
+            </div>
+            <div class="config-actions">
+                <button class="action-button" id="minecraftSave" type="submit">Сохранить настройки</button>
+            </div>
+        </form>
+        <div class="config-note" id="minecraftConfigNote">При сохранении активный сервер автоматически перезапускается для применения параметров.</div>
+    </section>
+</div>
+<script src="/static/js/minecraft.js?v=1.2.0-rc1"></script>
+</body>
+</html>
