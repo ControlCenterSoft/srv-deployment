@@ -11,6 +11,7 @@ import uuid
 ACTION_DIR = Path("/var/lib/srv-control/system-actions")
 RESULT_DIR = Path("/var/lib/srv-control/system-results")
 UPDATE_STATUS = Path("/var/lib/srv-control/os-update-status.json")
+ADGUARD_STATUS = Path("/var/lib/srv-control/adguard-vpn-status.json")
 AUTO_UPDATES_FILE = Path("/etc/apt/apt.conf.d/20auto-upgrades")
 
 ALLOWED_ACTIONS = {
@@ -20,6 +21,10 @@ ALLOWED_ACTIONS = {
     "auto-updates-disable",
     "service-install-adguard-vpn",
     "service-remove-adguard-vpn",
+    "service-refresh-adguard-vpn",
+    "service-connect-adguard-vpn-socks",
+    "service-disconnect-adguard-vpn",
+    "service-update-adguard-vpn",
 }
 
 
@@ -35,10 +40,7 @@ def _read_json(path: Path) -> dict | None:
 
 def automatic_updates_enabled() -> bool:
     try:
-        text = AUTO_UPDATES_FILE.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
+        text = AUTO_UPDATES_FILE.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return False
 
@@ -62,21 +64,51 @@ def _unit_state(name: str) -> str:
         return "unknown"
 
 
-def service_catalog() -> list[dict]:
+def _adguard_binary() -> str | None:
     binary = shutil.which("adguardvpn-cli")
-    if not binary and Path("/opt/adguardvpn_cli/adguardvpn-cli").exists():
-        binary = "/opt/adguardvpn_cli/adguardvpn-cli"
+    if binary:
+        return binary
+    path = Path("/opt/adguardvpn_cli/adguardvpn-cli")
+    return str(path) if path.exists() else None
+
+
+def service_catalog(*, include_detail: bool = False) -> list[dict]:
+    binary = _adguard_binary()
+    monitor = _read_json(ADGUARD_STATUS) or {}
+    installed = bool(binary)
+    status = {
+        "state": monitor.get("state") if installed else "not-installed",
+        "version": monitor.get("version") if installed else None,
+        "mode": monitor.get("mode") if installed else None,
+        "socks_host": monitor.get("socks_host") if installed else None,
+        "socks_port": monitor.get("socks_port") if installed else None,
+        "update_channel": monitor.get("update_channel") if installed else None,
+        "checked_at": monitor.get("checked_at") if installed else None,
+    }
+    if include_detail and installed:
+        status["detail"] = monitor.get("detail")
 
     return [
         {
             "id": "adguard-vpn",
             "name": "AdGuard VPN",
-            "installed": bool(binary),
+            "installed": installed,
             "binary": binary,
             "description": "AdGuard VPN CLI for Linux",
+            "status": status,
             "actions": {
-                "install": not bool(binary),
-                "remove": bool(binary),
+                "install": not installed,
+                "remove": installed,
+                "refresh": installed,
+                "safe_connect": installed,
+                "disconnect": installed,
+                "update": installed,
+            },
+            "safety": {
+                "connect_mode": "SOCKS",
+                "socks_endpoint": "127.0.0.1:1080",
+                "system_default_route_changed": False,
+                "credentials_stored_by_control_center": False,
             },
         }
     ]
@@ -85,11 +117,8 @@ def service_catalog() -> list[dict]:
 def action_queue(limit: int = 20) -> list[dict]:
     items: list[dict] = []
     try:
-        paths = sorted(
-            ACTION_DIR.glob("*.json"),
-            key=lambda item: item.stat().st_mtime,
-        )
-        for path in paths[: max(0, limit)]:
+        paths = sorted(ACTION_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime)
+        for path in paths[: max(0, min(limit, 50))]:
             payload = _read_json(path)
             if payload:
                 items.append(
@@ -105,7 +134,7 @@ def action_queue(limit: int = 20) -> list[dict]:
     return items
 
 
-def action_history(limit: int = 12) -> list[dict]:
+def action_history(limit: int = 20) -> list[dict]:
     items: list[dict] = []
     try:
         paths = sorted(
@@ -113,7 +142,7 @@ def action_history(limit: int = 12) -> list[dict]:
             key=lambda item: item.stat().st_mtime,
             reverse=True,
         )
-        for path in paths[: max(0, limit)]:
+        for path in paths[: max(0, min(limit, 50))]:
             payload = _read_json(path)
             if not payload:
                 continue
@@ -125,7 +154,7 @@ def action_history(limit: int = 12) -> list[dict]:
                     "started_at": payload.get("started_at"),
                     "finished_at": payload.get("finished_at"),
                     "result": payload.get("result"),
-                    "detail": payload.get("detail"),
+                    "detail": str(payload.get("detail") or "")[-1600:] or None,
                 }
             )
     except Exception:
@@ -133,9 +162,13 @@ def action_history(limit: int = 12) -> list[dict]:
     return items
 
 
-def status() -> dict:
-    history = action_history()
-    queued = action_queue()
+def status(
+    *,
+    include_actions: bool = False,
+    include_service_detail: bool = False,
+) -> dict:
+    queued = action_queue() if include_actions else []
+    history = action_history() if include_actions else []
 
     return {
         "automatic_updates": {
@@ -146,9 +179,10 @@ def status() -> dict:
             "unit_state": _unit_state("srv-control-os-update.service"),
             "status": _read_json(UPDATE_STATUS),
         },
-        "services": service_catalog(),
+        "services": service_catalog(include_detail=include_service_detail),
         "latest_action": history[0] if history else None,
         "actions": {
+            "visible": include_actions,
             "queued_count": len(queued),
             "queued": queued,
             "history": history,
@@ -172,15 +206,8 @@ def enqueue(action: str, actor: str, client_ip: str | None) -> dict:
 
     tmp = ACTION_DIR / f".{request_id}.tmp"
     target = ACTION_DIR / f"{request_id}.json"
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o640)
     os.replace(tmp, target)
 
-    return {
-        "request_id": request_id,
-        "action": action,
-        "queued": True,
-    }
+    return {"request_id": request_id, "action": action, "queued": True}

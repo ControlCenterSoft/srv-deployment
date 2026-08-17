@@ -16,6 +16,7 @@ fail() {
 [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
 [[ -x "$SYSTEM_DIR/srv-control-system-agent" ]] || fail "system agent payload missing"
 [[ -x "$SYSTEM_DIR/srv-control-os-update" ]] || fail "OS update worker payload missing"
+[[ -s "$SYSTEM_DIR/srv-control-adguard-monitor" ]] || fail "AdGuard monitor payload missing"
 
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" \
     "$STATE_DIR" \
@@ -32,6 +33,10 @@ install -m 0755 -o root -g root \
     "$SYSTEM_DIR/srv-control-os-update" \
     /usr/local/libexec/srv-control-os-update
 
+install -m 0755 -o root -g root \
+    "$SYSTEM_DIR/srv-control-adguard-monitor" \
+    /usr/local/libexec/srv-control-adguard-monitor
+
 install -m 0644 -o root -g root \
     "$SYSTEM_DIR/srv-control-system-agent.service" \
     /etc/systemd/system/srv-control-system-agent.service
@@ -43,6 +48,14 @@ install -m 0644 -o root -g root \
 install -m 0644 -o root -g root \
     "$SYSTEM_DIR/srv-control-os-update.service" \
     /etc/systemd/system/srv-control-os-update.service
+
+install -m 0644 -o root -g root \
+    "$SYSTEM_DIR/srv-control-adguard-monitor.service" \
+    /etc/systemd/system/srv-control-adguard-monitor.service
+
+install -m 0644 -o root -g root \
+    "$SYSTEM_DIR/srv-control-adguard-monitor.timer" \
+    /etc/systemd/system/srv-control-adguard-monitor.timer
 
 if [[ ! -s "$STATE_DIR/session.key" ]]; then
     python3 - "$STATE_DIR/session.key" <<'PY'
@@ -84,12 +97,13 @@ password_hash = hashlib.pbkdf2_hmac(
 ).hex()
 
 auth = {
-    "schema_version": 1,
+    "schema_version": 2,
     "username": "admin",
     "salt": salt.hex(),
     "password_hash": password_hash,
     "iterations": iterations,
     "must_change": True,
+    "session_generation": 1,
 }
 auth_path.write_text(
     json.dumps(auth, ensure_ascii=False, indent=2) + "\n",
@@ -109,7 +123,13 @@ PY
     chmod 0600 "$STATE_DIR/admin-bootstrap.txt"
 fi
 
+touch "$STATE_DIR/login-guard.json"
+chown "$APP_USER:$APP_GROUP" "$STATE_DIR/login-guard.json"
+chmod 0640 "$STATE_DIR/login-guard.json"
+
 systemctl daemon-reload
 systemctl enable --now srv-control-system-agent.path
+systemctl enable --now srv-control-adguard-monitor.timer
+systemctl start srv-control-adguard-monitor.service || true
 
 printf 'SYSTEM ADMIN INSTALL PASS\n'

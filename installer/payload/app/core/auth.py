@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -15,8 +16,12 @@ from fastapi import HTTPException, Request
 AUTH_FILE = Path("/var/lib/srv-control/auth.json")
 SESSION_KEY_FILE = Path("/var/lib/srv-control/session.key")
 BOOTSTRAP_FILE = Path("/var/lib/srv-control/admin-bootstrap.txt")
+LOGIN_GUARD_FILE = Path("/var/lib/srv-control/login-guard.json")
 COOKIE_NAME = "srvcc_session"
 SESSION_TTL = 8 * 60 * 60
+LOGIN_WINDOW = 5 * 60
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_LOCKOUT = 15 * 60
 
 
 def _b64encode(value: bytes) -> str:
@@ -52,6 +57,14 @@ def _password_hash(password: str, salt: bytes, iterations: int) -> bytes:
     )
 
 
+def _session_generation(auth: dict | None = None) -> int:
+    auth = auth if auth is not None else _load_auth()
+    try:
+        return max(1, int(auth.get("session_generation", 1)))
+    except Exception:
+        return 1
+
+
 def authenticate(username: str, password: str) -> dict | None:
     auth = _load_auth()
     if username != auth.get("username"):
@@ -71,10 +84,12 @@ def authenticate(username: str, password: str) -> dict | None:
     return {
         "username": username,
         "must_change": bool(auth.get("must_change", False)),
+        "session_generation": _session_generation(auth),
     }
 
 
 def create_session(username: str, must_change: bool) -> tuple[str, str]:
+    auth = _load_auth()
     now = int(time.time())
     csrf = secrets.token_urlsafe(24)
     payload = {
@@ -83,6 +98,7 @@ def create_session(username: str, must_change: bool) -> tuple[str, str]:
         "exp": now + SESSION_TTL,
         "csrf": csrf,
         "must_change": bool(must_change),
+        "gen": _session_generation(auth),
     }
     body = _b64encode(
         json.dumps(
@@ -128,6 +144,17 @@ def parse_session(request: Request) -> dict | None:
     if not payload.get("u") or not payload.get("csrf"):
         return None
 
+    auth = _load_auth()
+    if payload.get("u") != auth.get("username"):
+        return None
+
+    try:
+        token_generation = int(payload.get("gen", 0))
+    except Exception:
+        return None
+    if token_generation != _session_generation(auth):
+        return None
+
     return payload
 
 
@@ -137,7 +164,10 @@ def require_session(request: Request, *, allow_password_change: bool = False) ->
         raise HTTPException(status_code=401, detail="authentication required")
 
     if session.get("must_change") and not allow_password_change:
-        raise HTTPException(status_code=403, detail="administrator password must be changed")
+        raise HTTPException(
+            status_code=403,
+            detail="administrator password must be changed",
+        )
 
     return session
 
@@ -152,20 +182,26 @@ def require_csrf(request: Request, session: dict) -> None:
 def change_password(username: str, current_password: str, new_password: str) -> None:
     if len(new_password) < 12:
         raise ValueError("new password must contain at least 12 characters")
+    if new_password == current_password:
+        raise ValueError("new password must be different from current password")
+    if username.lower() in new_password.lower():
+        raise ValueError("new password must not contain the administrator login")
 
     account = authenticate(username, current_password)
     if account is None:
         raise ValueError("current password is invalid")
 
+    current = _load_auth()
     salt = os.urandom(16)
     iterations = 310000
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "username": username,
         "salt": salt.hex(),
         "password_hash": _password_hash(new_password, salt, iterations).hex(),
         "iterations": iterations,
         "must_change": False,
+        "session_generation": _session_generation(current) + 1,
     }
 
     tmp = AUTH_FILE.with_suffix(".json.tmp")
@@ -180,3 +216,81 @@ def change_password(username: str, current_password: str, new_password: str) -> 
         BOOTSTRAP_FILE.unlink()
     except FileNotFoundError:
         pass
+
+
+def _guard_key(username: str, client_ip: str | None) -> str:
+    raw = f"{username.strip().lower()}|{client_ip or 'unknown'}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _guard_update(username: str, client_ip: str | None, *, success: bool | None) -> int:
+    key = _guard_key(username, client_ip)
+    now = int(time.time())
+    LOGIN_GUARD_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    with LOGIN_GUARD_FILE.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        handle.seek(0)
+        try:
+            state = json.load(handle)
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+
+        entries = state.get("entries")
+        if not isinstance(entries, dict):
+            entries = {}
+
+        item = entries.get(key)
+        if not isinstance(item, dict):
+            item = {"failures": [], "locked_until": 0}
+
+        failures = [
+            int(value)
+            for value in item.get("failures", [])
+            if isinstance(value, (int, float)) and int(value) >= now - LOGIN_WINDOW
+        ]
+        locked_until = int(item.get("locked_until", 0) or 0)
+
+        if success is True:
+            entries.pop(key, None)
+            locked_until = 0
+        else:
+            if success is False and locked_until <= now:
+                failures.append(now)
+                if len(failures) >= LOGIN_FAILURE_LIMIT:
+                    locked_until = now + LOGIN_LOCKOUT
+                    failures = []
+            entries[key] = {
+                "failures": failures[-LOGIN_FAILURE_LIMIT:],
+                "locked_until": locked_until,
+                "updated_at": now,
+            }
+
+        if len(entries) > 256:
+            ordered = sorted(
+                entries.items(),
+                key=lambda pair: int(pair[1].get("updated_at", 0) or 0),
+                reverse=True,
+            )
+            entries = dict(ordered[:256])
+
+        state = {"schema_version": 1, "entries": entries}
+        handle.seek(0)
+        handle.truncate()
+        json.dump(state, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o640)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    return max(0, locked_until - now)
+
+
+def login_retry_after(username: str, client_ip: str | None) -> int:
+    return _guard_update(username, client_ip, success=None)
+
+
+def record_login_result(username: str, client_ip: str | None, success: bool) -> int:
+    return _guard_update(username, client_ip, success=success)

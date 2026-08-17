@@ -14,10 +14,7 @@
             <h1>Система</h1>
             <p>Состояние SRV, обновления ОС, системные действия и управляемые сервисы.</p>
         </div>
-        <div class="live-status">
-            <span class="live-dot" id="systemLiveDot"></span>
-            <span id="systemLiveText">Проверка...</span>
-        </div>
+        <div class="live-status"><span class="live-dot" id="systemLiveDot"></span><span id="systemLiveText">Проверка...</span></div>
     </header>
 
     <section class="summary-grid">
@@ -29,7 +26,6 @@
             <div class="stat-row"><span>Архитектура</span><strong id="systemArchitecture">—</strong></div>
             <div class="stat-row"><span>Uptime</span><strong id="systemUptime">—</strong></div>
         </div>
-
         <div class="panel">
             <div class="panel-title">Ресурсы</div>
             <div class="stat-row"><span>CPU</span><strong id="systemCpu">—</strong></div>
@@ -43,42 +39,22 @@
     <section class="panel">
         <div class="panel-title">Администратор</div>
         <div id="adminLoggedOut">
-            <p class="panel-note">
-                Системные изменения защищены административной сессией и CSRF-проверкой.
-                Read-only мониторинг остаётся доступным без входа.
-            </p>
+            <p class="panel-note">Привилегированные действия требуют входа. После пяти неверных попыток для логина/IP вход временно блокируется. Read-only мониторинг остаётся доступным.</p>
             <form class="admin-login" id="adminLoginForm">
-                <label class="form-field">
-                    <span>Логин</span>
-                    <input id="adminUsername" autocomplete="username" value="admin">
-                </label>
-                <label class="form-field">
-                    <span>Пароль</span>
-                    <input id="adminPassword" type="password" autocomplete="current-password">
-                </label>
+                <label class="form-field"><span>Логин</span><input id="adminUsername" autocomplete="username" value="admin"></label>
+                <label class="form-field"><span>Пароль</span><input id="adminPassword" type="password" autocomplete="current-password"></label>
                 <button class="action-button" type="submit">Войти</button>
             </form>
         </div>
-
         <div id="adminLoggedIn" hidden>
             <div class="stat-row"><span>Пользователь</span><strong id="adminCurrentUser">—</strong></div>
             <div class="stat-row"><span>Состояние</span><strong id="adminPasswordState">—</strong></div>
-
             <form class="password-form" id="adminPasswordForm" hidden>
-                <label class="form-field">
-                    <span>Текущий пароль</span>
-                    <input id="adminCurrentPassword" type="password" autocomplete="current-password">
-                </label>
-                <label class="form-field">
-                    <span>Новый пароль</span>
-                    <input id="adminNewPassword" type="password" autocomplete="new-password" minlength="12">
-                </label>
+                <label class="form-field"><span>Текущий пароль</span><input id="adminCurrentPassword" type="password" autocomplete="current-password"></label>
+                <label class="form-field"><span>Новый пароль</span><input id="adminNewPassword" type="password" autocomplete="new-password" minlength="12"></label>
                 <button class="action-button" type="submit">Сменить пароль</button>
             </form>
-
-            <div class="form-actions">
-                <button class="secondary-button" id="adminLogoutButton" type="button">Выйти</button>
-            </div>
+            <div class="form-actions"><button class="secondary-button" id="adminLogoutButton" type="button">Выйти</button></div>
         </div>
         <div class="action-message" id="adminMessage"></div>
     </section>
@@ -87,64 +63,37 @@
         <div class="panel-title">Управление сервером</div>
         <div class="system-action-grid">
             <div class="system-action-card danger-card">
-                <div>
-                    <strong>Перезагрузка сервера</strong>
-                    <span>Корректно перезагрузить SRV через systemd.</span>
-                </div>
-                <button class="danger-button privileged-action" id="rebootButton" type="button" disabled>
-                    Перезагрузить
-                </button>
+                <div><strong>Перезагрузка сервера</strong><span>Корректная перезагрузка SRV через systemd.</span></div>
+                <button class="danger-button privileged-action" id="rebootButton" type="button" disabled>Перезагрузить</button>
             </div>
         </div>
     </section>
 
     <section class="panel">
         <div class="panel-title">Обновление ОС и пакетов</div>
-        <p class="panel-note">
-            Обновления выполняются внутри текущего релиза Debian/Ubuntu: обновление индексов
-            и установленных пакетов. Переход на новый major release автоматически не запускается.
-        </p>
-        <div class="stat-row">
-            <span>Автоматические обновления</span>
-            <strong id="autoUpdatesState">—</strong>
-        </div>
-        <div class="stat-row">
-            <span>Ручное обновление</span>
-            <strong id="manualUpdateState">—</strong>
-        </div>
-        <div class="stat-row">
-            <span>Последний результат</span>
-            <strong id="manualUpdateResult">—</strong>
-        </div>
+        <p class="panel-note">Обновляется текущий релиз Debian/Ubuntu. Автоматический переход на новый major release не выполняется.</p>
+        <div class="stat-row"><span>Автоматические обновления</span><strong id="autoUpdatesState">—</strong></div>
+        <div class="stat-row"><span>Ручное обновление</span><strong id="manualUpdateState">—</strong></div>
+        <div class="stat-row"><span>Последний результат</span><strong id="manualUpdateResult">—</strong></div>
         <div class="form-actions">
-            <button class="action-button privileged-action" id="enableAutoUpdatesButton" type="button" disabled>
-                Включить автообновление
-            </button>
-            <button class="secondary-button privileged-action" id="disableAutoUpdatesButton" type="button" disabled>
-                Выключить автообновление
-            </button>
-            <button class="action-button privileged-action" id="manualUpdateButton" type="button" disabled>
-                Обновить ОС и пакеты сейчас
-            </button>
+            <button class="action-button privileged-action" id="enableAutoUpdatesButton" type="button" disabled>Включить автообновление</button>
+            <button class="secondary-button privileged-action" id="disableAutoUpdatesButton" type="button" disabled>Выключить автообновление</button>
+            <button class="action-button privileged-action" id="manualUpdateButton" type="button" disabled>Обновить ОС и пакеты сейчас</button>
         </div>
         <div class="action-message" id="updateMessage"></div>
     </section>
 
     <section class="panel">
         <div class="panel-title">Управляемые сервисы</div>
+        <p class="panel-note">AdGuard VPN из Control Center подключается только в SOCKS-режиме на <code>127.0.0.1:1080</code>, без намеренного переключения системного default route. Первичную авторизацию выполните локально: <code>sudo adguardvpn-cli login</code>.</p>
         <div id="managedServices"></div>
         <div class="action-message" id="serviceMessage"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="systemActionPanel" hidden>
         <div class="panel-title">Системные задания</div>
-        <p class="panel-note">
-            Здесь показываются очередь и последние результаты операций, выполняемых привилегированным агентом.
-        </p>
-        <div class="stat-row">
-            <span>В очереди</span>
-            <strong id="systemActionQueueCount">0</strong>
-        </div>
+        <p class="panel-note">Очередь и результаты root-agent доступны только авторизованному администратору.</p>
+        <div class="stat-row"><span>В очереди</span><strong id="systemActionQueueCount">0</strong></div>
         <div class="action-history" id="systemActionHistory"></div>
     </section>
 
@@ -157,17 +106,9 @@
         <div class="stat-row"><span>Healthcheck</span><strong id="deploymentHealthchecked">—</strong></div>
     </section>
 
-    <section class="panel">
-        <div class="panel-title">Хранилище</div>
-        <div class="storage-list" id="systemStorage"></div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-title">Ключевые службы</div>
-        <div class="service-grid" id="systemServices"></div>
-    </section>
+    <section class="panel"><div class="panel-title">Хранилище</div><div class="storage-list" id="systemStorage"></div></section>
+    <section class="panel"><div class="panel-title">Ключевые службы</div><div class="service-grid" id="systemServices"></div></section>
 </div>
-
 <script src="/static/js/system.js"></script>
 </body>
 </html>

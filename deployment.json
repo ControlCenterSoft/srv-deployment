@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0009-system-action-history",
-  "release_id": "0009-system-action-history",
-  "release_path": "releases/0009-system-action-history",
-  "manifest": "releases/0009-system-action-history/manifest.json",
-  "preflight": "releases/0009-system-action-history/preflight.sh",
-  "apply": "releases/0009-system-action-history/apply.sh",
-  "acceptance": "releases/0009-system-action-history/acceptance.sh",
-  "rollback": "releases/0009-system-action-history/rollback.sh",
-  "description": "Expose privileged system action queue and result history in the System UI."
+  "release": "0010-adguard-security",
+  "release_id": "0010-adguard-security",
+  "release_path": "releases/0010-adguard-security",
+  "manifest": "releases/0010-adguard-security/manifest.json",
+  "preflight": "releases/0010-adguard-security/preflight.sh",
+  "apply": "releases/0010-adguard-security/apply.sh",
+  "acceptance": "releases/0010-adguard-security/acceptance.sh",
+  "rollback": "releases/0010-adguard-security/rollback.sh",
+  "description": "Harden administrator sessions and add safe monitored AdGuard VPN SOCKS controls."
 }

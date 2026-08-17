@@ -14,6 +14,7 @@ import urllib.request
 ACTION_DIR = Path("/var/lib/srv-control/system-actions")
 RESULT_DIR = Path("/var/lib/srv-control/system-results")
 AUTO_UPDATES_FILE = Path("/etc/apt/apt.conf.d/20auto-upgrades")
+ADGUARD_MONITOR = "/usr/local/libexec/srv-control-adguard-monitor"
 ADGUARD_INSTALLER = (
     "https://raw.githubusercontent.com/"
     "AdguardTeam/AdGuardVPNCLI/master/scripts/release/install.sh"
@@ -36,7 +37,12 @@ def write_result(request_id: str, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-def run(command: list[str], *, input_text: str | None = None, timeout: int = 900) -> str:
+def run(
+    command: list[str],
+    *,
+    input_text: str | None = None,
+    timeout: int = 900,
+) -> str:
     completed = subprocess.run(
         command,
         input=input_text,
@@ -48,6 +54,7 @@ def run(command: list[str], *, input_text: str | None = None, timeout: int = 900
         env={
             **os.environ,
             "DEBIAN_FRONTEND": "noninteractive",
+            "HOME": "/root",
         },
     )
     output = (completed.stdout or "")[-6000:]
@@ -82,7 +89,13 @@ def set_auto_updates(enabled: bool) -> str:
 
     if enabled:
         subprocess.run(
-            ["systemctl", "enable", "--now", "apt-daily.timer", "apt-daily-upgrade.timer"],
+            [
+                "systemctl",
+                "enable",
+                "--now",
+                "apt-daily.timer",
+                "apt-daily-upgrade.timer",
+            ],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -94,7 +107,7 @@ def set_auto_updates(enabled: bool) -> str:
 def download_adguard_installer() -> str:
     request = urllib.request.Request(
         ADGUARD_INSTALLER,
-        headers={"User-Agent": "SRV-Control-Center/0.8"},
+        headers={"User-Agent": "SRV-Control-Center/0.9"},
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         data = response.read()
@@ -133,6 +146,58 @@ def manage_adguard(uninstall: bool) -> str:
             pass
 
 
+def adguard_binary() -> str:
+    binary = shutil.which("adguardvpn-cli")
+    if binary:
+        return binary
+    path = Path("/opt/adguardvpn_cli/adguardvpn-cli")
+    if path.exists():
+        return str(path)
+    raise RuntimeError("AdGuard VPN CLI is not installed")
+
+
+def refresh_adguard() -> None:
+    if Path(ADGUARD_MONITOR).exists():
+        run([ADGUARD_MONITOR], timeout=30)
+
+
+def connect_adguard_socks() -> str:
+    binary = adguard_binary()
+    run([binary, "config", "set-mode", "SOCKS"], timeout=30)
+    run([binary, "config", "set-socks-host", "127.0.0.1"], timeout=30)
+    run([binary, "config", "set-socks-port", "1080"], timeout=30)
+    output = run(
+        [
+            binary,
+            "connect",
+            "--fastest",
+            "--yes",
+            "--ipv4only",
+        ],
+        timeout=120,
+    )
+    refresh_adguard()
+    return (
+        "AdGuard VPN connected in SOCKS mode on 127.0.0.1:1080. "
+        "The SRV default route is not intentionally changed.\n"
+        + output[-3000:]
+    )
+
+
+def disconnect_adguard() -> str:
+    binary = adguard_binary()
+    output = run([binary, "disconnect"], timeout=60)
+    refresh_adguard()
+    return output[-3000:] or "AdGuard VPN disconnected"
+
+
+def update_adguard() -> str:
+    binary = adguard_binary()
+    output = run([binary, "update", "--yes"], timeout=900)
+    refresh_adguard()
+    return output[-3000:] or "AdGuard VPN update completed"
+
+
 def handle(request: dict) -> dict:
     request_id = str(request.get("request_id") or "")
     action = str(request.get("action") or "")
@@ -164,29 +229,54 @@ def handle(request: dict) -> dict:
             )
         elif action == "os-update":
             active = subprocess.run(
-                ["systemctl", "is-active", "--quiet", "srv-control-os-update.service"],
+                [
+                    "systemctl",
+                    "is-active",
+                    "--quiet",
+                    "srv-control-os-update.service",
+                ],
                 check=False,
             ).returncode == 0
             if active:
                 raise RuntimeError("OS update job is already running")
-            run(["systemctl", "start", "srv-control-os-update.service"], timeout=20)
+            run(
+                ["systemctl", "start", "srv-control-os-update.service"],
+                timeout=20,
+            )
             result["detail"] = "OS update job started"
         elif action == "auto-updates-enable":
             result["detail"] = set_auto_updates(True)
         elif action == "auto-updates-disable":
             result["detail"] = set_auto_updates(False)
         elif action == "service-install-adguard-vpn":
-            if shutil.which("adguardvpn-cli") or Path("/opt/adguardvpn_cli/adguardvpn-cli").exists():
+            try:
+                adguard_binary()
                 result["detail"] = "AdGuard VPN is already installed"
-            else:
+            except RuntimeError:
                 manage_adguard(False)
-                result["detail"] = "AdGuard VPN installed; account login/configuration is still required"
+                result["detail"] = (
+                    "AdGuard VPN installed. Run `sudo adguardvpn-cli login` "
+                    "locally once to authorize the server account."
+                )
+            refresh_adguard()
         elif action == "service-remove-adguard-vpn":
-            if not shutil.which("adguardvpn-cli") and not Path("/opt/adguardvpn_cli/adguardvpn-cli").exists():
+            try:
+                adguard_binary()
+            except RuntimeError:
                 result["detail"] = "AdGuard VPN is already absent"
             else:
                 manage_adguard(True)
                 result["detail"] = "AdGuard VPN removed"
+            refresh_adguard()
+        elif action == "service-refresh-adguard-vpn":
+            refresh_adguard()
+            result["detail"] = "AdGuard VPN status refreshed"
+        elif action == "service-connect-adguard-vpn-socks":
+            result["detail"] = connect_adguard_socks()
+        elif action == "service-disconnect-adguard-vpn":
+            result["detail"] = disconnect_adguard()
+        elif action == "service-update-adguard-vpn":
+            result["detail"] = update_adguard()
         else:
             raise RuntimeError("unsupported system action")
 
@@ -194,6 +284,10 @@ def handle(request: dict) -> dict:
     except Exception as exc:
         result["result"] = "failed"
         result["detail"] = str(exc)[-6000:]
+        try:
+            refresh_adguard()
+        except Exception:
+            pass
 
     result["finished_at"] = now()
     write_result(request_id, result)
@@ -202,7 +296,10 @@ def handle(request: dict) -> dict:
 
 def main() -> int:
     ACTION_DIR.mkdir(parents=True, exist_ok=True)
-    requests = sorted(ACTION_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    requests = sorted(
+        ACTION_DIR.glob("*.json"),
+        key=lambda p: p.stat().st_mtime,
+    )
     if not requests:
         return 0
 
