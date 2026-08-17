@@ -12,6 +12,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from typing import Any
@@ -193,9 +194,6 @@ def consume_secret(reference: object) -> str:
 
 
 def password_prompt(command: list[str], password: str, timeout: int = 60) -> str:
-    # samba-tool user add/setpassword prompt for a new password twice when the
-    # password is omitted from argv. This keeps the secret out of process titles
-    # and out of the Control Center action JSON/log.
     return run(command, input_text=password + "\n" + password + "\n", timeout=timeout)
 
 
@@ -280,7 +278,6 @@ def reconcile_groups(username: str, desired_raw: object) -> None:
     desired = {group_name(item) for item in desired_raw}
     output = run(["samba-tool", "user", "getgroups", username], timeout=30)
     current = {line.strip() for line in output.splitlines() if line.strip()}
-    # Primary/builtin Domain Users membership is intentionally never removed.
     removable = {item for item in current if item.casefold() != "domain users"}
     for name in sorted(desired - current, key=str.casefold):
         run(["samba-tool", "group", "addmembers", name, username], timeout=30)
@@ -307,15 +304,6 @@ def update_user(username: str, payload: dict[str, Any]) -> str:
     if rename_options:
         run(["samba-tool", "user", "rename", username, *rename_options], timeout=60)
 
-    extra_patch = {
-        "telephoneNumber": payload.get("phone") if "phone" in payload else None,
-        "homeDrive": payload.get("home_drive") if "home_drive" in payload else None,
-        "homeDirectory": payload.get("home_directory") if "home_directory" in payload else None,
-        "profilePath": payload.get("profile_path") if "profile_path" in payload else None,
-        "scriptPath": payload.get("script_path") if "script_path" in payload else None,
-        "description": payload.get("description") if "description" in payload else None,
-    }
-    # Do not interpret omitted keys as removals.
     field_to_attr = {
         "phone": "telephoneNumber",
         "home_drive": "homeDrive",
@@ -350,8 +338,6 @@ def create_user(payload: dict[str, Any]) -> str:
         created = True
         update_user(username, payload)
         if bool(payload.get("must_change_password")):
-            # Re-set the same secret with the change-at-next-login flag without
-            # putting it in argv.
             password_prompt(
                 ["samba-tool", "user", "setpassword", username, "--must-change-at-next-login"],
                 password,
@@ -683,12 +669,14 @@ def apply_quota(item: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any
         return actual
 
     if fstype == "btrfs" and shutil.which("btrfs"):
-        if run(["btrfs", "subvolume", "show", str(path)], timeout=30, check=False) == "":
-            # `subvolume show` may legitimately print nothing only on unusual
-            # versions; verify by return code with a direct call below.
-            probe = subprocess.run(["btrfs", "subvolume", "show", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            if probe.returncode != 0:
-                raise RuntimeError("Btrfs quota requires the share root to be a subvolume")
+        probe = subprocess.run(
+            ["btrfs", "subvolume", "show", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise RuntimeError("Btrfs quota requires the share root to be a subvolume")
         run(["btrfs", "quota", "enable", mountpoint], timeout=60)
         run(["btrfs", "qgroup", "limit", f"{limit}G" if limit else "none", str(path)], timeout=60)
         actual.update({"backend": "btrfs-qgroup", "supported": True})
@@ -752,7 +740,6 @@ def normalize_share_payload(payload: dict[str, Any], existing: dict[str, Any] | 
         subjects = payload.get("subjects")
         if not isinstance(subjects, list):
             raise RuntimeError("share subjects must be a list")
-        # Validation also occurs during rendering.
         for subject in subjects:
             if not isinstance(subject, dict):
                 raise RuntimeError("invalid share subject")
@@ -827,7 +814,12 @@ def share_operation(action: str, payload: dict[str, Any]) -> str:
                 if path.is_symlink() or SHARE_ROOT not in path.parents:
                     raise RuntimeError("refusing to delete unsafe share data path")
                 if filesystem_info(path).get("fstype") == "btrfs" and shutil.which("btrfs"):
-                    probe = subprocess.run(["btrfs", "subvolume", "show", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    probe = subprocess.run(
+                        ["btrfs", "subvolume", "show", str(path)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
                     if probe.returncode == 0:
                         run(["btrfs", "subvolume", "delete", str(path)], timeout=1800)
                     else:
@@ -877,11 +869,17 @@ def create_domain_backup(payload: dict[str, Any], actor: str) -> str:
         domain_dir.mkdir()
         control_dir.mkdir()
 
-        # A dbcheck before backup detects known database damage without trying
-        # to repair it automatically.
-        dbcheck = run(["samba-tool", "dbcheck", "--cross-ncs"], timeout=600, check=False)
-        if "ERROR:" in dbcheck.upper() or "ERROR(" in dbcheck.upper():
-            raise RuntimeError("Samba dbcheck reported errors; backup aborted\n" + dbcheck[-3000:])
+        dbcheck_process = subprocess.run(
+            ["samba-tool", "dbcheck", "--cross-ncs"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=600,
+            check=False,
+        )
+        dbcheck = (dbcheck_process.stdout or "")[-12000:]
+        if dbcheck_process.returncode != 0:
+            raise RuntimeError("Samba dbcheck failed; backup aborted\n" + dbcheck[-3000:])
 
         run(["samba-tool", "domain", "backup", "offline", f"--targetdir={domain_dir}"], timeout=1800)
         domain_files = [path for path in domain_dir.iterdir() if path.is_file()]
@@ -953,7 +951,9 @@ def create_domain_backup(payload: dict[str, Any], actor: str) -> str:
 
 
 def safe_member_name(name: str) -> PurePosixPath:
-    raw = name.lstrip("./")
+    raw = str(name)
+    while raw.startswith("./"):
+        raw = raw[2:]
     path = PurePosixPath(raw)
     if not raw or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise RuntimeError(f"unsafe backup member: {name}")
@@ -981,11 +981,7 @@ def validate_archive(archive: Path) -> tuple[dict[str, Any], list[str]]:
             if member.isdev() or member.isfifo():
                 raise RuntimeError("device/FIFO entries are not allowed in domain archive")
             if member.issym() or member.islnk():
-                link = PurePosixPath(member.linkname)
-                if link.is_absolute() or any(part == ".." for part in link.parts):
-                    raise RuntimeError("unsafe link in domain archive")
-                if not str(path).startswith("srv/shares/"):
-                    raise RuntimeError("links are allowed only in share data")
+                raise RuntimeError("symbolic and hard links are not allowed in domain migration archives")
             if str(path).startswith("srv/shares/"):
                 share_members.append(str(path))
         try:
@@ -1130,7 +1126,12 @@ def restore_domain_backup(payload: dict[str, Any]) -> str:
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
                 started = False
                 for unit in ("samba-ad-dc.service", "samba.service"):
-                    probe = subprocess.run(["systemctl", "show", unit, "-p", "LoadState", "--value"], capture_output=True, text=True, check=False)
+                    probe = subprocess.run(
+                        ["systemctl", "show", unit, "-p", "LoadState", "--value"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
                     if probe.returncode == 0 and probe.stdout.strip() not in {"", "not-found"}:
                         run(["systemctl", "enable", "--now", unit], timeout=120)
                         started = True
@@ -1244,5 +1245,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    import sys
     raise SystemExit(main())
