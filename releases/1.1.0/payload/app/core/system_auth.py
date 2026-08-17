@@ -61,7 +61,12 @@ def _session_key() -> bytes:
     return bytes.fromhex(raw)
 
 
-def _run(command: list[str], *, input_text: str | None = None, timeout: float = 8.0) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str],
+    *,
+    input_text: str | None = None,
+    timeout: float = 8.0,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         input=input_text,
@@ -74,23 +79,39 @@ def _run(command: list[str], *, input_text: str | None = None, timeout: float = 
     )
 
 
-def _passwd_record(username: str) -> tuple[str, int, int] | None:
+def _identity_candidates(username: str) -> tuple[str, ...]:
+    username = username.strip()
     if not username or "\x00" in username or "\n" in username or "\r" in username:
-        return None
-    try:
-        result = _run(["getent", "passwd", username])
-    except Exception:
-        return None
-    if result.returncode != 0:
-        return None
-    line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
-    parts = line.split(":")
-    if len(parts) < 7:
-        return None
-    try:
-        return parts[0], int(parts[2]), int(parts[3])
-    except Exception:
-        return None
+        return ()
+    candidates = [username]
+    if "\\" in username:
+        local = username.rsplit("\\", 1)[-1].strip()
+        if local and local not in candidates:
+            candidates.append(local)
+    if "@" in username:
+        local = username.split("@", 1)[0].strip()
+        if local and local not in candidates:
+            candidates.append(local)
+    return tuple(candidates)
+
+
+def _passwd_record(username: str) -> tuple[str, int, int] | None:
+    for candidate in _identity_candidates(username):
+        try:
+            result = _run(["getent", "passwd", candidate])
+        except Exception:
+            continue
+        if result.returncode != 0:
+            continue
+        line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
+        parts = line.split(":")
+        if len(parts) < 7:
+            continue
+        try:
+            return parts[0], int(parts[2]), int(parts[3])
+        except Exception:
+            continue
+    return None
 
 
 def _group_names(username: str) -> tuple[str, ...]:
@@ -138,14 +159,17 @@ def shutil_which(command: str) -> str | None:
     return None
 
 
-def resolve_identity(username: str, auth_source: str | None = None) -> Identity | None:
+def resolve_identity(
+    username: str,
+    auth_source: str | None = None,
+) -> Identity | None:
+    source = auth_source or ("domain" if _looks_domain_identity(username) else "local")
     record = _passwd_record(username)
     if record is None:
         return None
     canonical, uid, gid = record
     groups = _group_names(canonical)
     group_keys = {group.casefold() for group in groups}
-    source = auth_source or ("domain" if _looks_domain_identity(canonical) else "local")
     is_admin = uid == 0 or bool(group_keys & ADMIN_GROUPS)
     return Identity(
         username=canonical,
@@ -161,7 +185,8 @@ def authenticate_system(username: str, password: str) -> Identity | None:
     username = username.strip()
     if not username or not password or shutil_which("pamtester") is None:
         return None
-    if resolve_identity(username) is None:
+    source_hint = "domain" if _looks_domain_identity(username) else None
+    if resolve_identity(username, source_hint) is None:
         return None
     try:
         result = _run(
@@ -173,7 +198,7 @@ def authenticate_system(username: str, password: str) -> Identity | None:
         return None
     if result.returncode != 0:
         return None
-    return resolve_identity(username)
+    return resolve_identity(username, source_hint)
 
 
 def create_session(identity: Identity) -> tuple[str, str]:
@@ -187,8 +212,20 @@ def create_session(identity: Identity) -> tuple[str, str]:
         "csrf": csrf,
         "nonce": secrets.token_urlsafe(12),
     }
-    body = _b64encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-    signature = _b64encode(hmac.new(_session_key(), body.encode("ascii"), hashlib.sha256).digest())
+    body = _b64encode(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    signature = _b64encode(
+        hmac.new(
+            _session_key(),
+            body.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+    )
     return f"{body}.{signature}", csrf
 
 
@@ -197,7 +234,13 @@ def parse_session(request: Request) -> dict | None:
     if not token or "." not in token:
         return None
     body, signature = token.rsplit(".", 1)
-    expected = _b64encode(hmac.new(_session_key(), body.encode("ascii"), hashlib.sha256).digest())
+    expected = _b64encode(
+        hmac.new(
+            _session_key(),
+            body.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+    )
     if not hmac.compare_digest(signature, expected):
         return None
     try:
@@ -208,7 +251,10 @@ def parse_session(request: Request) -> dict | None:
         return None
     if not payload.get("u") or not payload.get("csrf"):
         return None
-    identity = resolve_identity(str(payload["u"]), str(payload.get("src") or "local"))
+    identity = resolve_identity(
+        str(payload["u"]),
+        str(payload.get("src") or "local"),
+    )
     if identity is None:
         return None
     payload["identity"] = identity
@@ -244,7 +290,12 @@ def _guard_key(username: str, client_ip: str | None) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _guard_update(username: str, client_ip: str | None, *, success: bool | None) -> int:
+def _guard_update(
+    username: str,
+    client_ip: str | None,
+    *,
+    success: bool | None,
+) -> int:
     key = _guard_key(username, client_ip)
     now = int(time.time())
     LOGIN_GUARD_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -257,12 +308,21 @@ def _guard_update(username: str, client_ip: str | None, *, success: bool | None)
                 state = {}
         except Exception:
             state = {}
-        entries = state.get("entries") if isinstance(state.get("entries"), dict) else {}
-        item = entries.get(key) if isinstance(entries.get(key), dict) else {"failures": [], "locked_until": 0}
+        entries = (
+            state.get("entries")
+            if isinstance(state.get("entries"), dict)
+            else {}
+        )
+        item = (
+            entries.get(key)
+            if isinstance(entries.get(key), dict)
+            else {"failures": [], "locked_until": 0}
+        )
         failures = [
             int(value)
             for value in item.get("failures", [])
-            if isinstance(value, (int, float)) and int(value) >= now - LOGIN_WINDOW
+            if isinstance(value, (int, float))
+            and int(value) >= now - LOGIN_WINDOW
         ]
         locked_until = int(item.get("locked_until", 0) or 0)
         if success is True:
@@ -274,13 +334,26 @@ def _guard_update(username: str, client_ip: str | None, *, success: bool | None)
                 if len(failures) >= LOGIN_FAILURE_LIMIT:
                     locked_until = now + LOGIN_LOCKOUT
                     failures = []
-            entries[key] = {"failures": failures[-LOGIN_FAILURE_LIMIT:], "locked_until": locked_until, "updated_at": now}
+            entries[key] = {
+                "failures": failures[-LOGIN_FAILURE_LIMIT:],
+                "locked_until": locked_until,
+                "updated_at": now,
+            }
         if len(entries) > 256:
-            ordered = sorted(entries.items(), key=lambda pair: int(pair[1].get("updated_at", 0) or 0), reverse=True)
+            ordered = sorted(
+                entries.items(),
+                key=lambda pair: int(pair[1].get("updated_at", 0) or 0),
+                reverse=True,
+            )
             entries = dict(ordered[:256])
         handle.seek(0)
         handle.truncate()
-        json.dump({"schema_version": 2, "entries": entries}, handle, ensure_ascii=False, indent=2)
+        json.dump(
+            {"schema_version": 2, "entries": entries},
+            handle,
+            ensure_ascii=False,
+            indent=2,
+        )
         handle.write("\n")
         handle.flush()
         os.fchmod(handle.fileno(), 0o640)
@@ -292,5 +365,9 @@ def login_retry_after(username: str, client_ip: str | None) -> int:
     return _guard_update(username, client_ip, success=None)
 
 
-def record_login_result(username: str, client_ip: str | None, success: bool) -> int:
+def record_login_result(
+    username: str,
+    client_ip: str | None,
+    success: bool,
+) -> int:
     return _guard_update(username, client_ip, success=success)
