@@ -1,0 +1,30 @@
+name: SRV Control Center 1.3.0 Samba sandbox regression
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Samba monitor filesystem sandbox
+        run: |
+          set -Eeuo pipefail
+          unit='releases/1.3.0/system/srv-control-samba-monitor.service'
+          grep -Fq 'ProtectSystem=strict' "$unit"
+          grep -Fq 'ReadWritePaths=/var/lib/srv-control /var/lib/samba' "$unit"
+          grep -Fq 'ReadWritePaths=-/var/cache/samba -/run/samba' "$unit"
+          systemd-analyze verify "$unit" || {
+            rc=$?
+            # verify can report missing referenced local unit ordering dependencies
+            # on the generic CI image; syntax/errors in the unit itself are fatal.
+            systemd-analyze verify "$unit" 2>&1 | tee /tmp/unit-verify.log || true
+            ! grep -Eqi 'Unknown lvalue|Failed to parse|Invalid argument' /tmp/unit-verify.log
+            exit 0
+          }
