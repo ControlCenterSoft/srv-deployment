@@ -38,7 +38,10 @@
             const release = (healthPayload.data && healthPayload.data.release) || {};
 
             const legacyUpdatedAt = status.result === "updated" ? status.checked_at : null;
-            const lastAttempt = status.last_update_attempt_at || legacyUpdatedAt || null;
+            // A pre-schema-3 successful installation was necessarily also an
+            // update attempt. release.synced_at therefore provides a stable
+            // migration fallback after later ordinary checks overwrite result.
+            const lastAttempt = status.last_update_attempt_at || legacyUpdatedAt || release.synced_at || null;
             const lastSuccess = status.last_successful_update_at || legacyUpdatedAt || release.synced_at || null;
 
             attemptNode.textContent = formatDate(lastAttempt);
