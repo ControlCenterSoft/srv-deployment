@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "enabled": true,
-  "channel": "release-candidate",
+  "channel": "production",
   "release": "1.2.0",
   "release_id": "1.2.0",
   "release_path": "releases/1.2.0",
@@ -10,5 +10,5 @@
   "apply": "releases/1.2.0/apply.sh",
   "acceptance": "releases/1.2.0/acceptance.sh",
   "rollback": "releases/1.2.0/rollback.sh",
-  "description": "Release candidate 1.2.0: four-column dashboard with top processes, full-administrator RBAC, AdGuard VPN settings and Minecraft Bedrock Control."
+  "description": "SRV Control Center 1.2.0 production release: four-column dashboard with top processes, full-administrator RBAC, AdGuard VPN settings and Minecraft Bedrock Control."
 }
