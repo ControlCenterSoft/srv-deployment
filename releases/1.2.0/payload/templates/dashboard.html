@@ -1,265 +1,82 @@
 <!doctype html>
 <html lang="ru">
 <head>
-
     <meta charset="utf-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1"
-    >
-
-    <title>Главная</title>
-
-    <link
-        rel="stylesheet"
-        href="/static/css/module.css"
-    >
-
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Главная — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.2.0-rc1">
+    <link rel="stylesheet" href="/static/css/dashboard-1.2.css?v=1.2.0-rc1">
 </head>
-
 <body>
-
 <div class="page">
-
     <header class="page-header">
-
         <div>
-
-            <h1>
-                Главная
-            </h1>
-
-            <p>
-                Состояние SRV в реальном времени
-            </p>
-
+            <h1>Главная</h1>
+            <p>Состояние SRV в реальном времени</p>
         </div>
-
         <div class="live-status">
-
-            <span
-                class="live-dot"
-                id="streamDot"
-            ></span>
-
-            <span id="streamText">
-                Подключение
-            </span>
-
+            <span class="live-dot" id="streamDot"></span>
+            <span id="streamText">Подключение</span>
         </div>
-
     </header>
 
-
-    <section class="metric-grid">
-
-        <article class="metric-card">
-
+    <section class="dashboard-top-grid">
+        <article class="metric-card dashboard-card">
             <div class="metric-heading">
-
                 <div>
-                    <span class="metric-label">
-                        Процессор
-                    </span>
-
-                    <strong
-                        class="metric-value"
-                        id="cpuValue"
-                    >
-                        —
-                    </strong>
+                    <span class="metric-label">Процессор</span>
+                    <strong class="metric-value" id="cpuValue">—</strong>
                 </div>
-
-                <span
-                    class="metric-detail"
-                    id="cpuDetail"
-                >
-                    —
-                </span>
-
+                <span class="metric-detail" id="cpuDetail">—</span>
             </div>
-
-            <canvas
-                class="chart"
-                id="cpuChart"
-            ></canvas>
-
+            <canvas class="chart dashboard-chart" id="cpuChart"></canvas>
+            <div class="process-block">
+                <div class="process-title">Топ 3 по CPU</div>
+                <div class="process-list" id="cpuProcesses"></div>
+            </div>
         </article>
 
-
-        <article class="metric-card">
-
+        <article class="metric-card dashboard-card">
             <div class="metric-heading">
-
                 <div>
-                    <span class="metric-label">
-                        Память
-                    </span>
-
-                    <strong
-                        class="metric-value"
-                        id="ramValue"
-                    >
-                        —
-                    </strong>
+                    <span class="metric-label">Память</span>
+                    <strong class="metric-value" id="ramValue">—</strong>
                 </div>
-
-                <span
-                    class="metric-detail"
-                    id="ramDetail"
-                >
-                    —
-                </span>
-
+                <span class="metric-detail" id="ramDetail">—</span>
             </div>
-
-            <canvas
-                class="chart"
-                id="ramChart"
-            ></canvas>
-
+            <canvas class="chart dashboard-chart" id="ramChart"></canvas>
+            <div class="process-block">
+                <div class="process-title">Топ 3 по RAM</div>
+                <div class="process-list" id="ramProcesses"></div>
+            </div>
         </article>
 
+        <article class="panel dashboard-card dashboard-summary-card">
+            <div class="panel-title">Сеть</div>
+            <div class="stat-row"><span>Приём</span><strong id="networkRx">—</strong></div>
+            <div class="stat-row"><span>Передача</span><strong id="networkTx">—</strong></div>
+            <div class="stat-row"><span>Всего принято</span><strong id="networkRxTotal">—</strong></div>
+            <div class="stat-row"><span>Всего передано</span><strong id="networkTxTotal">—</strong></div>
+        </article>
+
+        <article class="panel dashboard-card dashboard-summary-card">
+            <div class="panel-title">Сервер</div>
+            <div class="stat-row"><span>Время работы</span><strong id="uptime">—</strong></div>
+            <div class="stat-row"><span>Load average</span><strong id="loadAverage">—</strong></div>
+            <div class="stat-row"><span>PostgreSQL</span><strong id="databaseStatus">—</strong></div>
+        </article>
     </section>
-
-
-    <section class="summary-grid">
-
-        <article class="panel">
-
-            <div class="panel-title">
-                Сеть
-            </div>
-
-            <div class="stat-row">
-
-                <span>
-                    Приём
-                </span>
-
-                <strong id="networkRx">
-                    —
-                </strong>
-
-            </div>
-
-            <div class="stat-row">
-
-                <span>
-                    Передача
-                </span>
-
-                <strong id="networkTx">
-                    —
-                </strong>
-
-            </div>
-
-            <div class="stat-row">
-
-                <span>
-                    Всего принято
-                </span>
-
-                <strong id="networkRxTotal">
-                    —
-                </strong>
-
-            </div>
-
-            <div class="stat-row">
-
-                <span>
-                    Всего передано
-                </span>
-
-                <strong id="networkTxTotal">
-                    —
-                </strong>
-
-            </div>
-
-        </article>
-
-
-        <article class="panel">
-
-            <div class="panel-title">
-                Сервер
-            </div>
-
-            <div class="stat-row">
-
-                <span>
-                    Время работы
-                </span>
-
-                <strong id="uptime">
-                    —
-                </strong>
-
-            </div>
-
-            <div class="stat-row">
-
-                <span>
-                    Load average
-                </span>
-
-                <strong id="loadAverage">
-                    —
-                </strong>
-
-            </div>
-
-            <div class="stat-row">
-
-                <span>
-                    PostgreSQL
-                </span>
-
-                <strong id="databaseStatus">
-                    —
-                </strong>
-
-            </div>
-
-        </article>
-
-    </section>
-
 
     <section class="panel">
-
-        <div class="panel-title">
-            Хранилище
-        </div>
-
-        <div
-            class="storage-list"
-            id="storageList"
-        ></div>
-
+        <div class="panel-title">Хранилище</div>
+        <div class="storage-list" id="storageList"></div>
     </section>
-
 
     <section class="panel">
-
-        <div class="panel-title">
-            Службы
-        </div>
-
-        <div
-            class="service-grid"
-            id="serviceGrid"
-        ></div>
-
+        <div class="panel-title">Службы</div>
+        <div class="service-grid" id="serviceGrid"></div>
     </section>
-
 </div>
-
-<script src="/static/js/dashboard.js"></script>
-
+<script src="/static/js/dashboard.js?v=1.2.0-rc1"></script>
 </body>
 </html>
