@@ -154,13 +154,13 @@ jobs:
           PY
           ARCHIVE="$(python3 -c 'import json;print(json.load(open("/tmp/meta.json"))["archive"])')"
           EXPECTED="$(python3 -c 'import json;print(json.load(open("/tmp/meta.json"))["sha256"])')"
-          test "$(sha256sum "/var/lib/srv-control/domain-backups/$ARCHIVE" | awk '{print $1}')" = "$EXPECTED"
+          test "$(sudo sha256sum "/var/lib/srv-control/domain-backups/$ARCHIVE" | awk '{print $1}')" = "$EXPECTED"
           mkdir -p /tmp/domain-smoke && sudo tar -xf "/var/lib/srv-control/domain-backups/$ARCHIVE" -C /tmp/domain-smoke manifest.json domain control
           OFFICIAL="$(find /tmp/domain-smoke/domain -maxdepth 1 -type f -print -quit)"; test -s "$OFFICIAL"
           sudo samba-tool domain backup restore --backup-file="$OFFICIAL" --newservername=SRVCCRT --targetdir=/tmp/domain-smoke/restored >/dev/null
           CONF="$(find /tmp/domain-smoke/restored -type f -name smb.conf -print -quit)"; SAM="$(find /tmp/domain-smoke/restored -type f -name sam.ldb -print -quit)"; test -s "$CONF" && test -s "$SAM"
           sudo testparm -s --suppress-prompt "$CONF" >/dev/null
-          EXPECTED_SID="$(python3 - <<'PY'
+          EXPECTED_SID="$(sudo python3 - <<'PY'
           import json,tarfile
           m=json.load(open('/tmp/meta.json'))
           with tarfile.open('/var/lib/srv-control/domain-backups/'+m['archive'],'r:*') as t: print(json.load(t.extractfile('manifest.json'))['domain']['sid'])
