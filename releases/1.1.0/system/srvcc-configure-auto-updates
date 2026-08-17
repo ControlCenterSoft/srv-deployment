@@ -42,12 +42,20 @@ done
 (( INTERVAL_MINUTES >= 1 && INTERVAL_MINUTES <= 1440 )) || fail "interval must be 1..1440"
 [[ -d "$PROJECT" ]] || fail "Control Center is not installed"
 [[ -s "$RELEASE_META" ]] || fail "release metadata missing"
-for command in git python3 systemctl sha256sum flock; do
+for command in git python3 systemctl sha256sum flock readlink; do
     command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
 
 install -d -m 0750 "$AGENT_ROOT" "$STATE_DIR"
-install -m 0755 "$0" "$CONFIGURATOR_BIN"
+# The configurator is also invoked from its installed destination by the web
+# system agent. GNU install fails when source and destination are the same file,
+# and set -e used to abort before the requested timer mode was applied.
+source_real="$(readlink -f -- "$0")"
+target_real="$(readlink -f -- "$CONFIGURATOR_BIN" 2>/dev/null || true)"
+if [[ "$source_real" != "$target_real" ]]; then
+    install -m 0755 "$0" "$CONFIGURATOR_BIN"
+fi
+
 touch /var/log/srvcc-agent.log
 chmod 0640 /var/log/srvcc-agent.log || true
 
@@ -147,7 +155,17 @@ PY
 
 install -d -m 0750 "$AGENT_ROOT"
 exec 9>"$LOCK"
-flock -n 9 || { log 'Updater skipped: another run is active.'; exit 0; }
+if [[ "$OPERATION" == "apply" && "$ACTOR" != "system" ]]; then
+    # A manual update must not report success just because a scheduled check or
+    # apply currently owns the lock. Wait for the active updater transaction.
+    if ! flock -w 180 9; then
+        write_status error 'updater is busy; manual update timed out waiting for lock'
+        log "Manual updater actor=${ACTOR} timed out waiting for update lock."
+        exit 1
+    fi
+else
+    flock -n 9 || { log 'Updater skipped: another run is active.'; exit 0; }
+fi
 
 if [[ ! -d "$DEPLOY_REPO/.git" ]]; then
     rm -rf "$DEPLOY_REPO"
@@ -173,10 +191,6 @@ current_version="$(current_value version)"
 current_git_sha="$(current_value git_sha)"
 stored_fingerprint="$(cat "$LAST_FINGERPRINT" 2>/dev/null || true)"
 
-# Migration/adoption path: when the new updater is installed as part of the same
-# product release, adopt that release fingerprint instead of immediately
-# applying it again. The tree comparison prevents a same-version/different-tree
-# release from being silently accepted.
 if [[ -z "$stored_fingerprint" && "$current_id" == "$release_id" && "$current_version" == "$release_version" && -n "$current_git_sha" ]]; then
     current_tree="$(git -C "$DEPLOY_REPO" rev-parse "${current_git_sha}:${release_path}" 2>/dev/null || true)"
     if [[ -n "$current_tree" && "$current_tree" == "$release_tree" ]]; then
@@ -287,7 +301,7 @@ else
 fi
 
 if (( CHECK_NOW )); then
-    SRVCC_REPO_URL="$REPO_URL" "$AGENT_BIN" check
+    SRVCC_REPO_URL="$REPO_URL" "$AGENT_BIN" check --actor configure
 fi
 
 printf 'UPDATE CONFIG PASS\nsource=%s\nmode=%s\ninterval_minutes=%s\n' "$REPO_URL" "$MODE" "$INTERVAL_MINUTES"
