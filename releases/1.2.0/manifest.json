@@ -19,7 +19,7 @@
     },
     "rollback": {
       "path": "rollback.sh",
-      "sha256": "8b70e855bc62a643538f99d87b7b0f6de6a635624f14c6838d242a669af08bbb"
+      "sha256": "2f39ecde340171dc12c21bcdcd6d06e5b7e1207c3d97879668b83f8d436d1f1e"
     }
   }
 }
