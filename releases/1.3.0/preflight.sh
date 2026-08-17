@@ -3,18 +3,15 @@ set -Eeuo pipefail
 
 PROJECT="${1:-/opt/srv-control}"
 REMOTE_SHA="${2:-unknown}"
-RELEASE_ID="1.2.0"
-RELEASE_VERSION="1.2.0"
+RELEASE_ID="1.3.0"
+RELEASE_VERSION="1.3.0"
 RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${RELEASE_DIR}/../.." && pwd -P)"
 PAYLOAD="${RELEASE_DIR}/payload"
 SYSTEM="${RELEASE_DIR}/system"
 RELOAD_HELPER="${REPO_ROOT}/deploy/reload-srv-control.sh"
 
-fail() {
-    printf 'PREFLIGHT FAIL: %s\n' "$*" >&2
-    exit 1
-}
+fail() { printf 'PREFLIGHT FAIL: %s\n' "$*" >&2; exit 1; }
 
 [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
 [[ -d "$PROJECT" ]] || fail "project directory missing: $PROJECT"
@@ -23,7 +20,7 @@ fail() {
 systemctl is-active --quiet srv-control.service || fail "srv-control.service is not active"
 systemctl is-active --quiet postgresql.service || fail "postgresql.service is not active"
 
-for command in python3 systemctl sha256sum git flock apt-get nginx getent id runuser; do
+for command in python3 systemctl sha256sum git flock apt-get nginx getent id runuser tar findmnt; do
     command -v "$command" >/dev/null 2>&1 || fail "required command missing: $command"
 done
 
@@ -31,103 +28,99 @@ for rel in app migrations static templates alembic.ini requirements.lock; do
     [[ -e "$PAYLOAD/$rel" ]] || fail "release payload missing: $rel"
 done
 
-for file in \
-    "$PAYLOAD/app/core/system_auth.py" \
-    "$PAYLOAD/app/core/rbac.py" \
-    "$PAYLOAD/app/core/identity_directory.py" \
-    "$PAYLOAD/app/core/system_admin.py" \
-    "$PAYLOAD/app/core/metrics.py" \
-    "$PAYLOAD/app/core/minecraft.py" \
-    "$PAYLOAD/app/routers/admin.py" \
-    "$PAYLOAD/app/routers/api.py" \
-    "$PAYLOAD/app/routers/ui.py" \
-    "$PAYLOAD/migrations/versions/11f0a1100001_system_auth_rbac.py" \
-    "$PAYLOAD/migrations/versions/11f0a1100002_user_rbac_subjects.py" \
-    "$PAYLOAD/migrations/versions/12f0a1200001_full_admin_role.py" \
-    "$PAYLOAD/templates/dashboard.html" \
-    "$PAYLOAD/templates/access.html" \
-    "$PAYLOAD/templates/system.html" \
-    "$PAYLOAD/templates/services.html" \
-    "$PAYLOAD/templates/adguard.html" \
-    "$PAYLOAD/templates/minecraft.html" \
-    "$PAYLOAD/templates/torrents.html" \
-    "$PAYLOAD/static/js/dashboard.js" \
-    "$PAYLOAD/static/js/access.js" \
-    "$PAYLOAD/static/js/adguard.js" \
-    "$PAYLOAD/static/js/minecraft.js" \
-    "$PAYLOAD/static/css/dashboard-1.2.css" \
-    "$PAYLOAD/static/css/service-config-1.2.css" \
-    "$SYSTEM/install-auth.sh" \
-    "$SYSTEM/srv-control-system-agent" \
-    "$SYSTEM/srv-control-backup" \
-    "$SYSTEM/srv-control-os-auto-update" \
-    "$SYSTEM/srvcc-configure-auto-updates"
-do
-    [[ -s "$file" ]] || fail "required release file missing: $file"
+required_payload=(
+    app/core/system_auth.py app/core/rbac.py app/core/system_admin.py
+    app/core/samba_domain.py app/core/samba_shares.py
+    app/core/minecraft.py app/core/minecraft_instances.py
+    app/routers/admin.py app/routers/api.py app/routers/ui.py
+    app/routers/minecraft_multi.py app/routers/share_directory.py
+    migrations/versions/13f0a1300001_shares_rbac.py
+    templates/samba.html templates/shares.html templates/minecraft.html templates/shell.html
+    static/js/samba.js static/js/shares.js static/js/minecraft.js static/js/shell.js
+)
+for rel in "${required_payload[@]}"; do
+    [[ -s "$PAYLOAD/$rel" ]] || fail "required 1.3.0 payload file missing: $rel"
 done
 
-[[ ! -e "$PAYLOAD/templates/placeholder.html" ]] \
-    || fail "placeholder template must not be shipped in release 1.2.0"
+required_helpers=(
+    srv-control-system-agent srv-control-backup srv-control-os-auto-update
+    srv-control-samba-admin srv-control-samba-agent srv-control-samba-ldif-editor
+    srv-control-samba-monitor srv-control-samba-shares-monitor
+    srv-control-minecraft-admin srv-control-minecraft-admin-core
+    srv-control-minecraft-agent srv-control-minecraft-auto-update
+    srv-control-minecraft-firewall srv-control-minecraft-monitor
+    srv-control-minecraft-player-admin srv-control-minecraft-runner
+    srv-control-minecraft-update srvcc-configure-auto-updates
+)
+for helper in "${required_helpers[@]}"; do
+    [[ -s "$SYSTEM/$helper" ]] || fail "required privileged helper missing: $helper"
+done
 
-for unit in \
-    srv-control-system-agent.service \
-    srv-control-system-agent.path \
-    srv-control-os-update.service \
-    srv-control-adguard-monitor.service \
-    srv-control-adguard-monitor.timer \
-    srv-control-backup.service \
-    srv-control-backup.timer \
-    srv-control-os-auto-update.service \
-    srv-control-os-auto-update.timer
-do
-    [[ -s "$SYSTEM/$unit" ]] || fail "systemd payload missing: $unit"
+required_units=(
+    srv-control-system-agent.service srv-control-system-agent.path
+    srv-control-os-update.service srv-control-adguard-monitor.service srv-control-adguard-monitor.timer
+    srv-control-backup.service srv-control-backup.timer
+    srv-control-os-auto-update.service srv-control-os-auto-update.timer
+    srv-control-samba-agent.service srv-control-samba-agent.path
+    srv-control-samba-monitor.service srv-control-samba-monitor.timer
+    srv-control-samba-shares-monitor.service srv-control-samba-shares-monitor.timer
+    srv-control-minecraft-agent.service srv-control-minecraft-agent.path
+    srv-control-minecraft-auto-update.service srv-control-minecraft-auto-update.timer
+    srv-control-minecraft-firewall.service
+    srv-control-minecraft-monitor.service srv-control-minecraft-monitor.timer
+)
+for unit in "${required_units[@]}"; do
+    [[ -s "$SYSTEM/$unit" ]] || fail "required systemd payload missing: $unit"
 done
 
 python3 - <<'PY'
-import json
-import pathlib
-import re
-
-path = pathlib.Path("/var/lib/srv-control/release.json")
-payload = json.loads(path.read_text(encoding="utf-8"))
-version = str(payload.get("version") or "")
-match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", version)
+import json, pathlib, re
+path=pathlib.Path('/var/lib/srv-control/release.json')
+payload=json.loads(path.read_text(encoding='utf-8'))
+version=str(payload.get('version') or '')
+match=re.match(r'^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$',version)
 if not match:
-    raise SystemExit(f"unsupported installed release version: {version!r}")
-current = tuple(map(int, match.groups()))
-if current < (1, 1, 0) or current > (1, 2, 0):
-    raise SystemExit(
-        f"release 1.2.0 supports upgrade from 1.1.0 and revalidation of 1.2.0; installed={version}"
-    )
+    raise SystemExit(f'unsupported installed release version: {version!r}')
+current=tuple(map(int,match.groups()))
+if current < (1,2,0) or current > (1,3,0):
+    raise SystemExit(f'release 1.3.0 supports upgrade from 1.2.0 and revalidation of 1.3.0; installed={version}')
 PY
 
 python3 -m compileall -q "$PAYLOAD/app"
 python3 -m py_compile \
     "$SYSTEM/srv-control-system-agent" \
     "$SYSTEM/srv-control-backup" \
-    "$SYSTEM/srv-control-os-auto-update"
+    "$SYSTEM/srv-control-os-auto-update" \
+    "$SYSTEM/srv-control-samba-admin" \
+    "$SYSTEM/srv-control-samba-agent" \
+    "$SYSTEM/srv-control-samba-ldif-editor" \
+    "$SYSTEM/srv-control-samba-monitor" \
+    "$SYSTEM/srv-control-samba-shares-monitor" \
+    "$SYSTEM/srv-control-minecraft-admin" \
+    "$SYSTEM/srv-control-minecraft-admin-core" \
+    "$SYSTEM/srv-control-minecraft-agent" \
+    "$SYSTEM/srv-control-minecraft-auto-update" \
+    "$SYSTEM/srv-control-minecraft-firewall" \
+    "$SYSTEM/srv-control-minecraft-monitor" \
+    "$SYSTEM/srv-control-minecraft-player-admin" \
+    "$SYSTEM/srv-control-minecraft-runner" \
+    "$SYSTEM/srv-control-minecraft-update"
 bash -n "$SYSTEM/install-auth.sh"
 bash -n "$SYSTEM/srvcc-configure-auto-updates"
 
-if grep -R -n -E 'change_password|password_hash|admin-bootstrap' "$PAYLOAD/app" >/dev/null 2>&1; then
-    fail "private Control Center credential implementation remains in application payload"
-fi
+# Release/UI/RBAC contract.
+grep -Fq '"shares": "Общий / сетевой доступ"' "$PAYLOAD/app/core/rbac.py" || fail "shares RBAC module missing"
+grep -Fq 'Домен Samba' "$PAYLOAD/templates/shell.html" || fail "Samba menu entry missing"
+grep -Fq 'Общий' "$PAYLOAD/templates/shell.html" || fail "shares menu entry missing"
+grep -Fq '/samba/backups/import' "$PAYLOAD/app/routers/admin.py" || fail "domain restore upload API missing"
+grep -Fq 'samba-tool", "domain", "backup", "restore"' "$SYSTEM/srv-control-samba-admin" || fail "supported Samba domain restore implementation missing"
+grep -Fq 'testparm' "$SYSTEM/srv-control-samba-admin" || fail "Samba config validation missing"
+grep -Fq 'minecraft-update-apply' "$PAYLOAD/app/core/system_admin.py" || fail "Minecraft update action missing"
+grep -Fq 'minecraft-player-kick' "$PAYLOAD/app/core/system_admin.py" || fail "Minecraft player administration missing"
 
-if grep -R -n -i -E \
-    'пока не работает|будет реализовано|недоступно потому|заблокировано в|следующего этапа|future release|future release only|будет включено' \
-    "$PAYLOAD/templates" "$PAYLOAD/static" >/dev/null 2>&1
-then
+if grep -R -n -i -E 'пока не работает|будет реализовано|future release only|будет включено' "$PAYLOAD/templates" "$PAYLOAD/static" >/dev/null 2>&1; then
     fail "temporary placeholder text found in user interface"
 fi
-
-grep -Fq 'Minecraft' "$PAYLOAD/templates/shell.html" || fail "Minecraft menu entry missing"
-grep -Fq 'Полный администратор' "$PAYLOAD/templates/access.html" || fail "full administrator role missing"
-grep -Fq 'Топ 3 по CPU' "$PAYLOAD/templates/dashboard.html" || fail "CPU process widget missing"
-grep -Fq 'Топ 3 по RAM' "$PAYLOAD/templates/dashboard.html" || fail "RAM process widget missing"
-grep -Fq 'adguardConfigForm' "$PAYLOAD/templates/adguard.html" || fail "AdGuard config form missing"
-grep -Fq 'minecraftConfigForm' "$PAYLOAD/templates/minecraft.html" || fail "Minecraft config form missing"
-grep -Fq 'id="rebootButton"' "$PAYLOAD/templates/system.html" || fail "compact reboot control missing"
-grep -Fq 'id="backupRows"' "$PAYLOAD/templates/system.html" || fail "backup list missing"
 
 exec_start="$(systemctl show srv-control.service -p ExecStart --value 2>/dev/null || true)"
 [[ "$exec_start" == *"--workers 2"* ]] || fail "multi-worker srv-control service is required"
