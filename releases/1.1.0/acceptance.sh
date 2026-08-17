@@ -231,23 +231,9 @@ smoke_backup_id=""
 rm -rf "$smoke_tmp"
 smoke_tmp=""
 
-manager_before_check="$(systemctl show srv-control.service -p MainPID --value)"
-/usr/local/sbin/srvcc-github-agent check --actor acceptance
-manager_after_check="$(systemctl show srv-control.service -p MainPID --value)"
-[[ "$manager_before_check" == "$manager_after_check" ]] \
-    || fail "GitHub check changed Control Center manager PID"
-
-python3 - "$STATE_DIR/github-update-status.json" <<'PY'
-import json
-import pathlib
-import sys
-
-payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if payload.get("update_available") is not False:
-    raise SystemExit(f"updater still reports an available update: {payload!r}")
-if payload.get("result") not in {"ok", "updated"}:
-    raise SystemExit(f"unexpected updater result: {payload!r}")
-PY
+# Do not invoke srvcc-github-agent from inside acceptance. The outer updater
+# owns update.lock for the whole deployment transaction and records the final
+# fingerprint/status only after acceptance and healthcheck succeed.
 
 if grep -R -n -E 'пока не работает|будет реализовано|недоступно потому' \
     "$PROJECT/templates" "$PROJECT/static" >/dev/null 2>&1
