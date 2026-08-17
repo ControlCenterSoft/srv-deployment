@@ -13,6 +13,9 @@ RELEASE_META="${STATE_DIR}/release.json"
 AGENT_ROOT="/var/lib/srvcc-agent"
 AGENT_BIN="/usr/local/sbin/srvcc-github-agent"
 CONFIGURATOR_BIN="/usr/local/sbin/srvcc-configure-auto-updates"
+STATE_PUBLISHER="/usr/local/sbin/srvcc-github-agent.state-publisher"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+STATE_PUBLISHER_SOURCE="${SCRIPT_DIR}/srvcc-github-state-publisher"
 SERVICE="srvcc-github-agent.service"
 TIMER="srvcc-github-agent.timer"
 
@@ -54,6 +57,15 @@ source_real="$(readlink -f -- "$0")"
 target_real="$(readlink -f -- "$CONFIGURATOR_BIN" 2>/dev/null || true)"
 if [[ "$source_real" != "$target_real" ]]; then
     install -m 0755 "$0" "$CONFIGURATOR_BIN"
+fi
+
+# During a release apply the managed publisher is available next to this
+# configurator. Later web/system reconfiguration runs from /usr/local/sbin,
+# where the already-installed publisher remains authoritative.
+if [[ -s "$STATE_PUBLISHER_SOURCE" ]]; then
+    install -m 0755 -o root -g root "$STATE_PUBLISHER_SOURCE" "$STATE_PUBLISHER"
+elif [[ ! -x "$STATE_PUBLISHER" ]]; then
+    fail "state publisher is missing and managed source is unavailable"
 fi
 
 touch /var/log/srvcc-agent.log
