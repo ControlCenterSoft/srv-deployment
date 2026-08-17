@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0002-ui-release-metadata",
-  "release_id": "0002-ui-release-metadata",
-  "release_path": "releases/0002-ui-release-metadata",
-  "manifest": "releases/0002-ui-release-metadata/manifest.json",
-  "preflight": "releases/0002-ui-release-metadata/preflight.sh",
-  "apply": "releases/0002-ui-release-metadata/apply.sh",
-  "acceptance": "releases/0002-ui-release-metadata/acceptance.sh",
-  "rollback": "releases/0002-ui-release-metadata/rollback.sh",
-  "description": "Show release version and last successful GitHub synchronization in the SRV Control Center navigation footer."
+  "release": "0003-system-overview",
+  "release_id": "0003-system-overview",
+  "release_path": "releases/0003-system-overview",
+  "manifest": "releases/0003-system-overview/manifest.json",
+  "preflight": "releases/0003-system-overview/preflight.sh",
+  "apply": "releases/0003-system-overview/apply.sh",
+  "acceptance": "releases/0003-system-overview/acceptance.sh",
+  "rollback": "releases/0003-system-overview/rollback.sh",
+  "description": "Activate a read-only System module with live server, resource, storage, service and release status."
 }

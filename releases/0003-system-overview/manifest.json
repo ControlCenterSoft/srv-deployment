@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "release_id": "0003-system-overview",
+  "release_version": "0.3.0",
+  "description": "Activate a read-only System module with live server, resource, storage, service and release status.",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "8551b4deaeaa0401802687640f67f66e4d7870d2a330d4b77f0b93bf5030784e"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "78de863ae4929d4ab55091a2baf8dc4358b598fad56aee6e0dcd2f99105c8a86"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "f89db30ff49c18c109f33af6d419fac5d197485a2bbdffa91b10f9255957e1dc"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "51a954914b6573e41cf2613aa4cc1aed523f3236490a1c0510ce7c9549bc2534"
+    }
+  }
+}
