@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import uuid
+from datetime import datetime, timezone
+from ipaddress import ip_address, ip_network
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import text
+
+from app.database import engine
+
+ACTION_DIR = Path('/var/lib/srv-control/release14-actions')
+RESULT_DIR = Path('/var/lib/srv-control/release14-results')
+PXE_UPLOAD_DIR = Path('/var/lib/srv-control/pxe/uploads')
+PXE_ROOT = Path('/srv/pxe')
+DHCP_LEASE_FILE = Path('/var/lib/misc/dnsmasq.leases')
+BACKUP_CONFIG = Path('/var/lib/srv-control/backup-config.json')
+NETWORK_CONFIG = Path('/var/lib/srv-control/network-config.json')
+NETWORK_PENDING = Path('/var/lib/srv-control/network-pending.json')
+
+MAC_RE = re.compile(r'^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$')
+WIN_NAME_RE = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,13}[A-Za-z0-9])?$')
+LINUX_NAME_RE = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,61}[A-Za-z0-9])?$')
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def read_json(path: Path, default: Any) -> Any:
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+        return value
+    except Exception:
+        return default
+
+
+def write_json_atomic(path: Path, payload: Any, mode: int = 0o640) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def normalize_mac(value: str) -> str:
+    raw = re.sub(r'[^0-9A-Fa-f]', '', str(value or ''))
+    if len(raw) != 12 or any(ch not in '0123456789abcdefABCDEF' for ch in raw):
+        raise ValueError('MAC должен содержать 12 шестнадцатеричных символов')
+    normalized = ':'.join(raw[index:index + 2] for index in range(0, 12, 2)).upper()
+    if not MAC_RE.fullmatch(normalized):
+        raise ValueError('некорректный MAC-адрес')
+    if normalized == '00:00:00:00:00:00' or int(raw[:2], 16) & 1:
+        raise ValueError('MAC должен быть индивидуальным unicast-адресом')
+    return normalized
+
+
+def validate_computer_name(value: str, kind: str) -> str:
+    name = str(value or '').strip()
+    if kind == 'windows':
+        if len(name) > 15 or not WIN_NAME_RE.fullmatch(name) or name.isdigit():
+            raise ValueError('Имя Windows ПК: 1–15 символов, только A-Z, 0-9 и дефис; не только цифры; дефис не в начале/конце')
+        return name.upper()
+    if len(name) > 63 or not LINUX_NAME_RE.fullmatch(name):
+        raise ValueError('Linux hostname: 1–63 символа, латиница/цифры/дефис/точка, без дефиса или точки по краям')
+    return name.lower()
+
+
+def _run(command: list[str], timeout: int = 5) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+
+
+def package_installed(name: str) -> bool:
+    try:
+        result = _run(['dpkg-query', '-W', '-f=${Status}', name])
+        return result.returncode == 0 and result.stdout.strip() == 'install ok installed'
+    except Exception:
+        return False
+
+
+def unit_state(name: str) -> str:
+    try:
+        result = _run(['systemctl', 'is-active', name])
+        return result.stdout.strip() or 'inactive'
+    except Exception:
+        return 'unknown'
+
+
+def services_snapshot() -> list[dict]:
+    dhcp_installed = package_installed('dnsmasq') or shutil.which('dnsmasq') is not None
+    pxe_installed = package_installed('tftpd-hpa') or shutil.which('in.tftpd') is not None
+    return [
+        {
+            'id': 'dhcp-server',
+            'name': 'DHCP Server',
+            'installed': dhcp_installed,
+            'description': 'DHCP на базе dnsmasq с резервированиями и произвольными DHCP options',
+            'permission_module': 'network',
+            'status': {
+                'state': unit_state('dnsmasq.service') if dhcp_installed else 'not-installed',
+                'config': '/etc/dnsmasq.d/srv-control.conf' if Path('/etc/dnsmasq.d/srv-control.conf').exists() else None,
+            },
+        },
+        {
+            'id': 'pxe-server',
+            'name': 'PXE Server',
+            'installed': pxe_installed,
+            'description': 'TFTP + iPXE + HTTP boot для Windows и Linux',
+            'permission_module': 'pxe',
+            'status': {
+                'state': unit_state('tftpd-hpa.service') if pxe_installed else 'not-installed',
+                'tftp_root': '/srv/tftp' if Path('/srv/tftp').exists() else None,
+                'pxe_root': str(PXE_ROOT) if PXE_ROOT.exists() else None,
+            },
+        },
+    ]
+
+
+def enqueue(action: str, actor: str, client_ip: str | None, payload: dict | None = None) -> dict:
+    allowed = {
+        'service-install-dhcp', 'service-remove-dhcp', 'dhcp-apply',
+        'service-install-pxe14', 'service-remove-pxe14', 'pxe-image-prepare', 'pxe-profile-publish',
+        'network-apply', 'network-confirm', 'backup-retention-apply',
+    }
+    if action not in allowed:
+        raise ValueError('unsupported release 1.4 action')
+    ACTION_DIR.mkdir(parents=True, exist_ok=True)
+    request_id = uuid.uuid4().hex
+    body = {
+        'schema_version': 1,
+        'request_id': request_id,
+        'action': action,

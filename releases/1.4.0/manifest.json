@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "release_id": "1.4.0",
+  "release_version": "1.4.0",
+  "description": "Managed DHCP, deny-by-default Windows/Linux PXE provisioning, backup retention, network modes and folder redirection.",
+  "upgrade_from": ">=1.3.0,<1.4.0",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "b6e066396f48b3b4ec49cdacef6dd90ebf55fd8678d0d704db0c4556282b597d"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "9a15e6e9d91b72584b8c07703108b56e8cd02cac3ac66f5dfb84ebace207096e"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "9240d1e2e7a114821e41a9ce21b28d679360be5ac0e8151d7dd373a7d7da245f"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "12b75c42356c94550661856420bf4a8be8fa242ea333d303d819e9a211e26307"
+    }
+  }
+}

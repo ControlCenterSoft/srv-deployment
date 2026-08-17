@@ -1,0 +1,127 @@
+    return {'ok': True, 'data': item, 'error': None}
+
+
+@router.delete('/api/v1/release14/pxe/configuration-profiles/{config_id}')
+def pxe_configuration_profile_delete(config_id: int, request: Request):
+    _identity(request, 'pxe', 'write', csrf=True)
+    delete_pxe_configuration_profile(config_id)
+    return {'ok': True, 'data': {'deleted': config_id}, 'error': None}
+
+
+@router.post('/api/v1/release14/pxe/{kind}/profiles')
+async def pxe_profile_create(kind: str, request: Request):
+    _, _ = _identity(request, 'pxe', 'write', csrf=True)
+    try:
+        profile = create_pxe_profile(kind, await _json(request))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=409 if 'уже находится' in str(exc) else 400, detail=str(exc)) from exc
+    return {'ok': True, 'data': profile, 'error': None}
+
+
+@router.post('/api/v1/release14/pxe/profiles/{profile_id}/authorize')
+def pxe_profile_authorize(profile_id: int, request: Request):
+    _, identity = _identity(request, 'pxe', 'write', csrf=True)
+    try:
+        profile = authorize_pxe_profile(profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    queued = enqueue('pxe-profile-publish', identity.username, _client_ip(request), {'profile_id': profile_id})
+    return {'ok': True, 'data': {'profile': profile, 'action': queued}, 'error': None}
+
+
+@router.post('/api/v1/release14/pxe/profiles/{profile_id}/revoke')
+def pxe_profile_revoke(profile_id: int, request: Request):
+    _identity(request, 'pxe', 'write', csrf=True)
+    revoke_pxe_profile(profile_id)
+    return {'ok': True, 'data': {'id': profile_id, 'install_authorized': False}, 'error': None}
+
+
+@router.delete('/api/v1/release14/pxe/profiles/{profile_id}')
+def pxe_profile_delete(profile_id: int, request: Request):
+    _identity(request, 'pxe', 'write', csrf=True)
+    delete_pxe_profile(profile_id)
+    return {'ok': True, 'data': {'deleted': profile_id}, 'error': None}
+
+
+@router.get('/pxe/boot.ipxe', response_class=PlainTextResponse)
+def pxe_boot(request: Request, mac: str):
+    try:
+        profile = boot_profile(mac)
+    except ValueError:
+        profile = None
+    if not profile:
+        safe_mac = mac.replace('\r', '').replace('\n', '')[:32]
+        return PlainTextResponse(
+            '#!ipxe\necho SRV PXE Server\necho This computer is not authorized for installation.\n'
+            f'echo MAC: {safe_mac}\nsleep 5\nexit\n', media_type='text/plain'
+        )
+    profile_id = int(profile['id'])
+    boot_file = Path(f'/srv/pxe/profiles/{profile_id}/boot.ipxe')
+    if not boot_file.is_file():
+        return PlainTextResponse('#!ipxe\necho PXE profile is not published. Installation denied.\nsleep 5\nexit\n', media_type='text/plain')
+    return PlainTextResponse(boot_file.read_text(encoding='utf-8'), media_type='text/plain')
+
+
+@router.post('/pxe/report/{profile_id}/{token}/{result}')
+def pxe_report(profile_id: int, token: str, result: str):
+    if result not in {'success', 'failed'} or not report_pxe(profile_id, token, result):
+        raise HTTPException(status_code=404, detail='report token not found')
+    return {'ok': True}
+
+
+@router.get('/api/v1/release14/network')
+def network_get(request: Request):
+    _identity(request, 'network', 'read')
+    data = network_snapshot()
+    data['actions'] = action_history(20)
+    return {'ok': True, 'data': data, 'error': None}
+
+
+@router.post('/api/v1/release14/network/apply')
+async def network_apply(request: Request):
+    _, identity = _identity(request, 'network', 'write', csrf=True)
+    try:
+        config = validate_network_payload(await _json(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    queued = enqueue('network-apply', identity.username, _client_ip(request), {'config': config})
+    return {'ok': True, 'data': queued, 'error': None}
+
+
+@router.post('/api/v1/release14/network/confirm')
+def network_confirm(request: Request):
+    _, identity = _identity(request, 'network', 'write', csrf=True)
+    return {'ok': True, 'data': enqueue('network-confirm', identity.username, _client_ip(request)), 'error': None}
+
+
+@router.get('/api/v1/release14/backups/retention')
+def retention_get(request: Request):
+    require_session(request)
+    return {'ok': True, 'data': backup_retention(), 'error': None}
+
+
+@router.post('/api/v1/release14/backups/retention')
+async def retention_set(request: Request):
+    session = require_session(request)
+    require_csrf(request, session)
+    identity = session.get('identity')
+    if not isinstance(identity, Identity) or not identity.is_admin:
+        raise HTTPException(status_code=403, detail='server administrator permission required')
+    payload = await _json(request)
+    try:
+        max_copies = int(payload.get('max_copies') or 0)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='max_copies должен быть целым числом') from exc
+    if max_copies < 0 or max_copies > 10000:
+        raise HTTPException(status_code=400, detail='max_copies должен быть 0..10000; 0 = без ограничения')
+    queued = enqueue('backup-retention-apply', identity.username, _client_ip(request), {'max_copies': max_copies})
+    return {'ok': True, 'data': queued, 'error': None}
+
+
+@router.get('/api/v1/release14/folder-redirects')
+def redirects_get(request: Request):
+    _identity(request, 'shares', 'read')
+    return {'ok': True, 'data': folder_redirect_snapshot(), 'error': None}
+
+
+@router.post('/api/v1/release14/folder-redirects')

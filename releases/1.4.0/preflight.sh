@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+PROJECT="${1:-/opt/srv-control}"
+RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+fail(){ echo "PREFLIGHT FAIL: $*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || fail "must run as root"
+[[ -d "$PROJECT" && -x "$PROJECT/venv/bin/python" && -x "$PROJECT/venv/bin/alembic" ]] || fail "Control Center runtime missing"
+for c in systemctl runuser psql pg_dump netplan python3 curl; do command -v "$c" >/dev/null || fail "required command missing: $c"; done
+for f in \
+  payload/app/main.py \
+  payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py \
+  payload/templates/shell-1.4.html payload/templates/services-1.4.html payload/templates/dhcp-1.4.html \
+  payload/templates/pxe-1.4.html payload/templates/network-1.4.html payload/templates/shares-1.4.html payload/templates/system-1.4.html \
+  payload/static/js/services-1.4.js payload/static/js/dhcp-1.4.js payload/static/js/pxe-1.4.js payload/static/js/network-1.4.js \
+  payload/static/js/shares-1.4.js payload/static/js/system-1.4.js payload/static/css/release-1.4.css \
+  system/srv-control-release14-agent.service system/srv-control-release14-agent.path \
+  system/srv-control-backup-retention.service system/srv-control-backup-retention.path; do
+  [[ -s "$RELEASE_DIR/$f" ]] || fail "release file missing: $f"
+done
+for part_dir in payload/app/core/release14.parts payload/app/routers/release14.parts system/srv-control-release14-agent.parts; do
+  [[ -d "$RELEASE_DIR/$part_dir" ]] || fail "release part directory missing: $part_dir"
+  compgen -G "$RELEASE_DIR/$part_dir/*.part" >/dev/null || fail "release parts missing: $part_dir"
+done
+CURRENT="$(python3 - <<'PY'
+import json
+from pathlib import Path
+try: print(json.loads(Path('/var/lib/srv-control/release.json').read_text()).get('version',''))
+except Exception: print('')
+PY
+)"
+[[ "$CURRENT" == 1.3.* ]] || fail "release 1.4.0 requires installed 1.3.x; current=${CURRENT:-unknown}"
+runuser -u srv-control -- psql -d srv_control -Atqc 'SELECT 1' | grep -qx 1 || fail "srv_control database unavailable"
+REV="$(runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 "$PROJECT/venv/bin/alembic" -c "$PROJECT/alembic.ini" current 2>/dev/null || true)"
+grep -q '13f0a1300001' <<<"$REV" || fail "database is not at the 1.3 schema head: $REV"
+tmp_core="$(mktemp)"; tmp_router="$(mktemp)"; tmp_agent="$(mktemp)"
+trap 'rm -f "$tmp_core" "$tmp_router" "$tmp_agent"' EXIT
+cat "$RELEASE_DIR"/payload/app/core/release14.parts/*.part > "$tmp_core"
+cat "$RELEASE_DIR"/payload/app/routers/release14.parts/*.part > "$tmp_router"
+cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/*.part > "$tmp_agent"
+"$PROJECT/venv/bin/python" -m py_compile "$RELEASE_DIR/payload/app/main.py" "$tmp_core" "$tmp_router" "$RELEASE_DIR/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py" "$tmp_agent" || fail "Python syntax check failed"
+for f in apply.sh rollback.sh acceptance.sh preflight.sh; do bash -n "$RELEASE_DIR/$f" || fail "shell syntax failed: $f"; done
+FREE_KB="$(df -Pk "$PROJECT" | awk 'NR==2{print $4}')"
+(( FREE_KB >= 1048576 )) || fail "less than 1 GiB free on project filesystem"
+[[ -x /usr/local/libexec/srv-control-backup ]] || fail "backup worker missing"
+echo "PREFLIGHT PASS: current=$CURRENT db=13f0a1300001"

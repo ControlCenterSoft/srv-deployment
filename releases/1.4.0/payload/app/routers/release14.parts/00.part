@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.templating import Jinja2Templates
+
+from app.core.config import settings
+from app.core.rbac import has_permission, require_permission
+from app.core.release14 import (
+    PXE_UPLOAD_DIR,
+    action_history,
+    add_dhcp_option,
+    add_folder_assignment,
+    authorize_pxe_profile,
+    backup_retention,
+    boot_profile,
+    create_image,
+    create_pxe_profile,
+    delete_dhcp_option,
+    delete_folder_assignment,
+    delete_folder_redirect,
+    delete_pxe_profile,
+    delete_pxe_configuration_profile,
+    delete_reservation,
+    dhcp_snapshot,
+    enqueue,
+    folder_redirect_script,
+    folder_redirect_snapshot,
+    network_snapshot,
+    normalize_mac,
+    pxe_snapshot,
+    report_pxe,
+    revoke_pxe_profile,
+    save_dhcp_config,
+    save_folder_redirect,
+    save_pxe_configuration_profile,
+    save_reservation,
+    services_snapshot,
+    update_dhcp_option,
+    validate_network_payload,
+)
+from app.core.system_auth import Identity, require_csrf, require_session
+
+router = APIRouter(tags=['release-1.4'])
+templates = Jinja2Templates(directory='/opt/srv-control/templates')
+UPLOAD_CHUNK = 4 * 1024 * 1024
+MAX_ISO = 64 * 1024 * 1024 * 1024
+
+
+def _identity(request: Request, module: str, access: str = 'read', csrf: bool = False) -> tuple[dict, Identity]:
+    session = require_session(request)
+    if csrf:
+        require_csrf(request, session)
+    identity = session.get('identity')
+    if not isinstance(identity, Identity):
+        raise HTTPException(status_code=401, detail='authentication required')
+    require_permission(identity, module, access)
+    return session, identity
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+async def _json(request: Request) -> dict:
+    try:
+        value = await request.json()
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _render(request: Request, name: str) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name=name,
+        context={'app_name': settings.name, 'canonical_host': settings.canonical_host},
+    )
+
+
+# Shadow selected 1.3 UI routes. The release14 router is included before the legacy UI router.
+@router.get('/', response_class=HTMLResponse)
+def shell14(request: Request):
+    return _render(request, 'shell-1.4.html')
+
+
+@router.get('/ui/module/services', response_class=HTMLResponse)
+def services14_ui(request: Request):
+    return _render(request, 'services-1.4.html')
+
+
+@router.get('/ui/module/dhcp', response_class=HTMLResponse)
+def dhcp14_ui(request: Request):
+    return _render(request, 'dhcp-1.4.html')
+
+
+@router.get('/ui/module/pxe-windows', response_class=HTMLResponse)
+def pxe_windows_ui(request: Request):
+    return _render(request, 'pxe-1.4.html')
+
+
+@router.get('/ui/module/pxe-linux', response_class=HTMLResponse)
+def pxe_linux_ui(request: Request):
+    return _render(request, 'pxe-1.4.html')
+
+
+@router.get('/ui/module/internet', response_class=HTMLResponse)
+def network14_ui(request: Request):
+    return _render(request, 'network-1.4.html')
+
+
+@router.get('/ui/module/shares', response_class=HTMLResponse)
+def shares14_ui(request: Request):
+    return _render(request, 'shares-1.4.html')
+
+
+@router.get('/ui/module/system', response_class=HTMLResponse)
+def system14_ui(request: Request):
+    return _render(request, 'system-1.4.html')
+
+
+@router.get('/api/v1/release14/services')
+def release14_services(request: Request):
+    session = require_session(request)
+    identity = session.get('identity')
+    if not isinstance(identity, Identity):
+        raise HTTPException(status_code=401, detail='authentication required')
+    visible = []
+    for item in services_snapshot():
+        module = str(item.get('permission_module') or '')
+        if identity.is_admin or has_permission(identity, module, 'read'):
+            row = dict(item)
+            row['can_write'] = identity.is_admin or has_permission(identity, module, 'write')
+            visible.append(row)
+    return {'ok': True, 'data': {'items': visible, 'actions': action_history(10)}, 'error': None}
+
+
+@router.post('/api/v1/release14/services/{service_id}/{operation}')
+def release14_service_action(service_id: str, operation: str, request: Request):
+    mapping = {
+        ('dhcp-server', 'install'): ('network', 'service-install-dhcp'),
+        ('dhcp-server', 'remove'): ('network', 'service-remove-dhcp'),
+        ('pxe-server', 'install'): ('pxe', 'service-install-pxe14'),
+        ('pxe-server', 'remove'): ('pxe', 'service-remove-pxe14'),
+    }
+    target = mapping.get((service_id, operation))
+    if not target:
+        raise HTTPException(status_code=404, detail='service operation not found')
+    _, identity = _identity(request, target[0], 'write', csrf=True)
+    return {'ok': True, 'data': enqueue(target[1], identity.username, _client_ip(request)), 'error': None}
+
+
+@router.get('/api/v1/release14/dhcp')
+def dhcp_get(request: Request):
+    _identity(request, 'network', 'read')
+    return {'ok': True, 'data': dhcp_snapshot(), 'error': None}
+
+
+@router.put('/api/v1/release14/dhcp/config')
+async def dhcp_config_put(request: Request):
+    _, identity = _identity(request, 'network', 'write', csrf=True)
+    try:
+        config = save_dhcp_config(await _json(request))

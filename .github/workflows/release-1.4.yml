@@ -1,0 +1,49 @@
+name: SRV Control Center 1.4.0 validation
+
+on:
+  push:
+    branches: [release/1.4.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate scripts and source syntax
+        run: |
+          set -Eeuo pipefail
+          for f in releases/1.4.0/preflight.sh releases/1.4.0/apply.sh releases/1.4.0/acceptance.sh releases/1.4.0/rollback.sh; do bash -n "$f"; done
+          cat releases/1.4.0/payload/app/core/release14.parts/*.part > /tmp/release14-core.py
+          cat releases/1.4.0/payload/app/routers/release14.parts/*.part > /tmp/release14-router.py
+          cat releases/1.4.0/system/srv-control-release14-agent.parts/*.part > /tmp/release14-agent.py
+          python3 -m py_compile \
+            releases/1.4.0/payload/app/main.py \
+            /tmp/release14-core.py \
+            /tmp/release14-router.py \
+            releases/1.4.0/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py \
+            /tmp/release14-agent.py
+          for f in releases/1.4.0/payload/static/js/*.js; do node --check "$f"; done
+      - name: Validate release manifest wiring
+        run: |
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          cfg=json.loads(Path('deployment.json').read_text())
+          assert cfg['release_id']=='1.4.0',cfg
+          assert cfg['release_path']=='releases/1.4.0',cfg
+          manifest=json.loads(Path(cfg['manifest']).read_text())
+          assert manifest['release_id']=='1.4.0',manifest
+          for name,item in manifest['scripts'].items():
+              path=Path(cfg['release_path'])/item['path']
+              assert path.is_file(),(name,path)
+              assert hashlib.sha256(path.read_bytes()).hexdigest()==item['sha256'],(name,path)
+          text=Path('releases/1.4.0/acceptance.sh').read_text()
+          assert 'not authorized' in text
+          assert 'unknown PXE device received installation payload' in text
+          PY
