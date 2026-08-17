@@ -1,33 +1,30 @@
 (() => {
     "use strict";
 
-    const identityBadge = document.getElementById("identityBadge");
-    const rows = document.getElementById("grantRows");
-    const message = document.getElementById("grantMessage");
-    const pamState = document.getElementById("pamState");
-    const domainState = document.getElementById("domainState");
-    const ssoState = document.getElementById("ssoState");
-    const localUserCount = document.getElementById("localUserCount");
-    const domainUserCount = document.getElementById("domainUserCount");
-    const groupCount = document.getElementById("groupCount");
-    const groupSubjectCount = document.getElementById("groupSubjectCount");
-    const userSubjectCount = document.getElementById("userSubjectCount");
+    const byId = (id) => document.getElementById(id);
+    const identityBadge = byId("identityBadge");
+    const rows = byId("grantRows");
+    const message = byId("grantMessage");
+    const pamState = byId("pamState");
+    const domainState = byId("domainState");
+    const ssoState = byId("ssoState");
+    const localUserCount = byId("localUserCount");
+    const domainUserCount = byId("domainUserCount");
+    const groupCount = byId("groupCount");
+    const groupSubjectCount = byId("groupSubjectCount");
+    const userSubjectCount = byId("userSubjectCount");
     const subjectGrid = document.querySelector(".subject-grid");
 
     const controls = {
         group: {
-            form: document.getElementById("groupGrantForm"),
-            source: document.getElementById("groupGrantSource"),
-            subject: document.getElementById("groupGrantSubject"),
-            module: document.getElementById("groupGrantModule"),
-            access: document.getElementById("groupGrantAccess"),
+            form: byId("groupGrantForm"), source: byId("groupGrantSource"),
+            subject: byId("groupGrantSubject"), module: byId("groupGrantModule"),
+            access: byId("groupGrantAccess"),
         },
         user: {
-            form: document.getElementById("userGrantForm"),
-            source: document.getElementById("userGrantSource"),
-            subject: document.getElementById("userGrantSubject"),
-            module: document.getElementById("userGrantModule"),
-            access: document.getElementById("userGrantAccess"),
+            form: byId("userGrantForm"), source: byId("userGrantSource"),
+            subject: byId("userGrantSubject"), module: byId("userGrantModule"),
+            access: byId("userGrantAccess"),
         },
     };
 
@@ -55,6 +52,11 @@
         return value === "user" ? "Пользователь" : "Группа";
     }
 
+    function accessLabel(value) {
+        if (value === "admin") return "Полный администратор";
+        return value === "write" ? "Запись" : "Чтение";
+    }
+
     function addBadge(cell, label, className) {
         const badge = document.createElement("span");
         badge.className = className;
@@ -64,18 +66,27 @@
 
     function renderModuleOptions() {
         for (const control of Object.values(controls)) {
-            control.module.textContent = "";
+            control.module.replaceChildren();
             for (const [key, label] of Object.entries(modules)) {
                 const option = document.createElement("option");
                 option.value = key;
                 option.textContent = label;
                 control.module.appendChild(option);
             }
+            syncAccessMode(control);
         }
     }
 
+    function syncAccessMode(control) {
+        const fullAdmin = control.access.value === "admin";
+        control.module.disabled = fullAdmin;
+        control.module.title = fullAdmin
+            ? "Для полного администратора право действует на весь Control Center."
+            : "";
+    }
+
     function renderGrantRows(grants) {
-        rows.textContent = "";
+        rows.replaceChildren();
         if (!grants.length) {
             const tr = document.createElement("tr");
             const td = document.createElement("td");
@@ -93,31 +104,28 @@
             const subjectName = grant.subject_name || grant.group_name;
 
             const typeCell = document.createElement("td");
-            addBadge(
-                typeCell,
-                subjectTypeLabel(subjectType),
-                `subject-type-badge ${subjectType === "user" ? "user" : "group"}`,
-            );
+            addBadge(typeCell, subjectTypeLabel(subjectType), `subject-type-badge ${subjectType}`);
             tr.appendChild(typeCell);
 
             const sourceCell = document.createElement("td");
             addBadge(sourceCell, sourceLabel(grant.source), "source-badge");
             tr.appendChild(sourceCell);
 
-            for (const value of [
-                subjectName,
-                modules[grant.module] || grant.module,
-            ]) {
-                const td = document.createElement("td");
-                td.textContent = text(value);
-                tr.appendChild(td);
-            }
+            const subjectCell = document.createElement("td");
+            subjectCell.textContent = text(subjectName);
+            tr.appendChild(subjectCell);
+
+            const moduleCell = document.createElement("td");
+            moduleCell.textContent = grant.access === "admin"
+                ? "Все модули"
+                : (modules[grant.module] || grant.module || "—");
+            tr.appendChild(moduleCell);
 
             const accessCell = document.createElement("td");
             addBadge(
                 accessCell,
-                grant.access === "write" ? "Запись" : "Чтение",
-                `access-badge ${grant.access === "write" ? "write" : "read"}`,
+                accessLabel(grant.access),
+                `access-badge ${grant.access === "admin" ? "write" : grant.access}`,
             );
             tr.appendChild(accessCell);
 
@@ -137,9 +145,9 @@
         }
     }
 
-    function subjectsFor(type, selectedSource) {
+    function subjectsFor(type, source) {
         const values = type === "group" ? directoryGroups : directoryUsers;
-        return values.filter((item) => selectedSource === "any" || item.source === selectedSource);
+        return values.filter((item) => source === "any" || item.source === source);
     }
 
     function renderSubjectOptions(type) {
@@ -147,7 +155,7 @@
         const selectedSource = control.source.value;
         const values = subjectsFor(type, selectedSource);
         const previous = control.subject.value;
-        control.subject.textContent = "";
+        control.subject.replaceChildren();
 
         const placeholder = document.createElement("option");
         placeholder.value = "";
@@ -159,20 +167,17 @@
         for (const item of values) {
             const option = document.createElement("option");
             option.value = type === "group" ? item.name : item.username;
-            const name = option.value;
             option.textContent = selectedSource === "any"
-                ? `${name} · ${sourceLabel(item.source)}`
-                : name;
+                ? `${option.value} · ${sourceLabel(item.source)}`
+                : option.value;
             if (option.value === previous) {
                 option.selected = true;
                 placeholder.selected = false;
             }
             control.subject.appendChild(option);
         }
-
         control.subject.disabled = values.length === 0;
         control.form.querySelector("button[type='submit']").disabled = values.length === 0;
-
         if (type === "group") groupSubjectCount.textContent = String(values.length);
         else userSubjectCount.textContent = String(values.length);
     }
@@ -181,14 +186,12 @@
         const authentication = directory.authentication || {};
         directoryUsers = Array.isArray(directory.users) ? directory.users : [];
         directoryGroups = Array.isArray(directory.groups) ? directory.groups : [];
-
         pamState.textContent = authentication.pam ? "Активна" : "Нет";
         domainState.textContent = authentication.domain ? "Подключён" : "Нет";
         ssoState.textContent = authentication.sso ? "Активно" : "Нет";
         localUserCount.textContent = directoryUsers.filter((item) => item.source === "local").length;
         domainUserCount.textContent = directoryUsers.filter((item) => item.source === "domain").length;
         groupCount.textContent = directoryGroups.length;
-
         renderSubjectOptions("group");
         renderSubjectOptions("user");
     }
@@ -208,15 +211,12 @@
             fetch("/api/v1/access/grants", {cache: "no-store"}),
             fetch("/api/v1/access/directory", {cache: "no-store"}),
         ]);
-
         if (grantResponse.status === 403 || directoryResponse.status === 403) {
             subjectGrid.hidden = true;
-            setMessage("Управление правами доступно администратору сервера.", true);
+            setMessage("Управление правами доступно полному администратору.", true);
             return;
         }
-        if (!grantResponse.ok || !directoryResponse.ok) {
-            throw new Error("failed to load access data");
-        }
+        if (!grantResponse.ok || !directoryResponse.ok) throw new Error("failed to load access data");
 
         const grants = await grantResponse.json();
         const directory = await directoryResponse.json();
@@ -249,41 +249,37 @@
             setMessage(type === "group" ? "Выберите группу." : "Выберите пользователя.", true);
             return;
         }
-
         const response = await fetch("/api/v1/access/grants", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-CSRF-Token": csrfToken,
-            },
+            headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken},
             body: JSON.stringify({
                 subject_type: type,
                 subject_name: subjectName,
                 source: control.source.value,
-                module: control.module.value,
+                module: control.access.value === "admin" ? "*" : control.module.value,
                 access: control.access.value,
             }),
         });
-
         if (!response.ok) {
             let detail = "";
             try {
                 const payload = await response.json();
                 detail = payload.detail || payload.error || "";
-            } catch (_) {
-                detail = "";
-            }
-            setMessage(`Не удалось сохранить назначение прав.${detail ? ` ${detail}` : ""}`, true);
+            } catch (_) {}
+            setMessage(`Не удалось сохранить назначение.${detail ? ` ${detail}` : ""}`, true);
             return;
         }
-
         await load();
-        setMessage(type === "group" ? "Права группы сохранены." : "Права пользователя сохранены.");
+        setMessage(control.access.value === "admin"
+            ? "Роль полного администратора сохранена."
+            : (type === "group" ? "Права группы сохранены." : "Права пользователя сохранены."));
     }
 
     for (const type of ["group", "user"]) {
-        controls[type].source.addEventListener("change", () => renderSubjectOptions(type));
-        controls[type].form.addEventListener("submit", (event) => submitGrant(type, event));
+        const control = controls[type];
+        control.source.addEventListener("change", () => renderSubjectOptions(type));
+        control.access.addEventListener("change", () => syncAccessMode(control));
+        control.form.addEventListener("submit", (event) => submitGrant(type, event));
     }
 
     load().catch(() => setMessage("Не удалось загрузить права пользователей.", true));
