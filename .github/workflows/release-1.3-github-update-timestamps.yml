@@ -1,11 +1,10 @@
-name: SRV Control Center 1.3.0 GitHub update timestamps
+name: SRV Control Center 1.3.1 GitHub update timestamps
 
 on:
   pull_request:
     paths:
-      - 'releases/1.3.0/system/srvcc-configure-auto-updates'
-      - 'releases/1.3.0/payload/templates/system.html'
-      - 'releases/1.3.0/payload/static/js/github-update-timestamps.js'
+      - 'deployment.json'
+      - 'releases/1.3.1/**'
       - '.github/workflows/release-1.3-github-update-timestamps.yml'
   workflow_dispatch:
 
@@ -18,11 +17,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate 1.3.1 release descriptor and scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          cfg=json.loads(Path('deployment.json').read_text(encoding='utf-8'))
+          assert cfg['release_id']=='1.3.1',cfg
+          assert cfg['release_path']=='releases/1.3.1',cfg
+          root=Path(cfg['release_path'])
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          assert manifest['release_id']==manifest['release_version']=='1.3.1',manifest
+          for stage,item in manifest['scripts'].items():
+              path=root/item['path']
+              digest=hashlib.sha256(path.read_bytes()).hexdigest()
+              assert digest==item['sha256'],(stage,digest,item['sha256'])
+              assert Path(cfg[stage])==path,(stage,cfg[stage],str(path))
+          PY
+          bash -n releases/1.3.1/{preflight-1.3.1,apply-1.3.1,acceptance-1.3.1,rollback-1.3.1}.sh
+          test "$(git rev-parse HEAD:releases/1.3.0)" = "$(git rev-parse origin/main:releases/1.3.0)"
+
       - name: Validate shell and embedded updater syntax
         shell: bash
         run: |
           set -euo pipefail
-          cfg='releases/1.3.0/system/srvcc-configure-auto-updates'
+          cfg='releases/1.3.1/system/srvcc-configure-auto-updates'
           bash -n "$cfg"
           awk '
             /^cat > "\$AGENT_BIN" <<'\''AGENT'\''$/ {inside=1; next}
@@ -36,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cfg='releases/1.3.0/system/srvcc-configure-auto-updates'
+          cfg='releases/1.3.1/system/srvcc-configure-auto-updates'
           grep -F '"schema_version":3' "$cfg"
           grep -F '"last_update_attempt_at":last_attempt or None' "$cfg"
           grep -F '"last_successful_update_at":last_success or None' "$cfg"
@@ -49,11 +70,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          template='releases/1.3.0/payload/templates/system.html'
-          js='releases/1.3.0/payload/static/js/github-update-timestamps.js'
+          template='releases/1.3.1/payload/templates/system.html'
+          js='releases/1.3.1/payload/static/js/github-update-timestamps.js'
           grep -F 'id="githubLastUpdateAttempt"' "$template"
           grep -F 'id="githubLastSuccessfulUpdate"' "$template"
-          grep -F '/static/js/github-update-timestamps.js' "$template"
+          grep -F 'github-update-timestamps.js?v=1.3.1-ui1' "$template"
           grep -F 'status.last_update_attempt_at' "$js"
           grep -F 'status.last_successful_update_at' "$js"
           node --check "$js"
