@@ -1,0 +1,59 @@
+name: SRV Control Center 1.3.0 GitHub update timestamps
+
+on:
+  pull_request:
+    paths:
+      - 'releases/1.3.0/system/srvcc-configure-auto-updates'
+      - 'releases/1.3.0/payload/templates/system.html'
+      - 'releases/1.3.0/payload/static/js/github-update-timestamps.js'
+      - '.github/workflows/release-1.3-github-update-timestamps.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  timestamps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell and embedded updater syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          cfg='releases/1.3.0/system/srvcc-configure-auto-updates'
+          bash -n "$cfg"
+          awk '
+            /^cat > "\$AGENT_BIN" <<'\''AGENT'\''$/ {inside=1; next}
+            inside && /^AGENT$/ {exit}
+            inside {print}
+          ' "$cfg" > /tmp/srvcc-github-agent
+          test -s /tmp/srvcc-github-agent
+          bash -n /tmp/srvcc-github-agent
+
+      - name: Validate timestamp persistence contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cfg='releases/1.3.0/system/srvcc-configure-auto-updates'
+          grep -F '"schema_version":3' "$cfg"
+          grep -F '"last_update_attempt_at":last_attempt or None' "$cfg"
+          grep -F '"last_successful_update_at":last_success or None' "$cfg"
+          grep -F 'UPDATE_ATTEMPT_AT="$(date -u' "$cfg"
+          grep -F "write_status updating 'product update attempt started'" "$cfg"
+          grep -F 'if result == "updated":' "$cfg"
+          grep -F 'last_success=now' "$cfg"
+
+      - name: Validate UI contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          template='releases/1.3.0/payload/templates/system.html'
+          js='releases/1.3.0/payload/static/js/github-update-timestamps.js'
+          grep -F 'id="githubLastUpdateAttempt"' "$template"
+          grep -F 'id="githubLastSuccessfulUpdate"' "$template"
+          grep -F '/static/js/github-update-timestamps.js' "$template"
+          grep -F 'status.last_update_attempt_at' "$js"
+          grep -F 'status.last_successful_update_at' "$js"
+          node --check "$js"
