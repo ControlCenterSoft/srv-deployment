@@ -186,17 +186,72 @@ body {
     display: grid;
     grid-template-columns:
         9px
-        auto
-        minmax(0, 1fr);
+        minmax(62px, 0.75fr)
+        minmax(108px, 1.25fr);
+    grid-template-areas:
+        "session session session"
+        "health backend release";
     align-items: center;
     column-gap: 10px;
+    row-gap: 10px;
 
-    min-height: 62px;
+    min-height: 92px;
 
     margin-top: 10px;
-    padding: 13px 9px 2px 9px;
+    padding: 13px 9px 4px 9px;
 
     border-top: 1px solid var(--border);
+}
+
+.session-user {
+    grid-area: session;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+
+    min-width: 0;
+}
+
+.session-user strong {
+    flex: 1 1 auto;
+    min-width: 0;
+
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#logoutButton {
+    flex: 0 0 auto;
+
+    appearance: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--muted);
+
+    padding: 6px 8px;
+
+    font: inherit;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+
+    cursor: pointer;
+
+    transition:
+        background 130ms ease,
+        border-color 130ms ease,
+        color 130ms ease;
+}
+
+#logoutButton:hover {
+    border-color: rgba(65, 149, 217, 0.45);
+    background: var(--accent-soft);
+    color: var(--text);
 }
 
 .backend-state,
@@ -206,7 +261,12 @@ body {
     min-width: 0;
 }
 
+.backend-state {
+    grid-area: backend;
+}
+
 .release-meta {
+    grid-area: release;
     align-items: flex-end;
     text-align: right;
 }
@@ -235,6 +295,8 @@ body {
 }
 
 .health-dot {
+    grid-area: health;
+
     width: 9px;
     height: 9px;
 
@@ -276,7 +338,8 @@ body {
     .brand-text,
     .backend-state,
     .release-meta,
-    .nav-item span:last-child {
+    .nav-item span:last-child,
+    .session-user strong {
         display: none;
     }
 
@@ -291,6 +354,26 @@ body {
 
     .nav-footer {
         display: flex;
+        flex-direction: column;
         justify-content: center;
+        gap: 10px;
+        min-height: 82px;
+        padding-left: 0;
+        padding-right: 0;
+    }
+
+    .session-user {
+        display: flex;
+        justify-content: center;
+        order: 2;
+    }
+
+    #logoutButton {
+        padding: 6px 5px;
+        font-size: 9px;
+    }
+
+    .health-dot {
+        order: 1;
     }
 }
