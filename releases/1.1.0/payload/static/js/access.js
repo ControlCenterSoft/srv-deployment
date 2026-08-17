@@ -5,13 +5,22 @@
     const form = document.getElementById("grantForm");
     const source = document.getElementById("grantSource");
     const group = document.getElementById("grantGroup");
+    const groupList = document.getElementById("availableGroups");
     const moduleSelect = document.getElementById("grantModule");
     const access = document.getElementById("grantAccess");
     const rows = document.getElementById("grantRows");
+    const userRows = document.getElementById("userRows");
     const message = document.getElementById("grantMessage");
+    const pamState = document.getElementById("pamState");
+    const domainState = document.getElementById("domainState");
+    const ssoState = document.getElementById("ssoState");
+    const localUserCount = document.getElementById("localUserCount");
+    const domainUserCount = document.getElementById("domainUserCount");
+    const groupCount = document.getElementById("groupCount");
 
     let csrfToken = "";
     let modules = {};
+    let directoryGroups = [];
 
     function text(value) {
         return value == null ? "—" : String(value);
@@ -20,6 +29,12 @@
     function setMessage(value, error = false) {
         message.textContent = value || "";
         message.classList.toggle("error", error);
+    }
+
+    function sourceLabel(value) {
+        if (value === "domain") return "Домен";
+        if (value === "local") return "Локально";
+        return "Любой";
     }
 
     function renderModules() {
@@ -32,12 +47,12 @@
         }
     }
 
-    function renderRows(grants) {
+    function renderGrantRows(grants) {
         rows.textContent = "";
         for (const grant of grants) {
             const tr = document.createElement("tr");
             const values = [
-                grant.source === "domain" ? "Домен" : grant.source === "local" ? "Локально" : "Любой",
+                sourceLabel(grant.source),
                 grant.group_name,
                 modules[grant.module] || grant.module,
                 grant.access === "write" ? "Запись" : "Чтение",
@@ -60,6 +75,50 @@
         }
     }
 
+    function renderUsers(users) {
+        userRows.textContent = "";
+        for (const user of users) {
+            const tr = document.createElement("tr");
+            for (const value of [
+                user.username,
+                sourceLabel(user.source),
+                user.uid,
+                user.is_admin ? "Полный доступ" : "По ролям групп",
+            ]) {
+                const td = document.createElement("td");
+                td.textContent = text(value);
+                tr.appendChild(td);
+            }
+            userRows.appendChild(tr);
+        }
+    }
+
+    function renderDirectory(directory) {
+        const authentication = directory.authentication || {};
+        const users = directory.users || [];
+        directoryGroups = directory.groups || [];
+        pamState.textContent = authentication.pam ? "Активна" : "Нет";
+        domainState.textContent = authentication.domain ? "Подключён" : "Нет";
+        ssoState.textContent = authentication.sso ? "Активно" : "Нет";
+        localUserCount.textContent = users.filter((item) => item.source === "local").length;
+        domainUserCount.textContent = users.filter((item) => item.source === "domain").length;
+        groupCount.textContent = directoryGroups.length;
+        renderUsers(users);
+        renderGroupOptions();
+    }
+
+    function renderGroupOptions() {
+        groupList.textContent = "";
+        const selectedSource = source.value;
+        for (const item of directoryGroups) {
+            if (selectedSource !== "any" && item.source !== selectedSource) continue;
+            const option = document.createElement("option");
+            option.value = item.name;
+            option.label = sourceLabel(item.source);
+            groupList.appendChild(option);
+        }
+    }
+
     async function load() {
         const statusResponse = await fetch("/api/v1/auth/status", {cache: "no-store"});
         if (!statusResponse.ok) {
@@ -71,19 +130,24 @@
         csrfToken = (status.data && status.data.csrf_token) || "";
         identityBadge.textContent = identity ? identity.username : "—";
 
-        const response = await fetch("/api/v1/access/grants", {cache: "no-store"});
-        if (response.status === 403) {
+        const [grantResponse, directoryResponse] = await Promise.all([
+            fetch("/api/v1/access/grants", {cache: "no-store"}),
+            fetch("/api/v1/access/directory", {cache: "no-store"}),
+        ]);
+        if (grantResponse.status === 403 || directoryResponse.status === 403) {
             form.hidden = true;
             setMessage("Управление правами доступно администратору сервера.", true);
             return;
         }
-        if (!response.ok) {
-            throw new Error("failed to load grants");
+        if (!grantResponse.ok || !directoryResponse.ok) {
+            throw new Error("failed to load access data");
         }
-        const payload = await response.json();
-        modules = payload.data.modules || {};
+        const grants = await grantResponse.json();
+        const directory = await directoryResponse.json();
+        modules = grants.data.modules || {};
         renderModules();
-        renderRows(payload.data.grants || []);
+        renderGrantRows(grants.data.grants || []);
+        renderDirectory(directory.data || {});
     }
 
     async function removeGrant(id) {
@@ -99,6 +163,8 @@
         await load();
         setMessage("Назначение удалено.");
     }
+
+    source.addEventListener("change", renderGroupOptions);
 
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
