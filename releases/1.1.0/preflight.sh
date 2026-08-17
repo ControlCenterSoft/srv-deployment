@@ -53,6 +53,9 @@ do
     [[ -s "$file" ]] || fail "required release file missing: $file"
 done
 
+[[ ! -e "$PAYLOAD/templates/placeholder.html" ]] \
+    || fail "placeholder template must not be shipped in release 1.1.0"
+
 for unit in \
     srv-control-system-agent.service \
     srv-control-system-agent.path \
@@ -98,7 +101,8 @@ if grep -R -n -E 'change_password|password_hash|admin-bootstrap' "$PAYLOAD/app" 
     fail "private Control Center credential implementation remains in application payload"
 fi
 
-if grep -R -n -E 'пока не работает|будет реализовано|недоступно потому' \
+if grep -R -n -i -E \
+    'пока не работает|будет реализовано|недоступно потому|заблокировано в|следующего этапа|future release|future release only|будет включено' \
     "$PAYLOAD/templates" "$PAYLOAD/static" >/dev/null 2>&1
 then
     fail "temporary placeholder text found in user interface"
