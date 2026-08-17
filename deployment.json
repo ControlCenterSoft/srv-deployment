@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0007-network-planner",
-  "release_id": "0007-network-planner",
-  "release_path": "releases/0007-network-planner",
-  "manifest": "releases/0007-network-planner/manifest.json",
-  "preflight": "releases/0007-network-planner/preflight.sh",
-  "apply": "releases/0007-network-planner/apply.sh",
-  "acceptance": "releases/0007-network-planner/acceptance.sh",
-  "rollback": "releases/0007-network-planner/rollback.sh",
-  "description": "Add safe dry-run WAN/LAN planning while preserving read-only network diagnostics."
+  "release": "0008-system-security-admin",
+  "release_id": "0008-system-security-admin",
+  "release_path": "releases/0008-system-security-admin",
+  "manifest": "releases/0008-system-security-admin/manifest.json",
+  "preflight": "releases/0008-system-security-admin/preflight.sh",
+  "apply": "releases/0008-system-security-admin/apply.sh",
+  "acceptance": "releases/0008-system-security-admin/acceptance.sh",
+  "rollback": "releases/0008-system-security-admin/rollback.sh",
+  "description": "Secure privileged system administration, OS update controls, reboot and managed AdGuard VPN service."
 }

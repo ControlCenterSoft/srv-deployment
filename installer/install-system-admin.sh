@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 027
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SYSTEM_DIR="${REPO_ROOT}/installer/system"
+STATE_DIR="/var/lib/srv-control"
+APP_USER="srv-control"
+APP_GROUP="srv-control"
+
+fail() {
+    printf 'SYSTEM ADMIN INSTALL FAIL: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ "$(id -u)" -eq 0 ]] || fail "must run as root"
+[[ -x "$SYSTEM_DIR/srv-control-system-agent" ]] || fail "system agent payload missing"
+[[ -x "$SYSTEM_DIR/srv-control-os-update" ]] || fail "OS update worker payload missing"
+
+install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" \
+    "$STATE_DIR" \
+    "$STATE_DIR/system-actions" \
+    "$STATE_DIR/system-results"
+
+install -d -m 0755 /usr/local/libexec
+
+install -m 0755 -o root -g root \
+    "$SYSTEM_DIR/srv-control-system-agent" \
+    /usr/local/libexec/srv-control-system-agent
+
+install -m 0755 -o root -g root \
+    "$SYSTEM_DIR/srv-control-os-update" \
+    /usr/local/libexec/srv-control-os-update
+
+install -m 0644 -o root -g root \
+    "$SYSTEM_DIR/srv-control-system-agent.service" \
+    /etc/systemd/system/srv-control-system-agent.service
+
+install -m 0644 -o root -g root \
+    "$SYSTEM_DIR/srv-control-system-agent.path" \
+    /etc/systemd/system/srv-control-system-agent.path
+
+install -m 0644 -o root -g root \
+    "$SYSTEM_DIR/srv-control-os-update.service" \
+    /etc/systemd/system/srv-control-os-update.service
+
+if [[ ! -s "$STATE_DIR/session.key" ]]; then
+    python3 - "$STATE_DIR/session.key" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(os.urandom(32).hex() + "\n", encoding="ascii")
+PY
+    chown "$APP_USER:$APP_GROUP" "$STATE_DIR/session.key"
+    chmod 0600 "$STATE_DIR/session.key"
+fi
+
+if [[ ! -s "$STATE_DIR/auth.json" ]]; then
+    python3 - \
+        "$STATE_DIR/auth.json" \
+        "$STATE_DIR/admin-bootstrap.txt" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import secrets
+import string
+import sys
+
+auth_path = pathlib.Path(sys.argv[1])
+bootstrap_path = pathlib.Path(sys.argv[2])
+
+alphabet = string.ascii_letters + string.digits + "-_"
+password = "".join(secrets.choice(alphabet) for _ in range(24))
+salt = os.urandom(16)
+iterations = 310000
+password_hash = hashlib.pbkdf2_hmac(
+    "sha256",
+    password.encode("utf-8"),
+    salt,
+    iterations,
+).hex()
+
+auth = {
+    "schema_version": 1,
+    "username": "admin",
+    "salt": salt.hex(),
+    "password_hash": password_hash,
+    "iterations": iterations,
+    "must_change": True,
+}
+auth_path.write_text(
+    json.dumps(auth, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+bootstrap_path.write_text(
+    "SRV Control Center initial administrator\n"
+    "username=admin\n"
+    f"password={password}\n"
+    "The web UI requires changing this password before privileged actions.\n",
+    encoding="utf-8",
+)
+PY
+    chown "$APP_USER:$APP_GROUP" "$STATE_DIR/auth.json"
+    chmod 0640 "$STATE_DIR/auth.json"
+    chown root:root "$STATE_DIR/admin-bootstrap.txt"
+    chmod 0600 "$STATE_DIR/admin-bootstrap.txt"
+fi
+
+systemctl daemon-reload
+systemctl enable --now srv-control-system-agent.path
+
+printf 'SYSTEM ADMIN INSTALL PASS\n'

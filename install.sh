@@ -68,3 +68,7 @@ printf 'INSTALL BOOTSTRAP: release=%s version=%s\n' \
     "$release_version"
 
 bash "$runner" "$@"
+
+if [[ -x "$repo_root/installer/install-system-admin.sh" ]]; then
+    bash "$repo_root/installer/install-system-admin.sh"
+fi

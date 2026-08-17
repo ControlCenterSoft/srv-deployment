@@ -2,171 +2,160 @@
 <html lang="ru">
 <head>
     <meta charset="utf-8">
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1"
-    >
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Система — SRV Control Center</title>
-
-    <link
-        rel="stylesheet"
-        href="/static/css/module.css"
-    >
+    <link rel="stylesheet" href="/static/css/module.css">
+    <link rel="stylesheet" href="/static/css/system-admin.css">
 </head>
-
 <body>
-
 <div class="page">
-
     <header class="page-header">
-
         <div>
             <h1>Система</h1>
-            <p>
-                Состояние SRV, ресурсы, хранилище,
-                службы и канал обновлений.
-            </p>
+            <p>Состояние SRV, обновления ОС, системные действия и управляемые сервисы.</p>
         </div>
-
         <div class="live-status">
-            <span
-                class="live-dot"
-                id="systemLiveDot"
-            ></span>
-            <span id="systemLiveText">
-                Проверка...
-            </span>
+            <span class="live-dot" id="systemLiveDot"></span>
+            <span id="systemLiveText">Проверка...</span>
         </div>
-
     </header>
 
-
     <section class="summary-grid">
+        <div class="panel">
+            <div class="panel-title">Сервер</div>
+            <div class="stat-row"><span>Имя</span><strong id="systemHostname">—</strong></div>
+            <div class="stat-row"><span>ОС</span><strong id="systemOs">—</strong></div>
+            <div class="stat-row"><span>Ядро</span><strong id="systemKernel">—</strong></div>
+            <div class="stat-row"><span>Архитектура</span><strong id="systemArchitecture">—</strong></div>
+            <div class="stat-row"><span>Uptime</span><strong id="systemUptime">—</strong></div>
+        </div>
 
         <div class="panel">
-            <div class="panel-title">
-                Сервер
-            </div>
-
-            <div class="stat-row">
-                <span>Имя</span>
-                <strong id="systemHostname">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>ОС</span>
-                <strong id="systemOs">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Ядро</span>
-                <strong id="systemKernel">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Архитектура</span>
-                <strong id="systemArchitecture">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Uptime</span>
-                <strong id="systemUptime">—</strong>
-            </div>
+            <div class="panel-title">Ресурсы</div>
+            <div class="stat-row"><span>CPU</span><strong id="systemCpu">—</strong></div>
+            <div class="stat-row"><span>Load average</span><strong id="systemLoad">—</strong></div>
+            <div class="stat-row"><span>RAM</span><strong id="systemMemory">—</strong></div>
+            <div class="stat-row"><span>Релиз</span><strong id="systemRelease">—</strong></div>
+            <div class="stat-row"><span>GitHub sync</span><strong id="systemGitHubSync">—</strong></div>
         </div>
-
-
-        <div class="panel">
-            <div class="panel-title">
-                Ресурсы
-            </div>
-
-            <div class="stat-row">
-                <span>CPU</span>
-                <strong id="systemCpu">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Load average</span>
-                <strong id="systemLoad">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>RAM</span>
-                <strong id="systemMemory">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Релиз</span>
-                <strong id="systemRelease">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>GitHub sync</span>
-                <strong id="systemGitHubSync">—</strong>
-            </div>
-        </div>
-
     </section>
-
 
     <section class="panel">
-        <div class="panel-title">
-            Канал обновлений
+        <div class="panel-title">Администратор</div>
+        <div id="adminLoggedOut">
+            <p class="panel-note">
+                Системные изменения защищены административной сессией и CSRF-проверкой.
+                Read-only мониторинг остаётся доступным без входа.
+            </p>
+            <form class="admin-login" id="adminLoginForm">
+                <label class="form-field">
+                    <span>Логин</span>
+                    <input id="adminUsername" autocomplete="username" value="admin">
+                </label>
+                <label class="form-field">
+                    <span>Пароль</span>
+                    <input id="adminPassword" type="password" autocomplete="current-password">
+                </label>
+                <button class="action-button" type="submit">Войти</button>
+            </form>
         </div>
 
-        <div class="stat-row">
-            <span>Состояние deploy</span>
-            <strong id="deploymentResult">—</strong>
-        </div>
+        <div id="adminLoggedIn" hidden>
+            <div class="stat-row"><span>Пользователь</span><strong id="adminCurrentUser">—</strong></div>
+            <div class="stat-row"><span>Состояние</span><strong id="adminPasswordState">—</strong></div>
 
-        <div class="stat-row">
-            <span>Стадия</span>
-            <strong id="deploymentStage">—</strong>
-        </div>
+            <form class="password-form" id="adminPasswordForm" hidden>
+                <label class="form-field">
+                    <span>Текущий пароль</span>
+                    <input id="adminCurrentPassword" type="password" autocomplete="current-password">
+                </label>
+                <label class="form-field">
+                    <span>Новый пароль</span>
+                    <input id="adminNewPassword" type="password" autocomplete="new-password" minlength="12">
+                </label>
+                <button class="action-button" type="submit">Сменить пароль</button>
+            </form>
 
-        <div class="stat-row">
-            <span>Commit</span>
-            <strong id="deploymentCommit">—</strong>
+            <div class="form-actions">
+                <button class="secondary-button" id="adminLogoutButton" type="button">Выйти</button>
+            </div>
         </div>
-
-        <div class="stat-row">
-            <span>Завершено</span>
-            <strong id="deploymentFinished">—</strong>
-        </div>
-
-        <div class="stat-row">
-            <span>Healthcheck</span>
-            <strong id="deploymentHealthchecked">—</strong>
-        </div>
+        <div class="action-message" id="adminMessage"></div>
     </section>
-
 
     <section class="panel">
-        <div class="panel-title">
-            Хранилище
+        <div class="panel-title">Управление сервером</div>
+        <div class="system-action-grid">
+            <div class="system-action-card danger-card">
+                <div>
+                    <strong>Перезагрузка сервера</strong>
+                    <span>Корректно перезагрузить SRV через systemd.</span>
+                </div>
+                <button class="danger-button privileged-action" id="rebootButton" type="button" disabled>
+                    Перезагрузить
+                </button>
+            </div>
         </div>
-
-        <div
-            class="storage-list"
-            id="systemStorage"
-        ></div>
     </section>
-
 
     <section class="panel">
-        <div class="panel-title">
-            Ключевые службы
+        <div class="panel-title">Обновление ОС и пакетов</div>
+        <p class="panel-note">
+            Обновления выполняются внутри текущего релиза Debian/Ubuntu: обновление индексов
+            и установленных пакетов. Переход на новый major release автоматически не запускается.
+        </p>
+        <div class="stat-row">
+            <span>Автоматические обновления</span>
+            <strong id="autoUpdatesState">—</strong>
         </div>
-
-        <div
-            class="service-grid"
-            id="systemServices"
-        ></div>
+        <div class="stat-row">
+            <span>Ручное обновление</span>
+            <strong id="manualUpdateState">—</strong>
+        </div>
+        <div class="stat-row">
+            <span>Последний результат</span>
+            <strong id="manualUpdateResult">—</strong>
+        </div>
+        <div class="form-actions">
+            <button class="action-button privileged-action" id="enableAutoUpdatesButton" type="button" disabled>
+                Включить автообновление
+            </button>
+            <button class="secondary-button privileged-action" id="disableAutoUpdatesButton" type="button" disabled>
+                Выключить автообновление
+            </button>
+            <button class="action-button privileged-action" id="manualUpdateButton" type="button" disabled>
+                Обновить ОС и пакеты сейчас
+            </button>
+        </div>
+        <div class="action-message" id="updateMessage"></div>
     </section>
 
+    <section class="panel">
+        <div class="panel-title">Управляемые сервисы</div>
+        <div id="managedServices"></div>
+        <div class="action-message" id="serviceMessage"></div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-title">Канал обновлений Control Center</div>
+        <div class="stat-row"><span>Состояние deploy</span><strong id="deploymentResult">—</strong></div>
+        <div class="stat-row"><span>Стадия</span><strong id="deploymentStage">—</strong></div>
+        <div class="stat-row"><span>Commit</span><strong id="deploymentCommit">—</strong></div>
+        <div class="stat-row"><span>Завершено</span><strong id="deploymentFinished">—</strong></div>
+        <div class="stat-row"><span>Healthcheck</span><strong id="deploymentHealthchecked">—</strong></div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-title">Хранилище</div>
+        <div class="storage-list" id="systemStorage"></div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-title">Ключевые службы</div>
+        <div class="service-grid" id="systemServices"></div>
+    </section>
 </div>
 
 <script src="/static/js/system.js"></script>
-
 </body>
 </html>
