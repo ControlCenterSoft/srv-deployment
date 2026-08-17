@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0010-adguard-security",
-  "release_id": "0010-adguard-security",
-  "release_path": "releases/0010-adguard-security",
-  "manifest": "releases/0010-adguard-security/manifest.json",
-  "preflight": "releases/0010-adguard-security/preflight.sh",
-  "apply": "releases/0010-adguard-security/apply.sh",
-  "acceptance": "releases/0010-adguard-security/acceptance.sh",
-  "rollback": "releases/0010-adguard-security/rollback.sh",
-  "description": "Harden administrator sessions and add safe monitored AdGuard VPN SOCKS controls."
+  "release": "1.0.0",
+  "release_id": "1.0.0",
+  "release_path": "releases/1.0.0",
+  "manifest": "releases/1.0.0/manifest.json",
+  "preflight": "releases/1.0.0/preflight.sh",
+  "apply": "releases/1.0.0/apply.sh",
+  "acceptance": "releases/1.0.0/acceptance.sh",
+  "rollback": "releases/1.0.0/rollback.sh",
+  "description": "Consolidated SRV Control Center 1.0.0 baseline with all production functionality through 0.10.0 and repaired release-fingerprint updates."
 }

@@ -72,3 +72,15 @@ bash "$runner" "$@"
 if [[ -x "$repo_root/installer/install-system-admin.sh" ]]; then
     bash "$repo_root/installer/install-system-admin.sh"
 fi
+
+if [[ -x "$repo_root/bootstrap/configure-auto-updates.sh" ]]; then
+    bash "$repo_root/bootstrap/configure-auto-updates.sh" \
+        --repo "$REPO_URL" \
+        --mode automatic \
+        --interval-minutes 5 \
+        --no-check-now
+fi
+
+printf 'INSTALL BOOTSTRAP PASS: release=%s version=%s\n' \
+    "$release_id" \
+    "$release_version"

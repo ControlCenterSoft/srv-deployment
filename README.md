@@ -1,12 +1,110 @@
-# srv-deployment
+# SRV Control Center — Release 1.0.0
 
-Репозиторий управляемых релизов **SRV Control Center**.
+`filosoff31/srv-deployment` — production-репозиторий SRV Control Center.
 
-Основная ветка `main` — источник обновлений для сервера. Ветка `server-state` используется рабочим сервером для публикации снимков фактического состояния.
+С версии **1.0.0** ранее накопленные инкрементальные сборки `0001`–`0010` объединены в один самодостаточный baseline-релиз. Старые каталоги релизов удаляются из актуального дерева `main`; их история при этом остаётся доступна в Git history.
 
-## Быстрая установка на чистую машину
+## Что входит в 1.0.0
 
-Для Debian/Ubuntu с systemd:
+Release 1.0.0 объединяет все функции, которые были фактически доведены до production до консолидации:
+
+- базовый FastAPI Control Center и PostgreSQL;
+- dashboard и health API;
+- отображение версии релиза и времени GitHub-синхронизации;
+- раздел «Система» с CPU, RAM, дисками, службами и deployment status;
+- сетевой обзор и диагностика;
+- безопасный read-only планировщик WAN/LAN;
+- административная сессия, CSRF-защита и журнал системных действий;
+- перезагрузка сервера через отдельный privileged system agent;
+- ручное и автоматическое обновление ОС/пакетов;
+- установка/удаление AdGuard VPN CLI и безопасный мониторинг его состояния;
+- graceful rotation двух Uvicorn workers без остановки listener;
+- preflight / apply / acceptance / rollback для product update;
+- clean-install bootstrap для новой Debian/Ubuntu-машины;
+- GitHub → SRV deployment и SRV → GitHub `server-state`.
+
+Релиз 1.0.0 **не включает ещё не реализованные функции из последующего плана**. Они будут развиваться уже поверх стабильной ветки 1.x.
+
+## Новая структура релизов
+
+Активный production-релиз определяется только `deployment.json`.
+
+```text
+deployment.json
+releases/
+└── 1.0.0/
+    ├── manifest.json
+    ├── preflight.sh
+    ├── apply.sh
+    ├── acceptance.sh
+    ├── rollback.sh
+    ├── payload/
+    └── system/
+```
+
+`releases/1.0.0/payload` содержит полный снимок приложения, а `releases/1.0.0/system` — системные helper/unit-файлы. Это устраняет зависимость от последовательного применения старых релизов.
+
+Production-сервер читает **только `main`**. Ветка `server-state` предназначена только для публикации фактического состояния SRV.
+
+## Автоматическое обновление для 0.8.0 и новее
+
+Для уже установленного SRV Control Center версии **0.8.0 или новее** используется:
+
+```bash
+curl -fL -o /tmp/srvcc-configure-auto-updates.sh \
+  https://raw.githubusercontent.com/filosoff31/srv-deployment/main/bootstrap/configure-auto-updates.sh
+
+sudo bash /tmp/srvcc-configure-auto-updates.sh \
+  --mode automatic \
+  --interval-minutes 5 \
+  --check-now
+```
+
+Ручной режим:
+
+```bash
+sudo /usr/local/sbin/srvcc-configure-auto-updates \
+  --mode manual \
+  --no-check-now
+
+sudo systemctl start srvcc-github-agent.service
+```
+
+Изменить период проверки:
+
+```bash
+sudo /usr/local/sbin/srvcc-configure-auto-updates \
+  --mode automatic \
+  --interval-minutes 15
+```
+
+Допустимый интервал: **1–1440 минут**.
+
+### Как работает новый updater
+
+Старый updater считал любой новый commit в `main` новым product-релизом. Поэтому изменение README или deployment helper могло повторно применить уже установленный релиз.
+
+Начиная с 1.0.0 updater разделяет:
+
+- последний увиденный commit репозитория;
+- commit последнего реально применённого product-релиза;
+- fingerprint активного релиза.
+
+Fingerprint строится из `deployment.json`, `release_id`, `release_version` и Git tree активного каталога релиза. Если изменился только README, документация или deployment-инфраструктура, но активный release tree не изменился, приложение **не переустанавливается и не перезапускается**.
+
+Для установок 0.8.0–0.10.x предусмотрена миграция: если установленный релиз и active release tree в GitHub совпадают, новый updater принимает текущее состояние без повторного apply.
+
+Состояние updater хранится в:
+
+```text
+/var/lib/srvcc-agent/last-deployed-sha
+/var/lib/srvcc-agent/last-seen-sha
+/var/lib/srvcc-agent/last-release-fingerprint
+/var/lib/srv-control/github-update-config.json
+/var/lib/srv-control/github-update-status.json
+```
+
+## Чистая установка
 
 ```bash
 curl -fL -o install.sh \
@@ -15,98 +113,22 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Полная инструкция: [`docs/INSTALL.md`](docs/INSTALL.md).
+После clean install bootstrap дополнительно устанавливает актуальный release-fingerprint updater.
 
-Инсталлятор не перезаписывает существующий `/opt/srv-control`: для уже установленного Control Center используется штатный GitHub deployment-канал.
+## Правила для следующих релизов
 
-## Правило журнала релизов
+Начиная с 1.0.0:
 
-Этот раздел ведётся в режиме **append-only**: описание нового релиза добавляется ниже предыдущих записей. Старые записи не удаляются и не заменяются. Если к старому релизу требуется уточнение, оно добавляется отдельным дополнением к его записи.
+1. новый product-релиз получает самостоятельный каталог `releases/<version>`;
+2. каталог должен содержать полный payload, необходимый для установки текущей версии;
+3. `deployment.json` меняется только при активации нового product-релиза;
+4. документационные и инфраструктурные commit'ы не должны приводить к повторному apply неизменившегося product-релиза;
+5. все product-релизы проходят `preflight → apply → acceptance`, а при ошибке — rollback;
+6. production update не считается успешным, пока healthcheck не подтверждён.
 
-## Журнал релизов
+## Дополнительная документация
 
-### 0001-channel-acceptance — проверка deployment-канала
-
-Первый безопасный технический релиз. Проверял путь `GitHub main → SRV`, preflight/apply/acceptance/rollback и создание контрольного marker-файла, не изменяя рабочее приложение Control Center.
-
-### 0.2.0 / 0002-ui-release-metadata — метаданные релиза
-
-В нижней части навигации рядом со статусом Backend добавлены версия Control Center и дата последней успешно применённой синхронизации с GitHub. Backend начал публиковать `release.version`, `release.git_sha` и `release.synced_at` через `/api/v1/health`.
-
-### 0.3.0 / 0003-system-overview — рабочий раздел «Система»
-
-Заглушка «Система» заменена read-only панелью состояния сервера. Добавлены hostname, ОС, ядро, архитектура, uptime, CPU/load, RAM, хранилища, ключевые systemd-службы, версия релиза и GitHub sync.
-
-После выпуска выявлена ошибка инфраструктуры обновлений: старый `deploy/healthcheck.sh` продолжал ожидать marker тестового `channel-probe`. Сам релиз успешно применялся, но внешний healthcheck возвращал ошибку, поэтому агент не записывал `last-deployed-sha` и повторял deployment на каждом цикле таймера. Это вызывало повторные перезапуски `srv-control.service`. Исправление добавило современный healthcheck и защиту от повторного apply/restart уже успешно принятого commit.
-
-### 0.4.0 / 0004-deployment-reliability — устойчивые обновления
-
-Релиз переводит Uvicorn на встроенный process manager с двумя workers и добавляет механизм graceful worker rotation через `SIGHUP` для следующих code-only обновлений. Uvicorn перезапускает workers по одному, поэтому listener остаётся доступным во время загрузки нового кода.
-
-Также раздел «Система» получает блок «Канал обновлений»: результат deployment, стадия, commit, время завершения и последнего healthcheck. Generic deployment healthcheck больше не зависит от старого `DEPLOYMENT_STATUS.txt`, а orchestrator защищён от restart-loop: если exact commit/release уже прошёл acceptance, повторная попытка выполняет только revalidation без нового apply/restart.
-
-В этот же этап добавлен clean-install installer из GitHub и инструкция по установке.
-
-### 0.5.0 / 0005-network-overview — обзор сети «Интернет / VPN»
-
-Заглушка «Интернет / VPN» заменена рабочим read-only модулем сети. Backend публикует `/api/v1/network/overview` с интерфейсами, IPv4/IPv6, MAC, MTU, скоростью, счётчиками RX/TX, DNS, IPv4-маршрутом по умолчанию, WAN-кандидатом, LAN-кандидатами и обнаруженными VPN-интерфейсами.
-
-Релиз намеренно **не меняет сетевую конфигурацию**: он формирует безопасный фактический baseline перед включением транзакционного управления WAN DHCP/PPPoE/L2TP, LAN, Wi‑Fi, DHCP/DNS, VLAN и firewall. Обновление приложения выполняется graceful worker rotation из 0.4.0 без жёсткого `systemctl restart`.
-
-Clean-install bootstrap теперь определяет активные `release_id` и `release_version` из `deployment.json` и manifest, поэтому новая чистая установка получает актуальную версию без ручного обновления номера релиза внутри installer.
-
-### 0.6.0 / 0006-network-diagnostics — диагностика соединения
-
-В рабочий модуль «Интернет / VPN» добавлена read-only диагностика: наличие IPv4-маршрута по умолчанию, DNS-разрешение `github.com` и исходящее HTTPS-соединение с GitHub. Для каждой проверки показываются результат, задержка и диагностическая деталь; общий результат обновляется отдельно от 5-секундного мониторинга интерфейсов.
-
-Диагностика специально проверяет GitHub как критическую внешнюю зависимость deployment-канала. Она ничего не записывает в сетевую конфигурацию и применяется через graceful rotation workers. Clean-install payload синхронизирован с релизом 0.6.0, а номер актуального релиза по-прежнему определяется bootstrap автоматически из `deployment.json` и manifest.
-
-### 0.7.0 / 0007-network-planner — безопасный планировщик WAN / LAN
-
-В модуль «Интернет / VPN» добавлен dry-run планировщик будущей сетевой конфигурации. Он позволяет выбрать режим WAN (`DHCP`, `PPPoE`, `L2TP`), WAN/LAN-интерфейсы, LAN IPv4/CIDR, DHCP-пул и DNS, после чего backend выполняет строгую валидацию и строит последовательность будущего применения и rollback.
-
-Релиз **не применяет сетевые изменения** и не принимает PPPoE/L2TP пароли. API `/api/v1/network/plan` только вычисляет план: проверяет наличие интерфейсов, разделение WAN/LAN, private LAN CIDR, границы DHCP-пула, исключение адреса SRV из пула, DNS и риск смены текущего default-route интерфейса. `/api/v1/network/capabilities` явно публикует `apply_enabled=false` и `secrets_enabled=false`.
-
-Существующая диагностика соединения из 0.6.0 сохранена и продолжает работать. В сетевой snapshot добавлены netmask/prefix IPv4, чтобы UI мог безопасно подставлять фактическую LAN-сеть. Реальное применение будет отдельным релизом после появления аутентификации администратора, защищённого хранения секретов и watchdog rollback с подтверждением сохранения доступа к Control Center.
-
-### 0.8.0 / 0008-system-security-admin — безопасность и управление системой
-
-В Control Center добавлен отдельный контур административной безопасности для привилегированных операций: HMAC-подписанные HttpOnly/SameSite сессии, CSRF-токены, обязательная смена первичного случайного пароля администратора и запись запросов административных действий в существующий журнал `audit_events`. Read-only мониторинг остаётся доступным без авторизации, но перезагрузка, обновления ОС и управление сервисами заблокированы до входа и смены первичного пароля.
-
-На странице «Система» добавлена безопасная перезагрузка SRV, настройка автоматического обновления пакетов через `unattended-upgrades`, ручной `apt-get update` + `apt-get upgrade --with-new-pkgs` и отображение состояния/результата задания. Автоматический переход на новый major release ОС намеренно не выполняется.
-
-Также появился первый управляемый внешний сервис — **AdGuard VPN CLI**: Control Center может поставить или удалить официальный release-клиент. После установки вход в аккаунт и VPN-конфигурация выполняются отдельным последующим этапом; сам релиз 0.8.0 не хранит учётные данные AdGuard.
-
-Привилегированные команды не выполняются web-процессом от root. Приложение пишет строго типизированную заявку в очередь `/var/lib/srv-control/system-actions`, после чего root-owned systemd path/service запускает allowlist-agent. Это ограничивает привилегированный контур фиксированными действиями и сохраняет основной `srv-control.service` непривилегированным.
-
-Clean-install bootstrap синхронизирован: после развёртывания он устанавливает privileged agent и создаёт случайный первичный пароль `admin`, который можно получить локально командой `sudo cat /var/lib/srv-control/admin-bootstrap.txt`; перед первой привилегированной операцией UI потребует заменить его паролем длиной не менее 12 символов.
-
-### 0.9.0 / 0009-system-action-history — история системных заданий
-
-Страница «Система» теперь показывает очередь привилегированных действий и последние результаты root-agent: тип операции, пользователя, идентификатор запроса, время, итог и безопасно ограниченную диагностическую деталь. История читается из уже существующих файлов `/var/lib/srv-control/system-results`, поэтому релиз не добавляет новых root-команд и не расширяет привилегии web-процесса.
-
-Backend `/api/v1/system/admin` дополнен структурой `actions` с `queued_count`, текущей очередью и последними 12 результатами. Это делает ручное обновление ОС, переключение автообновлений и установку/удаление AdGuard VPN наблюдаемыми из UI вместо прежнего состояния «поставлено в очередь».
-
-Релиз остаётся code-only: clean-install payload синхронизирован, а обновление рабочего SRV выполняется graceful worker rotation с проверкой неизменности PID Uvicorn manager. Rollback возвращает четыре изменённых файла приложения и предыдущие release metadata.
-
-### 0.10.0 / 0010-adguard-security — усиление входа и управление AdGuard VPN
-
-Административный контур усилен: после пяти неудачных входов для пары логин/IP включается временная 15-минутная блокировка; сессии получают generation, поэтому смена пароля отзывает ранее выданные cookies. При работе через HTTPS cookie автоматически получает `Secure`. История системных заданий из 0.9 больше не раскрывается неавторизованным запросам.
-
-AdGuard VPN получает отдельный root-owned монитор и действия «Статус», «Подключить SOCKS», «Отключить» и «Обновить клиент». Подключение из Control Center принудительно использует SOCKS на `127.0.0.1:1080` и не предназначено для смены системного default route. Первичная авторизация AdGuard выполняется локально командой `sudo adguardvpn-cli login`; Control Center не принимает и не хранит учётные данные AdGuard.
-
-Clean-install installer устанавливает тот же monitor/timer и login guard, поэтому свежая установка получает тот же защищённый административный контур.
-
-## Deployment safety
-
-Каждый product-релиз содержит:
-
-- `preflight.sh`;
-- `apply.sh`;
-- `acceptance.sh`;
-- `rollback.sh`;
-- `manifest.json` с SHA256 исполняемых release-скриптов.
-
-Общий orchestrator проверяет manifest и контрольные суммы до применения релиза. Для code-only релизов после 0.4.0 следует использовать `deploy/reload-srv-control.sh` вместо жёсткого `systemctl restart`.
-
-Подробности расследования restart-loop: [`docs/DEPLOYMENT-RELIABILITY.md`](docs/DEPLOYMENT-RELIABILITY.md).
+- `docs/INSTALL.md` — установка на чистую машину;
+- `docs/DEPLOYMENT-RELIABILITY.md` — защита deployment-канала;
+- `docs/SYSTEM-ADMIN.md` — системные административные функции;
+- `docs/AUTO-UPDATES.md` — updater для 0.8.0 и новее.

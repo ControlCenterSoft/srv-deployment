@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "release_id": "1.0.0",
+  "release_version": "1.0.0",
+  "description": "Consolidated SRV Control Center baseline containing all product functionality delivered through 0.10.0 plus the repaired release-fingerprint GitHub updater for installed versions 0.8.0 and newer.",
+  "upgrade_from": ">=0.8.0",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "4fe5e88c4a456a9250c7cede0d39a115e325c09d5b4f659977b616e2e9490756"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "ff333d970b4dd858edab27c21db23d3f16729f38f1ca4d35f0d290fdabf52e56"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "55684c628c0094979e8e1ae61636b350112964d669b779f10478ad9737a3684b"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "b3e1b8c958f548bf4933584ba27762ca286c40b44dc62d65293ca148d1449e6b"
+    }
+  }
+}
