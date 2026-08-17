@@ -95,15 +95,37 @@ def filesystem_info(path: str | None) -> dict[str, Any]:
     option_set = {item.strip().casefold() for item in options.split(",")}
     backend = None
     supported = False
+    reason = None
     if fstype == "xfs" and option_set.intersection({"pquota", "prjquota"}):
-        backend, supported = "xfs-project", shutil.which("xfs_quota") is not None
+        backend = "xfs-project"
+        supported = shutil.which("xfs_quota") is not None
+        if not supported:
+            reason = "xfs_quota не установлен"
     elif fstype in {"ext4", "ext3"} and "prjquota" in option_set:
         backend = "ext-project"
-        supported = shutil.which("setquota") is not None
+        supported = shutil.which("setquota") is not None and shutil.which("chattr") is not None
+        if not supported:
+            reason = "setquota/chattr не установлены"
     elif fstype == "btrfs":
-        backend, supported = "btrfs-qgroup", shutil.which("btrfs") is not None
+        backend = "btrfs-qgroup"
+        supported = shutil.which("btrfs") is not None
+        if supported and exists:
+            probe = subprocess.run(
+                ["btrfs", "subvolume", "show", str(target)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            supported = probe.returncode == 0
+            if not supported:
+                reason = "корень шары не является Btrfs subvolume"
     elif fstype == "zfs":
-        backend, supported = "zfs-dataset", shutil.which("zfs") is not None
+        backend = "zfs-dataset"
+        supported = shutil.which("zfs") is not None and mountpoint is not None and Path(mountpoint) == target
+        if not supported:
+            reason = "квота ZFS доступна только для корня dataset"
+    else:
+        reason = "файловая система/точка монтирования не поддерживает directory quota"
     return {
         "exists": exists,
         "fstype": fstype or None,
@@ -112,6 +134,7 @@ def filesystem_info(path: str | None) -> dict[str, Any]:
         "source": source,
         "quota_supported": supported,
         "quota_backend": backend,
+        "quota_reason": reason,
     }
 
 
@@ -124,8 +147,6 @@ def bool_value(value: str | None, default: bool) -> bool:
 def list_value(value: str | None) -> list[str]:
     if not value:
         return []
-    # Samba's generated `testparm -s` output is already normalized; commas are
-    # separators for the managed lists emitted by Control Center.
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
@@ -151,6 +172,7 @@ def main() -> int:
                 "write_list": list_value(values.get("write list")),
                 "system": name.casefold() in SYSTEM_SHARES,
                 "managed": managed is not None,
+                "subjects": managed.get("subjects", []) if managed else [],
                 "quota": managed.get("quota") if managed else None,
                 "filesystem": filesystem_info(path),
             }
