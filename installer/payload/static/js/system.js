@@ -9,6 +9,15 @@
         csrf_token: null,
     };
 
+    const ACTION_LABELS = {
+        reboot: "Перезагрузка сервера",
+        "os-update": "Обновление ОС и пакетов",
+        "auto-updates-enable": "Включение автообновлений",
+        "auto-updates-disable": "Отключение автообновлений",
+        "service-install-adguard-vpn": "Установка AdGuard VPN",
+        "service-remove-adguard-vpn": "Удаление AdGuard VPN",
+    };
+
     function setText(id, value) {
         const element = byId(id);
         if (element) element.textContent = value;
@@ -59,6 +68,7 @@
             year: "numeric",
             hour: "2-digit",
             minute: "2-digit",
+            second: "2-digit",
         });
     }
 
@@ -67,6 +77,13 @@
         if (value === "failed") return "Ошибка";
         if (value === "skipped") return "Пропущено";
         return value || "—";
+    }
+
+    function formatActionResult(value) {
+        if (value === "success") return "Успешно";
+        if (value === "failed") return "Ошибка";
+        if (value === "running") return "Выполняется";
+        return value || "Неизвестно";
     }
 
     function shortSha(value) {
@@ -208,26 +225,79 @@
         }
     }
 
+    function renderActionHistory(actions) {
+        const container = byId("systemActionHistory");
+        if (!container) return;
+        container.replaceChildren();
+
+        const queued = actions && Array.isArray(actions.queued) ? actions.queued : [];
+        const history = actions && Array.isArray(actions.history) ? actions.history : [];
+        setText("systemActionQueueCount", String(actions && actions.queued_count || queued.length || 0));
+
+        for (const item of queued) {
+            const row = document.createElement("div");
+            row.className = "action-history-row queued";
+            const main = document.createElement("div");
+            main.className = "action-history-main";
+            const title = document.createElement("strong");
+            title.textContent = ACTION_LABELS[item.action] || item.action || "Системное действие";
+            const meta = document.createElement("span");
+            meta.textContent = `${item.actor || "—"} · ${String(item.request_id || "").slice(0, 12)}`;
+            main.append(title, meta);
+            const badge = document.createElement("span");
+            badge.className = "action-badge queued";
+            badge.textContent = "В очереди";
+            row.append(main, badge);
+            container.append(row);
+        }
+
+        for (const item of history) {
+            const row = document.createElement("div");
+            row.className = `action-history-row ${item.result || "unknown"}`;
+            const main = document.createElement("div");
+            main.className = "action-history-main";
+            const title = document.createElement("strong");
+            title.textContent = ACTION_LABELS[item.action] || item.action || "Системное действие";
+            const meta = document.createElement("span");
+            meta.textContent = `${item.actor || "—"} · ${formatTime(item.finished_at || item.started_at)} · ${String(item.request_id || "").slice(0, 12)}`;
+            main.append(title, meta);
+            if (item.detail) {
+                const detail = document.createElement("span");
+                detail.className = "action-history-detail";
+                detail.textContent = String(item.detail).slice(0, 420);
+                main.append(detail);
+            }
+            const badge = document.createElement("span");
+            badge.className = `action-badge ${item.result || "unknown"}`;
+            badge.textContent = formatActionResult(item.result);
+            row.append(main, badge);
+            container.append(row);
+        }
+
+        if (!queued.length && !history.length) {
+            const empty = document.createElement("div");
+            empty.className = "action-history-empty";
+            empty.textContent = "Системных заданий пока нет.";
+            container.append(empty);
+        }
+    }
+
     function updateAdminStatus(data) {
         const auth = data.auth || {};
         applyAdminState(auth);
 
         const automatic = data.automatic_updates || {};
-        setText(
-            "autoUpdatesState",
-            automatic.enabled ? "Включены" : "Выключены"
-        );
+        setText("autoUpdatesState", automatic.enabled ? "Включены" : "Выключены");
 
         const manual = data.manual_update || {};
         setText("manualUpdateState", manual.unit_state || "—");
         const updateStatus = manual.status || {};
         let result = updateStatus.result || updateStatus.stage || "—";
-        if (updateStatus.finished_at) {
-            result += ` · ${formatTime(updateStatus.finished_at)}`;
-        }
+        if (updateStatus.finished_at) result += ` · ${formatTime(updateStatus.finished_at)}`;
         setText("manualUpdateResult", result);
 
         renderManagedServices(data.services || []);
+        renderActionHistory(data.actions || {});
     }
 
     function updateLive(ok) {
@@ -254,9 +324,7 @@
             if (
                 !metricsResponse.ok || !healthResponse.ok || !adminResponse.ok
                 || !metricsPayload.ok || !healthPayload.ok || !adminPayload.ok
-            ) {
-                throw new Error("system status request failed");
-            }
+            ) throw new Error("system status request failed");
 
             const data = metricsPayload.data || {};
             const system = data.system || {};
@@ -318,7 +386,7 @@
                 `Операция поставлена в очередь: ${payload.data.request_id}`,
                 "ok"
             );
-            window.setTimeout(refresh, 1500);
+            window.setTimeout(refresh, 1200);
         } catch (error) {
             setMessage(messageId, String(error.message || error), "error");
         }
