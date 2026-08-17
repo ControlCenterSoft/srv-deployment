@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tarfile
+import tempfile
+from datetime import datetime, timezone
+import urllib.request
+import uuid
+
+
+BACKUP_DIR = Path("/var/lib/srv-control/backups")
+RELEASE_META = Path("/var/lib/srv-control/release.json")
+MANAGED_PATHS = (
+    Path("/etc/srv-control"),
+    Path("/var/lib/srv-control/github-update-config.json"),
+    Path("/var/lib/srv-control/os-update-config.json"),
+    Path("/var/lib/srv-control/backup-config.json"),
+    Path("/etc/pam.d/srv-control"),
+    Path("/etc/nginx/sites-available/srv-control"),
+    Path("/etc/apt/apt.conf.d/20auto-upgrades"),
+    Path("/etc/systemd/system/srvcc-github-agent.service"),
+    Path("/etc/systemd/system/srvcc-github-agent.timer"),
+    Path("/etc/systemd/system/srv-control-os-auto-update.service"),
+    Path("/etc/systemd/system/srv-control-os-auto-update.timer"),
+    Path("/etc/systemd/system/srv-control-system-agent.service"),
+    Path("/etc/systemd/system/srv-control-system-agent.path"),
+    Path("/etc/systemd/system/srv-control-os-update.service"),
+    Path("/etc/systemd/system/srv-control-backup.service"),
+    Path("/etc/systemd/system/srv-control-backup.timer"),
+    Path("/usr/local/sbin/srvcc-github-agent"),
+    Path("/usr/local/sbin/srvcc-configure-auto-updates"),
+    Path("/usr/local/libexec/srv-control-system-agent"),
+    Path("/usr/local/libexec/srv-control-os-update"),
+)
+
+
+def run(command: list[str], *, timeout: int = 300) -> str:
+    result = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive", "HOME": "/root"},
+    )
+    output = result.stdout or ""
+    if result.returncode != 0:
+        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}\n{output[-4000:]}")
+    return output
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def release_version() -> str:
+    try:
+        payload = json.loads(RELEASE_META.read_text(encoding="utf-8"))
+        return str(payload.get("version") or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_managed(stage: Path) -> None:
+    files_root = stage / "files"
+    for source in MANAGED_PATHS:
+        if not source.exists():
+            continue
+        target = files_root / source.relative_to("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target, symlinks=True)
+        else:
+            shutil.copy2(source, target, follow_symlinks=False)
+
+
+def create_backup(actor: str, reason: str) -> dict:
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(BACKUP_DIR, 0o750)
+    backup_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:10]
+    archive = BACKUP_DIR / f"{backup_id}.tar.gz"
+    metadata_path = BACKUP_DIR / f"{backup_id}.json"
+
+    with tempfile.TemporaryDirectory(prefix="srvcc-backup.", dir="/var/tmp") as tmp:
+        stage = Path(tmp) / "content"
+        stage.mkdir()
+        run([
+            "runuser", "-u", "postgres", "--",
+            "pg_dump", "-Fc", "-d", "srv_control", "-f", str(stage / "srv_control.dump"),
+        ])
+        _copy_managed(stage)
+        (stage / "backup-info.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "id": backup_id,
+                    "created_at": now(),
+                    "release": release_version(),
+                    "actor": actor,
+                    "reason": reason,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(stage, arcname="content", recursive=True)
+
+    os.chmod(archive, 0o640)
+    metadata = {
+        "schema_version": 1,
+        "id": backup_id,
+        "created_at": now(),
+        "release": release_version(),
+        "actor": actor,
+        "reason": reason,
+        "archive": archive.name,
+        "size": archive.stat().st_size,
+        "sha256": sha256(archive),
+    }
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(metadata_path, 0o640)
+    return metadata
+
+
+def load_metadata(backup_id: str) -> tuple[dict, Path]:
+    if not backup_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in backup_id):
+        raise RuntimeError("invalid backup id")
+    metadata_path = BACKUP_DIR / f"{backup_id}.json"
+    if not metadata_path.is_file():
+        raise RuntimeError("backup metadata not found")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    archive = BACKUP_DIR / str(metadata.get("archive") or "")
+    if not archive.is_file():
+        raise RuntimeError("backup archive not found")
+    if sha256(archive) != metadata.get("sha256"):
+        raise RuntimeError("backup checksum mismatch")
+    return metadata, archive
+
+
+def delete_backup(backup_id: str) -> dict:
+    metadata, archive = load_metadata(backup_id)
+    archive.unlink()
+    (BACKUP_DIR / f"{backup_id}.json").unlink(missing_ok=True)
+    return {"deleted": backup_id, "size": metadata.get("size")}
+
+
+def _safe_extract(archive: Path, target: Path) -> None:
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            resolved = (target / member.name).resolve()
+            if target.resolve() not in resolved.parents and resolved != target.resolve():
+                raise RuntimeError("unsafe path in backup archive")
+        tar.extractall(target)
+
+
+def _restore_files(content: Path) -> None:
+    files_root = content / "files"
+    for destination in MANAGED_PATHS:
+        source = files_root / destination.relative_to("/")
+        if not source.exists():
+            continue
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        elif destination.exists() or destination.is_symlink():
+            destination.unlink()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination, symlinks=True)
+        else:
+            shutil.copy2(source, destination, follow_symlinks=False)
+
+
+def _restore_raw(backup_id: str) -> dict:
+    metadata, archive = load_metadata(backup_id)
+    with tempfile.TemporaryDirectory(prefix="srvcc-restore.", dir="/var/tmp") as tmp:
+        root = Path(tmp)
+        _safe_extract(archive, root)
+        content = root / "content"
+        dump = content / "srv_control.dump"
+        if not dump.is_file():
+            raise RuntimeError("database dump missing from backup")
+
+        run(["systemctl", "stop", "srv-control.service"], timeout=30)
+        try:
+            run([
+                "runuser", "-u", "postgres", "--", "psql", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
+                "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='srv_control' AND pid <> pg_backend_pid();",
+            ])
+            run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "srv_control"])
+            run(["runuser", "-u", "postgres", "--", "createdb", "--owner=srv-control", "srv_control"])
+            run([
+                "runuser", "-u", "postgres", "--", "pg_restore", "--no-owner", "--role=srv-control",
+                "-d", "srv_control", str(dump),
+            ], timeout=600)
+            _restore_files(content)
+            run(["systemctl", "daemon-reload"])
+            if Path("/etc/nginx/sites-available/srv-control").is_file():
+                run(["nginx", "-t"])
+                subprocess.run(["systemctl", "reload", "nginx.service"], check=False)
+        finally:
+            run(["systemctl", "start", "srv-control.service"], timeout=30)
+
+    with urllib.request.urlopen("http://127.0.0.1:8876/api/v1/health", timeout=10) as response:
+        health = json.load(response)
+    if health.get("ok") is not True:
+        raise RuntimeError("Control Center healthcheck failed after restore")
+    return {"restored": backup_id, "backup_release": metadata.get("release")}
+
+
+def restore_backup(backup_id: str, actor: str) -> dict:
+    safety = create_backup(actor, "pre-restore")
+    try:
+        result = _restore_raw(backup_id)
+        result["safety_backup"] = safety["id"]
+        return result
+    except Exception as original:
+        try:
+            _restore_raw(str(safety["id"]))
+        except Exception as rollback_error:
+            raise RuntimeError(f"restore failed: {original}; safety rollback failed: {rollback_error}") from original
+        raise RuntimeError(f"restore failed and safety backup was restored: {original}") from original
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    create = sub.add_parser("create")
+    create.add_argument("--actor", required=True)
+    create.add_argument("--reason", default="manual")
+
+    delete = sub.add_parser("delete")
+    delete.add_argument("backup_id")
+
+    restore = sub.add_parser("restore")
+    restore.add_argument("backup_id")
+    restore.add_argument("--actor", required=True)
+
+    args = parser.parse_args()
+    if args.command == "create":
+        result = create_backup(args.actor, args.reason)
+    elif args.command == "delete":
+        result = delete_backup(args.backup_id)
+    else:
+        result = restore_backup(args.backup_id, args.actor)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
