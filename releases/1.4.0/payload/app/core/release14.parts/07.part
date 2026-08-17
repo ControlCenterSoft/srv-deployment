@@ -4,7 +4,7 @@ def peek_boot_profile(mac_value: str) -> dict | None:
     """Return an authorized PXE profile without consuming one-time authorization.
 
     The boot authorization is deliberately consumed only after iPXE has fetched
-    every boot-critical profile artifact.  This prevents a transient HTTP/TFTP
+    every boot-critical profile artifact. This prevents a transient HTTP/TFTP
     or publication failure from burning the one-time install permission.
     """
     mac = normalize_mac(mac_value)
@@ -116,3 +116,100 @@ def update_dhcp_option(option_id: int, payload: dict) -> None:
         'UPDATE dhcp_options SET code=:code,value=:value,enabled=:enabled,updated_at=now() WHERE id=:id',
         {'id': option_id, 'code': code, 'value': value, 'enabled': enabled},
     )
+
+
+def _prepare_pxe_attempt(profile_id: int, *, emergency_retry: bool) -> dict:
+    """Validate a profile and rotate attempt-scoped secrets before publication."""
+    with engine.begin() as connection:
+        profile = connection.execute(text(
+            '''SELECT p.id,p.computer_name,p.os_image_id,p.status,p.config,
+                      i.kind,i.enabled,i.metadata,d.mac
+               FROM pxe_profiles p
+               JOIN devices d ON d.id=p.device_id
+               LEFT JOIN os_images i ON i.id=p.os_image_id
+               WHERE p.id=:id FOR UPDATE'''), {'id': profile_id}).mappings().first()
+        if not profile:
+            raise ValueError('PXE-профиль не найден')
+        status = str(profile.get('status') or 'draft')
+        if status in {'publishing', 'authorized'}:
+            raise ValueError('PXE-профиль уже публикуется или уже разрешён')
+        if status == 'installing' and not emergency_retry:
+            raise ValueError('PXE-установка уже была запущена; используйте аварийное повторное разрешение только после остановки предыдущей установки')
+        if emergency_retry and status != 'installing':
+            raise ValueError('аварийное повторное разрешение доступно только для профиля в состоянии installing')
+        if not profile.get('os_image_id') or not profile.get('kind') or not profile.get('enabled'):
+            raise ValueError('PXE-профиль не связан с доступным образом ОС')
+        metadata = profile.get('metadata') or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        if metadata.get('status') not in {'ready', 'published'}:
+            raise ValueError('образ ОС ещё не подготовлен для PXE')
+        validate_computer_name(str(profile.get('computer_name') or ''), str(profile['kind']))
+
+        config = profile.get('config') or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except Exception:
+                config = {}
+        # Tokens are attempt-scoped. Rotating both makes callbacks/artifacts from
+        # an older interrupted installation cryptographically stale.
+        config = {
+            **config,
+            'kind': str(profile['kind']),
+            'boot_token': secrets.token_urlsafe(32),
+            'report_token': secrets.token_urlsafe(32),
+        }
+        reason = 'emergency-retry-requested' if emergency_retry else None
+        connection.execute(text(
+            '''UPDATE pxe_profiles
+               SET status='publishing',install_authorized=false,authorized_at=NULL,
+                   consumed_at=NULL,last_result=:reason,config=CAST(:config AS jsonb),updated_at=now()
+               WHERE id=:id'''),
+            {'id': profile_id, 'reason': reason, 'config': json.dumps(config, ensure_ascii=False)},
+        )
+        return {
+            'id': profile_id,
+            'status': 'publishing',
+            'install_authorized': False,
+            'emergency_retry': emergency_retry,
+        }
+
+
+def authorize_pxe_profile(profile_id: int) -> dict:
+    return _prepare_pxe_attempt(profile_id, emergency_retry=False)
+
+
+def force_retry_pxe_profile(profile_id: int) -> dict:
+    return _prepare_pxe_attempt(profile_id, emergency_retry=True)
+
+
+def report_pxe(profile_id: int, token: str, result: str) -> bool:
+    """Accept only the callback for the currently consumed installation attempt."""
+    if result not in {'success', 'failed'}:
+        return False
+    with engine.begin() as connection:
+        row = connection.execute(text(
+            'SELECT id,status,config FROM pxe_profiles WHERE id=:id FOR UPDATE'
+        ), {'id': profile_id}).mappings().first()
+        if not row or str(row.get('status') or '') != 'installing':
+            return False
+        config = row.get('config') or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except Exception:
+                config = {}
+        expected = str(config.get('report_token') or '')
+        if not expected or not secrets.compare_digest(expected, str(token or '')):
+            return False
+        status = 'installed' if result == 'success' else 'failed'
+        connection.execute(text(
+            '''UPDATE pxe_profiles
+               SET status=:status,install_authorized=false,last_result=:result,updated_at=now()
+               WHERE id=:id AND status='installing' '''
+        ), {'status': status, 'result': result, 'id': profile_id})
+        return True
