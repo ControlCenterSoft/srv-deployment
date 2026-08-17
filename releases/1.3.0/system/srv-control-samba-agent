@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import tempfile
+from typing import Any
+
+
+ACTION_DIR = Path("/var/lib/srv-control/samba-actions")
+RESULT_DIR = Path("/var/lib/srv-control/system-results")
+SECRET_DIR = Path("/var/lib/srv-control/action-secrets")
+IMPORT_DIR = Path("/var/lib/srv-control/domain-imports")
+WORKER = Path("/usr/local/libexec/srv-control-samba-admin")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".tmp.", delete=False
+    )
+    try:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o644)
+        tmp = Path(handle.name)
+    finally:
+        handle.close()
+    os.replace(tmp, path)
+
+
+def cleanup_private_payload(request: dict[str, Any]) -> None:
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    secret = str(payload.get("secret_ref") or "")
+    if secret and all(ch.isalnum() or ch in "_-" for ch in secret):
+        path = SECRET_DIR / secret
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.unlink()
+        except Exception:
+            pass
+    import_ref = str(payload.get("import_ref") or "")
+    if import_ref and all(ch.isalnum() or ch in "_-" for ch in import_ref):
+        for suffix in (".upload", ".name"):
+            path = IMPORT_DIR / f"{import_ref}{suffix}"
+            try:
+                if path.is_file() and not path.is_symlink():
+                    path.unlink()
+            except Exception:
+                pass
+
+
+def invoke(request: dict[str, Any]) -> tuple[bool, str]:
+    if not WORKER.is_file():
+        return False, "Samba administration worker is not installed"
+    completed = subprocess.run(
+        [str(WORKER)],
+        input=json.dumps(request, ensure_ascii=False),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=24 * 3600,
+        check=False,
+        env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8", "HOME": "/root"},
+    )
+    output = (completed.stdout or "")[-16000:]
+    try:
+        decoded = json.loads(output.strip().splitlines()[-1]) if output.strip() else {}
+    except Exception:
+        decoded = {}
+    ok = completed.returncode == 0 and decoded.get("ok") is True
+    detail = str(decoded.get("detail") or output or "Samba action returned no detail")[-12000:]
+    return ok, detail
+
+
+def process(path: Path) -> None:
+    started = now()
+    request_id = path.stem
+    request: dict[str, Any] = {}
+    result: dict[str, Any] = {
+        "request_id": request_id,
+        "action": None,
+        "actor": None,
+        "started_at": started,
+        "finished_at": None,
+        "result": "failed",
+        "detail": None,
+    }
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+            raise RuntimeError("Samba action request must be a regular file")
+        request = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(request, dict):
+            raise RuntimeError("Samba action request must be a JSON object")
+        if str(request.get("request_id") or "") != request_id:
+            raise RuntimeError("Samba action request id does not match filename")
+        result["action"] = request.get("action")
+        result["actor"] = request.get("actor")
+        ok, detail = invoke(request)
+        result["result"] = "success" if ok else "failed"
+        result["detail"] = detail
+    except Exception as exc:
+        result["detail"] = str(exc)[-12000:]
+    finally:
+        if result["result"] != "success":
+            cleanup_private_payload(request)
+        result["finished_at"] = now()
+        write_json(RESULT_DIR / f"{request_id}.json", result)
+        path.unlink(missing_ok=True)
+
+
+def main() -> int:
+    ACTION_DIR.mkdir(parents=True, exist_ok=True)
+    requests = sorted(ACTION_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime)
+    if not requests:
+        return 0
+    process(requests[0])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
