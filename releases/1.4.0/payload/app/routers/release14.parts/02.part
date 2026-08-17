@@ -29,6 +29,25 @@ def pxe_profile_authorize(profile_id: int, request: Request):
     return {'ok': True, 'data': {'profile': profile, 'action': queued}, 'error': None}
 
 
+@router.post('/api/v1/release14/pxe/profiles/{profile_id}/emergency-retry')
+async def pxe_profile_emergency_retry(profile_id: int, request: Request):
+    _, identity = _identity(request, 'pxe', 'write', csrf=True)
+    payload = await _json(request)
+    if payload.get('confirm_previous_install_stopped') is not True:
+        raise HTTPException(status_code=400, detail='подтвердите, что предыдущая PXE-установка остановлена')
+    try:
+        profile = force_retry_pxe_profile(profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    queued = enqueue(
+        'pxe-profile-publish',
+        identity.username,
+        _client_ip(request),
+        {'profile_id': profile_id, 'reason': 'emergency-retry-after-interrupted-install'},
+    )
+    return {'ok': True, 'data': {'profile': profile, 'action': queued}, 'error': None}
+
+
 @router.post('/api/v1/release14/pxe/profiles/{profile_id}/revoke')
 def pxe_profile_revoke(profile_id: int, request: Request):
     _identity(request, 'pxe', 'write', csrf=True)
@@ -70,15 +89,11 @@ def _pxe_firmware_compatible(firmware: str, buildarch: str, image_arch: str) -> 
     boot_arch = aliases.get(boot_arch, boot_arch)
 
     if fw in {'pcbios', 'bios'}:
-        # The managed Legacy chain is x86 BIOS. ARM operating-system images are
-        # UEFI-only and must be rejected before a destructive installer starts.
         return image in {'i386', 'x86_64'}
     if fw == 'efi':
         if image not in {'i386', 'x86_64', 'arm32', 'arm64'}:
             return False
         return not boot_arch or image == boot_arch
-    # Older/custom iPXE builds may omit platform metadata. Do not regress those
-    # clients; the published installer still performs its own firmware check.
     return True
 
 
@@ -94,7 +109,6 @@ def pxe_boot(request: Request, mac: str, platform: str = '', buildarch: str = ''
     profile_id = int(profile['id'])
     boot_file = Path(f'/srv/pxe/profiles/{profile_id}/boot.ipxe')
     if not boot_file.is_file():
-        # Do not consume one-time authorization on a publication/storage error.
         return _pxe_denied(mac, 'PXE profile is not published. Authorization retained; retry after server repair.')
 
     firmware = str(platform or '').strip().lower()
