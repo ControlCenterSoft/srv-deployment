@@ -24,6 +24,10 @@ apt-get install -y --no-install-recommends \
     libnginx-mod-http-auth-spnego \
     krb5-user
 
+if command -v pam-auth-update >/dev/null 2>&1; then
+    pam-auth-update --package >/dev/null 2>&1 || true
+fi
+
 cat > "$PAM_FILE" <<'EOF'
 # SRV Control Center authenticates against the server's configured PAM stack.
 @include common-auth
@@ -113,7 +117,6 @@ if keytab.is_file() and keytab.stat().st_size > 0:
         raise SystemExit("nginx proxy location marker missing")
     text = text.replace(marker, block + marker, 1)
 
-# Always prevent a client-supplied identity header from reaching ordinary backend routes.
 ordinary = "        proxy_set_header X-Forwarded-Proto $scheme;\n"
 if "        proxy_set_header X-SRVCC-Remote-User \"\";\n" not in text:
     text = text.replace(
