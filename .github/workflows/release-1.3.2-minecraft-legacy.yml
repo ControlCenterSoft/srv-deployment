@@ -7,7 +7,6 @@ on:
   pull_request:
     paths:
       - 'releases/1.3.2/**'
-      - 'deployment.json'
       - '.github/workflows/release-1.3.2-minecraft-legacy.yml'
   workflow_dispatch:
 
@@ -20,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate release scripts and manifest
+      - name: Validate frozen 1.3.2 scripts and manifest
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -39,12 +38,9 @@ jobs:
               print(f'HASH {stage} {actual}')
               if actual != item['sha256']:
                   mismatches.append((stage, actual, item['sha256']))
-          deployment = json.loads(pathlib.Path('deployment.json').read_text())
-          assert deployment['release_id'] == '1.3.2'
-          assert deployment['release_path'] == 'releases/1.3.2'
           if mismatches:
               raise SystemExit('manifest hash mismatch: '+repr(mismatches))
-          print('MANIFEST PASS')
+          print('FROZEN 1.3.2 MANIFEST PASS')
           PY
 
       - name: Validate restored Minecraft contract
