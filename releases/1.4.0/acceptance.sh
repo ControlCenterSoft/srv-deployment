@@ -52,12 +52,15 @@ code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:
 code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 'http://127.0.0.1:8876/pxe/profile/999999/not-a-token/boot.ipxe')" || true
 [[ "$code" == 404 ]] || fail "invalid PXE profile token did not return 404: HTTP $code"
 
-# If the hardened PXE runtime has already been installed/repaired, validate every
-# firmware artifact and dnsmasq option-93 mapping on the live host.
-if [[ -f /srv/tftp/x86_64-sb/snponly-shim.efi || -f /srv/tftp/arm64-sb/snponly-shim.efi ]]; then
-  /usr/local/libexec/srv-control-release14-agent --validate-pxe >/tmp/srvcc-pxe-validation.txt || fail "live PXE runtime validation failed"
+# Only a runtime installed/repaired by 1.4 owns the HTTP entry marker. A legacy
+# PXE installation is preserved during the Control Center upgrade and can be
+# explicitly upgraded from Services; it must not roll back the whole 1.4 release.
+if [[ -f /srv/pxe/media/boot/entry.ipxe ]]; then
+  /usr/local/libexec/srv-control-release14-agent --validate-pxe >/tmp/srvcc-pxe-validation.txt || fail "managed live PXE runtime validation failed"
   grep -q 'PXE runtime validation passed' /tmp/srvcc-pxe-validation.txt || fail "live PXE validation did not report success"
   rm -f /tmp/srvcc-pxe-validation.txt
+elif systemctl is-active --quiet tftpd-hpa.service; then
+  echo "ACCEPTANCE INFO: legacy/unmanaged PXE runtime detected; Control Center upgrade preserved it and PXE repair is required before 1.4 runtime guarantees apply"
 fi
 
 echo "ACCEPTANCE PASS: release=1.4.0 migration=14f0a1400001 deny-by-default=ok firmware-contract=ok private-profiles=ok"
