@@ -12,10 +12,42 @@
     <header class="page-header">
         <div>
             <h1>Права пользователей</h1>
-            <p>Авторизация системными и доменными учётными записями. Права назначаются группам.</p>
+            <p>Локальные и доменные учётные записи сервера. Права Control Center назначаются группам.</p>
         </div>
         <div class="identity-badge" id="identityBadge">—</div>
     </header>
+
+    <section class="summary-grid directory-summary">
+        <div class="panel">
+            <div class="panel-title">Авторизация</div>
+            <div class="stat-row"><span>Системная PAM</span><strong id="pamState">—</strong></div>
+            <div class="stat-row"><span>Домен</span><strong id="domainState">—</strong></div>
+            <div class="stat-row"><span>SSO</span><strong id="ssoState">—</strong></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">Каталог</div>
+            <div class="stat-row"><span>Локальные пользователи</span><strong id="localUserCount">—</strong></div>
+            <div class="stat-row"><span>Доменные пользователи</span><strong id="domainUserCount">—</strong></div>
+            <div class="stat-row"><span>Группы</span><strong id="groupCount">—</strong></div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-title">Пользователи сервера</div>
+        <div class="grant-table-wrap">
+            <table class="grant-table">
+                <thead>
+                    <tr>
+                        <th>Пользователь</th>
+                        <th>Источник</th>
+                        <th>UID</th>
+                        <th>Права администратора</th>
+                    </tr>
+                </thead>
+                <tbody id="userRows"></tbody>
+            </table>
+        </div>
+    </section>
 
     <section class="panel">
         <div class="panel-title">Назначить права группе</div>
@@ -30,7 +62,8 @@
             </label>
             <label>
                 <span>Группа</span>
-                <input id="grantGroup" required autocomplete="off">
+                <input id="grantGroup" list="availableGroups" required autocomplete="off">
+                <datalist id="availableGroups"></datalist>
             </label>
             <label>
                 <span>Модуль</span>
