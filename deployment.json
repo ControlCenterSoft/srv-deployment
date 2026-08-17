@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "enabled": true,
-  "channel": "production",
-  "release": "1.2.0",
-  "release_id": "1.2.0",
-  "release_path": "releases/1.2.0",
-  "manifest": "releases/1.2.0/manifest.json",
-  "preflight": "releases/1.2.0/preflight.sh",
-  "apply": "releases/1.2.0/apply.sh",
-  "acceptance": "releases/1.2.0/acceptance.sh",
-  "rollback": "releases/1.2.0/rollback.sh",
-  "description": "SRV Control Center 1.2.0 production release: four-column dashboard with top processes, full-administrator RBAC, AdGuard VPN settings and Minecraft Bedrock Control."
+  "channel": "release-candidate",
+  "release": "1.3.0",
+  "release_id": "1.3.0",
+  "release_path": "releases/1.3.0",
+  "manifest": "releases/1.3.0/manifest.json",
+  "preflight": "releases/1.3.0/preflight.sh",
+  "apply": "releases/1.3.0/apply.sh",
+  "acceptance": "releases/1.3.0/acceptance.sh",
+  "rollback": "releases/1.3.0/rollback.sh",
+  "description": "Release candidate 1.3.0: Samba AD domain and share administration, portable domain backup/restore, Samba service management, and Minecraft multi-server/update/player control."
 }
