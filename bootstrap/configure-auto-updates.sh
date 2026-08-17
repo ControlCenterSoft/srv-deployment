@@ -48,7 +48,6 @@ done
 
 install -d -m 0750 "$AGENT_ROOT" "$STATE_DIR"
 install -m 0755 "$0" "$CONFIGURATOR_BIN"
-
 touch /var/log/srvcc-agent.log
 chmod 0640 /var/log/srvcc-agent.log || true
 
@@ -171,7 +170,26 @@ release_tree="$(git -C "$DEPLOY_REPO" rev-parse "origin/main:${release_path}")"
 fingerprint="$(printf '%s\n%s\n%s\n%s\n' "$release_id" "$release_version" "$deployment_blob" "$release_tree" | sha256sum | awk '{print $1}')"
 current_id="$(current_value release_id)"
 current_version="$(current_value version)"
+current_git_sha="$(current_value git_sha)"
 stored_fingerprint="$(cat "$LAST_FINGERPRINT" 2>/dev/null || true)"
+
+# Migration/adoption path: when the new updater is installed as part of the same
+# product release, adopt that release fingerprint instead of immediately
+# applying it again. The tree comparison prevents a same-version/different-tree
+# release from being silently accepted.
+if [[ -z "$stored_fingerprint" && "$current_id" == "$release_id" && "$current_version" == "$release_version" && -n "$current_git_sha" ]]; then
+    current_tree="$(git -C "$DEPLOY_REPO" rev-parse "${current_git_sha}:${release_path}" 2>/dev/null || true)"
+    if [[ -n "$current_tree" && "$current_tree" == "$release_tree" ]]; then
+        printf '%s\n' "$fingerprint" > "$LAST_FINGERPRINT"
+        printf '%s\n' "$current_git_sha" > "$LAST_DEPLOYED_SHA"
+        printf '%s\n' "$remote_sha" > "$LAST_SEEN_SHA"
+        chmod 0640 "$LAST_FINGERPRINT" "$LAST_DEPLOYED_SHA" "$LAST_SEEN_SHA"
+        write_status ok 'existing installed release fingerprint adopted' "$remote_sha" "$release_id" "$release_version" false
+        log "Adopted installed release ${release_id} ${release_version} without reapply."
+        publish_state
+        exit 0
+    fi
+fi
 
 if [[ "$stored_fingerprint" == "$fingerprint" && "$current_id" == "$release_id" && "$current_version" == "$release_version" ]]; then
     printf '%s\n' "$remote_sha" > "$LAST_SEEN_SHA"
