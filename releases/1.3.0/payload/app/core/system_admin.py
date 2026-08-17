@@ -10,6 +10,7 @@ import uuid
 
 ACTION_DIR = Path("/var/lib/srv-control/system-actions")
 SAMBA_ACTION_DIR = Path("/var/lib/srv-control/samba-actions")
+MINECRAFT_ACTION_DIR = Path("/var/lib/srv-control/minecraft-actions")
 RESULT_DIR = Path("/var/lib/srv-control/system-results")
 GITHUB_CONFIG = Path("/var/lib/srv-control/github-update-config.json")
 GITHUB_STATUS = Path("/var/lib/srv-control/github-update-status.json")
@@ -41,6 +42,20 @@ SAMBA_ACTIONS = {
     "samba-share-update",
     "samba-share-delete",
 }
+MINECRAFT_ACTIONS = {
+    "minecraft-instance-create",
+    "minecraft-instance-update",
+    "minecraft-instance-delete",
+    "minecraft-instance-start",
+    "minecraft-instance-stop",
+    "minecraft-instance-restart",
+    "minecraft-player-allow",
+    "minecraft-player-deny",
+    "minecraft-player-permission",
+    "minecraft-player-kick",
+    "minecraft-update-check",
+    "minecraft-update-apply",
+}
 ALLOWED_ACTIONS = {
     "reboot",
     "github-update-config",
@@ -62,6 +77,7 @@ ALLOWED_ACTIONS = {
     "service-install-pxe",
     "service-remove-pxe",
     *SAMBA_ACTIONS,
+    *MINECRAFT_ACTIONS,
     "minecraft-configure",
     "minecraft-start",
     "minecraft-stop",
@@ -229,7 +245,11 @@ def backups() -> list[dict]:
 def action_queue(limit: int = 20) -> list[dict]:
     items: list[dict] = []
     try:
-        paths = [*ACTION_DIR.glob("*.json"), *SAMBA_ACTION_DIR.glob("*.json")]
+        paths = [
+            *ACTION_DIR.glob("*.json"),
+            *SAMBA_ACTION_DIR.glob("*.json"),
+            *MINECRAFT_ACTION_DIR.glob("*.json"),
+        ]
         paths = sorted(paths, key=lambda item: item.stat().st_mtime)
         for path in paths[: max(0, min(limit, 50))]:
             payload = _read_json(path)
@@ -328,7 +348,12 @@ def enqueue(
 ) -> dict:
     if action not in ALLOWED_ACTIONS:
         raise ValueError("unsupported system action")
-    target_dir = SAMBA_ACTION_DIR if action in SAMBA_ACTIONS else ACTION_DIR
+    if action in SAMBA_ACTIONS:
+        target_dir = SAMBA_ACTION_DIR
+    elif action in MINECRAFT_ACTIONS:
+        target_dir = MINECRAFT_ACTION_DIR
+    else:
+        target_dir = ACTION_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     request_id = uuid.uuid4().hex
     body = {
