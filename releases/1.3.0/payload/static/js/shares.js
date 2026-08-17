@@ -73,7 +73,7 @@
             title.textContent = share.name;
             const meta = document.createElement("span");
             const flags = [share.browseable ? "открытая" : "скрытая"];
-            flags.push(share.managed ? "управляемая" : share.system ? "системная" : "внешняя");
+            flags.push(share.managed ? (share.data_managed === false ? "внешний каталог" : "управляемая") : share.system ? "системная" : "внешняя");
             if (share.quota && share.quota.limit_gib) flags.push(`квота ${share.quota.limit_gib} ГиБ`);
             meta.textContent = `${share.comment || share.path || ""} · ${flags.join(" · ")}`;
             row.append(title, meta);
@@ -216,6 +216,7 @@
         }
         const editor = byId("shareEditor");
         const external = Boolean(!creating && share && !share.managed);
+        const externalData = Boolean(!creating && share && share.managed && share.data_managed === false);
         const value = share || {name: "", comment: "", path: "", browseable: true, subjects: [{type: "everyone", name: "Everyone", access: "read"}], quota: {}};
         if (external) value.subjects = subjectsFromExternalShare(value);
         const canWrite = Boolean(state.data && state.data.can_write);
@@ -223,18 +224,20 @@
         const limit = value.quota && value.quota.limit_gib ? value.quota.limit_gib : "";
         const externalNote = external
             ? '<div class="badge-row"><span class="badge warn">Внешняя шара: параметры будут изменены в существующем smb.conf/include. Каталог и данные не перемещаются. Квота и файловые ACL автоматически не меняются.</span></div>'
-            : "";
+            : externalData
+                ? '<div class="badge-row"><span class="badge warn">Внешний каталог: Control Center управляет SMB-публикацией, но не меняет квоту, POSIX ACL и не удаляет данные этого каталога.</span></div>'
+                : "";
         editor.innerHTML = `
             <form id="shareForm">
                 <div class="field-grid">
                     <label><span>Имя шары (ASCII)</span><input id="sName" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,62}" maxlength="63" required value="${esc(value.name || "")}"></label>
                     <label><span>Комментарий</span><input id="sComment" maxlength="1024" value="${esc(value.comment || "")}"></label>
-                    <label><span>Путь</span><input id="sPath" maxlength="1024" placeholder="/srv/shares/ShareName" value="${esc(value.path || "")}"></label>
+                    <label><span>Путь</span><input id="sPath" maxlength="1024" placeholder="Пусто = /srv/shares/ShareName; внешний каталог должен существовать" value="${esc(value.path || "")}"></label>
                     <label><span>Квота, ГиБ</span><input id="sQuota" type="number" min="0" max="1048576" step="1" placeholder="0 = без ограничения" value="${esc(limit)}"></label>
                 </div>
                 <div class="checkbox-row"><label><input id="sBrowseable" type="checkbox" ${value.browseable !== false ? "checked" : ""}> Открытая / видна при просмотре сети</label></div>
                 ${externalNote}
-                ${external ? "" : `<div class="badge-row"><span class="badge ${value.filesystem && value.filesystem.quota_supported ? "ok" : "warn"}">${esc(quotaLabel(value.filesystem))}</span></div>`}
+                ${external || externalData ? "" : `<div class="badge-row"><span class="badge ${value.filesystem && value.filesystem.quota_supported ? "ok" : "warn"}">${esc(quotaLabel(value.filesystem))}</span></div>`}
                 <div class="panel-title">Права доступа</div>
                 <div class="subject-list" id="subjectList"></div>
                 <div class="config-actions"><button class="secondary-button" id="subjectAdd" type="button">Добавить пользователя / группу</button></div>
@@ -242,7 +245,7 @@
                     <button class="action-button" type="submit">${creating ? "Создать шару" : "Сохранить"}</button>
                     ${!creating && !external ? '<button class="danger-button" id="shareDelete" type="button">Удалить публикацию</button>' : ""}
                 </div>
-                ${!creating && !external && fullAdmin ? '<div class="checkbox-row"><label><input id="deleteShareData" type="checkbox"> При удалении также удалить каталог и все данные</label></div>' : ""}
+                ${!creating && !external && !externalData && fullAdmin ? '<div class="checkbox-row"><label><input id="deleteShareData" type="checkbox"> При удалении также удалить каталог и все данные</label></div>' : ""}
             </form>
         `;
         const subjectList = byId("subjectList");
@@ -250,10 +253,8 @@
         for (const subject of subjects) subjectList.appendChild(subjectRow(subject));
         byId("subjectAdd").addEventListener("click", () => subjectList.appendChild(subjectRow()));
         for (const control of editor.querySelectorAll("input,select,button")) control.disabled = !canWrite;
-        if (external) {
-            byId("sName").disabled = true;
-            byId("sQuota").disabled = true;
-        }
+        if (external) byId("sName").disabled = true;
+        if (external || externalData) byId("sQuota").disabled = true;
 
         byId("shareForm").addEventListener("submit", async (event) => {
             event.preventDefault();
@@ -266,7 +267,7 @@
                 setMessage("Добавьте хотя бы одного пользователя, группу или Everyone.", true);
                 return;
             }
-            const quotaRaw = external ? "" : byId("sQuota").value.trim();
+            const quotaRaw = external || externalData ? "" : byId("sQuota").value.trim();
             const payload = {
                 name: value.name || byId("sName").value.trim(),
                 comment: byId("sComment").value.trim(),

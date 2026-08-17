@@ -172,6 +172,7 @@ def main() -> int:
                 "write_list": list_value(values.get("write list")),
                 "system": name.casefold() in SYSTEM_SHARES,
                 "managed": managed is not None,
+                "data_managed": bool(managed.get("data_managed", True)) if managed else False,
                 "subjects": managed.get("subjects", []) if managed else [],
                 "quota": managed.get("quota") if managed else None,
                 "filesystem": filesystem_info(path),

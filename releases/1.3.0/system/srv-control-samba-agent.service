@@ -12,7 +12,7 @@ Group=root
 UMask=0027
 Nice=5
 PrivateTmp=true
-ProtectHome=true
+ProtectHome=read-only
 ProtectSystem=false
 
 [Install]
