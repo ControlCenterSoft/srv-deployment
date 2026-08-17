@@ -16,6 +16,10 @@ RESULT_DIR = Path("/var/lib/srv-control/system-results")
 SECRET_DIR = Path("/var/lib/srv-control/action-secrets")
 IMPORT_DIR = Path("/var/lib/srv-control/domain-imports")
 WORKER = Path("/usr/local/libexec/srv-control-samba-admin")
+SAMBA_AD_PACKAGES = (
+    "samba-ad-provision",
+    "ldb-tools",
+)
 
 
 def now() -> str:
@@ -59,9 +63,51 @@ def cleanup_private_payload(request: dict[str, Any]) -> None:
                 pass
 
 
+def package_installed(name: str) -> bool:
+    result = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Status}", name],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "install ok installed"
+
+
+def ensure_samba_ad_dependencies() -> None:
+    missing = [name for name in SAMBA_AD_PACKAGES if not package_installed(name)]
+    if not missing:
+        return
+    update = subprocess.run(
+        ["apt-get", "update", "-y"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=900,
+        check=False,
+        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"},
+    )
+    if update.returncode != 0:
+        raise RuntimeError((update.stdout or "")[-6000:] or "apt-get update failed")
+    install = subprocess.run(
+        ["apt-get", "install", "-y", "--no-install-recommends", *missing],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=1800,
+        check=False,
+        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"},
+    )
+    if install.returncode != 0:
+        raise RuntimeError((install.stdout or "")[-6000:] or "failed to install Samba AD provision dependencies")
+
+
 def invoke(request: dict[str, Any]) -> tuple[bool, str]:
     if not WORKER.is_file():
         return False, "Samba administration worker is not installed"
+    if str(request.get("action") or "") == "service-install-samba-dc":
+        ensure_samba_ad_dependencies()
     completed = subprocess.run(
         [str(WORKER)],
         input=json.dumps(request, ensure_ascii=False),
