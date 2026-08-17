@@ -22,7 +22,10 @@ app = FastAPI(
 )
 
 app.mount('/static', StaticFiles(directory='/opt/srv-control/static'), name='static')
-app.mount('/pxe/files', StaticFiles(directory='/srv/pxe', check_dir=False), name='pxe-files')
+# Only immutable/shared PXE media is public. Per-device profiles are served by
+# token-validated routes from app.routers.release14 and are never exposed as a
+# static directory.
+app.mount('/pxe/files', StaticFiles(directory='/srv/pxe/media', check_dir=False), name='pxe-files')
 
 # 1.4 routes are registered before the legacy UI router so selected pages can
 # be upgraded without replacing the stable 1.3 router implementation.
