@@ -19,6 +19,19 @@ fail() {
     || fail "validated 1.1.0 rollback implementation missing"
 [[ -d "$CURRENT_BACKUP" ]] || fail "deployment backup missing: $CURRENT_BACKUP"
 
+# The 1.1 rollback contract still knows two legacy private-auth files that are
+# intentionally absent from 1.2. Mark them as absent so the validated restore
+# routine removes/keeps them absent instead of treating the backup as corrupt.
+for key in \
+    var/lib/srv-control/auth.json \
+    var/lib/srv-control/admin-bootstrap.txt
+do
+    if [[ ! -e "$CURRENT_BACKUP/system/$key" && ! -e "$CURRENT_BACKUP/system/${key}.absent" ]]; then
+        install -d -m 0750 "$CURRENT_BACKUP/system/$(dirname -- "$key")"
+        : > "$CURRENT_BACKUP/system/${key}.absent"
+    fi
+done
+
 created_compat=0
 if [[ ! -e "$COMPAT_BACKUP" ]]; then
     ln -s "$CURRENT_BACKUP" "$COMPAT_BACKUP"
