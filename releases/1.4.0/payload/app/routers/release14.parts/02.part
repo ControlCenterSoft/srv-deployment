@@ -43,23 +43,75 @@ def pxe_profile_delete(profile_id: int, request: Request):
     return {'ok': True, 'data': {'deleted': profile_id}, 'error': None}
 
 
+def _pxe_denied(mac: str, reason: str = 'This computer is not authorized for installation.') -> PlainTextResponse:
+    safe_mac = str(mac or '').replace('\r', '').replace('\n', '')[:32]
+    safe_reason = str(reason or 'Installation denied.').replace('\r', ' ').replace('\n', ' ')[:160]
+    return PlainTextResponse(
+        '#!ipxe\necho SRV PXE Server\n'
+        f'echo {safe_reason}\n'
+        f'echo MAC: {safe_mac}\n'
+        'sleep 5\nexit\n',
+        media_type='text/plain',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
 @router.get('/pxe/boot.ipxe', response_class=PlainTextResponse)
-def pxe_boot(request: Request, mac: str):
+def pxe_boot(request: Request, mac: str, platform: str = '', buildarch: str = ''):
     try:
-        profile = boot_profile(mac)
+        profile = peek_boot_profile(mac)
     except ValueError:
         profile = None
     if not profile:
-        safe_mac = mac.replace('\r', '').replace('\n', '')[:32]
-        return PlainTextResponse(
-            '#!ipxe\necho SRV PXE Server\necho This computer is not authorized for installation.\n'
-            f'echo MAC: {safe_mac}\nsleep 5\nexit\n', media_type='text/plain'
-        )
+        return _pxe_denied(mac)
+
     profile_id = int(profile['id'])
     boot_file = Path(f'/srv/pxe/profiles/{profile_id}/boot.ipxe')
     if not boot_file.is_file():
-        return PlainTextResponse('#!ipxe\necho PXE profile is not published. Installation denied.\nsleep 5\nexit\n', media_type='text/plain')
-    return PlainTextResponse(boot_file.read_text(encoding='utf-8'), media_type='text/plain')
+        # Do not consume one-time authorization on a publication/storage error.
+        return _pxe_denied(mac, 'PXE profile is not published. Authorization retained; retry after server repair.')
+
+    firmware = str(platform or '').strip().lower()
+    arch = str(buildarch or '').strip().lower()
+    image_arch = str(profile.get('architecture') or 'amd64').strip().lower()
+    if firmware == 'efi':
+        if image_arch in {'amd64', 'x86_64'} and arch and arch != 'x86_64':
+            return _pxe_denied(mac, f'Image architecture {image_arch} is not compatible with UEFI {arch}.')
+        if image_arch == 'arm64' and arch and arch != 'arm64':
+            return _pxe_denied(mac, f'Image architecture arm64 is not compatible with UEFI {arch}.')
+
+    return PlainTextResponse(
+        boot_file.read_text(encoding='utf-8'),
+        media_type='text/plain',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
+@router.get('/pxe/profile/{profile_id}/{token}/{artifact:path}')
+def pxe_profile_artifact(profile_id: int, token: str, artifact: str):
+    if not profile_boot_token_valid(profile_id, token):
+        raise HTTPException(status_code=404, detail='PXE artifact not found')
+    root = (Path('/srv/pxe/profiles') / str(profile_id)).resolve()
+    target = (root / artifact).resolve()
+    if target != root and root not in target.parents:
+        raise HTTPException(status_code=404, detail='PXE artifact not found')
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail='PXE artifact not found')
+    return FileResponse(
+        target,
+        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'},
+    )
+
+
+@router.get('/pxe/consume/{profile_id}/{token}', response_class=PlainTextResponse)
+def pxe_consume(profile_id: int, token: str, mac: str):
+    try:
+        consumed = consume_boot_profile(profile_id, mac, token)
+    except ValueError:
+        consumed = False
+    if not consumed:
+        raise HTTPException(status_code=409, detail='PXE authorization is no longer valid')
+    return PlainTextResponse('SRV PXE authorization consumed\n', headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/pxe/report/{profile_id}/{token}/{result}')
