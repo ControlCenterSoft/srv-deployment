@@ -85,7 +85,12 @@ jobs:
           run_publisher
           second_sha="$(git --git-dir="$remote" rev-parse refs/heads/server-state)"
           test "$second_sha" != "$first_sha"
-          grep -Fq 'safe-v2' "$state_repo/source/app.txt"
+          if ! grep -Fq 'safe-v2' "$state_repo/source/app.txt"; then
+            local_value="$(cat "$state_repo/source/app.txt" 2>/dev/null || echo MISSING)"
+            remote_value="$(git --git-dir="$remote" show refs/heads/server-state:source/app.txt 2>/dev/null || echo MISSING)"
+            echo "::error::state snapshot mismatch local=$local_value remote=$remote_value first=$first_sha second=$second_sha"
+            exit 1
+          fi
 
           before_block="$second_sha"
           printf 'github_pat_123456789012345678901234567890\n' > "$project/bad.txt"
