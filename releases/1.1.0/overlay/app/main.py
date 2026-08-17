@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.system_auth import parse_session
+from app.routers.admin import router as admin_router
 from app.routers.api import router as api_router
 from app.routers.ui import router as ui_router
 
@@ -17,17 +18,15 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-
 app.mount(
     "/static",
     StaticFiles(directory="/opt/srv-control/static"),
     name="static",
 )
 
-
 app.include_router(api_router)
+app.include_router(admin_router)
 app.include_router(ui_router)
-
 
 PUBLIC_EXACT = {
     "/login",
