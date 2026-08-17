@@ -45,12 +45,3 @@ def process_queue() -> int:
         except Exception:
             pass
         finally:path.unlink(missing_ok=True)
-
-
-def main() -> int:
-    ap=argparse.ArgumentParser();ap.add_argument('--prune-backups',action='store_true');ap.add_argument('--network-rollback');args=ap.parse_args()
-    if args.prune_backups: print(prune_backups());return 0
-    if args.network_rollback: print(network_rollback(args.network_rollback));return 0
-    return process_queue()
-
-if __name__=='__main__': raise SystemExit(main())
