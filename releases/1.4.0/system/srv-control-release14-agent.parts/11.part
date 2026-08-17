@@ -1,0 +1,140 @@
+
+def _server_ip() -> str:
+    rows = psql_json("SELECT interface FROM dhcp_configs WHERE id=1 AND interface IS NOT NULL") or []
+    if rows and rows[0].get('interface'):
+        return _interface_ipv4(str(rows[0]['interface']))
+    out = run(['ip', '-4', '-o', 'addr', 'show', 'scope', 'global'], timeout=20, check=False)
+    for line in out.splitlines():
+        match = re.search(r'\binet\s+([0-9.]+)/', line)
+        if match and not match.group(1).startswith('127.'):
+            return match.group(1)
+    raise RuntimeError('cannot determine LAN address for PXE profile')
+
+
+def _ensure_profile_tokens(profile_id: int, profile: dict) -> dict:
+    config = profile.get('config') or {}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            config = {}
+    changed = False
+    if not config.get('report_token'):
+        config['report_token'] = secrets.token_urlsafe(32)
+        changed = True
+    if not config.get('boot_token'):
+        config['boot_token'] = secrets.token_urlsafe(32)
+        changed = True
+    if changed:
+        value = json.dumps(config, ensure_ascii=False).replace("'", "''")
+        psql_exec(f"UPDATE pxe_profiles SET config='{value}'::jsonb,updated_at=now() WHERE id={profile_id};")
+    profile['config'] = config
+    return profile
+
+
+def publish_linux(profile: dict, config: dict, target: Path, server: str) -> None:
+    image_id = int(profile['image_id'])
+    meta = profile.get('metadata') or {}
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    flavor = str(meta.get('flavor') or 'ubuntu')
+    arch = str(meta.get('architecture') or 'amd64')
+    profile_config = profile.get('config') or {}
+    if isinstance(profile_config, str):
+        profile_config = json.loads(profile_config)
+    report_token = str(profile_config.get('report_token') or '')
+    boot_token = str(profile_config.get('boot_token') or '')
+    if not report_token or not boot_token:
+        raise RuntimeError('PXE profile tokens are missing')
+
+    user = str(config.get('username') or 'admin')
+    password = str(config.get('password_plain') or '')
+    if not password:
+        raise RuntimeError('Linux PXE profile requires password_plain in an assigned configuration profile')
+    password_hash = run(['openssl', 'passwd', '-6', '-stdin'], input_text=password + '\n', timeout=20).strip()
+    private = f'http://${{next-server}}/pxe/profile/{profile["id"]}/{boot_token}'
+
+    if flavor == 'ubuntu':
+        seed = target / 'seed'
+        seed.mkdir(parents=True, exist_ok=True)
+        packages = config.get('apt_packages') if isinstance(config.get('apt_packages'), list) else []
+        user_data = {
+            'autoinstall': {
+                'version': 1,
+                'locale': profile.get('locale') or 'ru_RU.UTF-8',
+                'keyboard': {'layout': 'us'},
+                'identity': {'hostname': profile['computer_name'], 'username': user, 'password': password_hash},
+                'ssh': {'install-server': bool(config.get('ssh', True))},
+                'packages': [str(item) for item in packages],
+                'late-commands': [
+                    f'curtin in-target --target=/target -- sh -c "curl -fsS -X POST http://{server}/pxe/report/{profile["id"]}/{report_token}/success || true"'
+                ],
+            }
+        }
+        (seed / 'user-data').write_text('#cloud-config\n' + json.dumps(user_data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        (seed / 'meta-data').write_text(
+            f'instance-id: srv-pxe-{profile["id"]}\nlocal-hostname: {profile["computer_name"]}\n',
+            encoding='utf-8',
+        )
+        args = f'ip=dhcp url=http://${{next-server}}/pxe/files/isos/{image_id}.iso autoinstall ds=nocloud-net;s={private}/seed/ ---'
+    else:
+        preseed = f'''d-i debian-installer/locale string en_US\nd-i keyboard-configuration/xkb-keymap select us\nd-i netcfg/get_hostname string {profile['computer_name']}\nd-i passwd/user-fullname string {user}\nd-i passwd/username string {user}\nd-i passwd/user-password-crypted password {password_hash}\nd-i clock-setup/utc boolean true\nd-i partman-auto/method string regular\nd-i partman-auto/choose_recipe select atomic\nd-i partman/confirm boolean true\nd-i partman/confirm_nooverwrite boolean true\nd-i pkgsel/include string openssh-server curl\nd-i finish-install/reboot_in_progress note\nd-i preseed/late_command string in-target sh -c 'curl -fsS -X POST http://{server}/pxe/report/{profile['id']}/{report_token}/success || true'\n'''
+        (target / 'preseed.cfg').write_text(preseed, encoding='utf-8')
+        args = f'auto=true priority=critical interface=auto preseed/url={private}/preseed.cfg ---'
+
+    base = 'http://${next-server}/pxe/files'
+    lines = [
+        '#!ipxe',
+        f'kernel {base}/images/{image_id}/vmlinuz {args}',
+        f'initrd {base}/images/{image_id}/initrd',
+    ]
+    shims = meta.get('secure_boot_shims') if isinstance(meta.get('secure_boot_shims'), dict) else {}
+    shim_name = str(shims.get(arch) or '')
+    if shim_name:
+        # iPXE shim is a no-op when Secure Boot is disabled/non-UEFI, so the
+        # same profile works for both Secure Boot and normal UEFI/BIOS.
+        lines.append(f'shim {base}/images/{image_id}/{shim_name} || goto denied')
+    lines += [
+        f'imgfetch --name srv-consume http://${{next-server}}/pxe/consume/{profile["id"]}/{boot_token}?mac=${{net0/mac}} || goto denied',
+        'imgfree srv-consume',
+        'boot || goto denied',
+        ':denied',
+        'echo SRV Linux PXE payload or authorization failed. Retry is safe until authorization is consumed.',
+        'sleep 5',
+        'exit',
+    ]
+    (target / 'boot.ipxe').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
+def _secure_profile_tree(target: Path) -> None:
+    gid = grp.getgrnam('srv-control').gr_gid
+    for path in [target, *target.rglob('*')]:
+        try:
+            os.chown(path, 0, gid)
+            os.chmod(path, 0o750 if path.is_dir() else 0o640)
+        except FileNotFoundError:
+            pass
+
+
+def publish_profile(payload: dict) -> str:
+    profile_id = int(payload.get('profile_id') or 0)
+    profile = _profile_row(profile_id)
+    profile = _ensure_profile_tokens(profile_id, profile)
+    target = PXE_ROOT / f'profiles/{profile_id}'
+    shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
+    os.chmod(target, 0o750)
+    config = _merged_config(profile_id, profile.get('config') if isinstance(profile.get('config'), dict) else {})
+    server = _server_ip()
+    try:
+        if profile['kind'] == 'windows':
+            cred = ensure_pxe_samba_share()
+            publish_windows(profile, config, target, server, cred)
+        else:
+            publish_linux(profile, config, target, server)
+        _secure_profile_tree(target)
+        psql_exec(f"UPDATE pxe_profiles SET status='authorized',install_authorized=true,authorized_at=now(),updated_at=now() WHERE id={profile_id};")
+    except Exception:
+        psql_exec(f"UPDATE pxe_profiles SET status='failed',install_authorized=false,last_result='publish-failed',updated_at=now() WHERE id={profile_id};")
+        raise
+    return f"PXE profile #{profile_id} published and authorized exactly once; private artifacts token-protected"
