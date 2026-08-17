@@ -64,6 +64,20 @@ def _unit_state(name: str) -> str:
         return "unknown"
 
 
+def _unit_enabled(name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-enabled", "--quiet", name],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def _package_installed(name: str) -> bool:
     try:
         result = subprocess.run(
@@ -199,11 +213,18 @@ def status(*, include_actions: bool = False, include_service_detail: bool = Fals
         "backup_before_update": True,
     }
     return {
-        "github_updates": {"config": github_config, "status": _read_json(GITHUB_STATUS)},
+        "github_updates": {
+            "config": github_config,
+            "status": _read_json(GITHUB_STATUS),
+            "service_state": _unit_state("srvcc-github-agent.service"),
+            "timer_state": _unit_state("srvcc-github-agent.timer"),
+            "timer_enabled": _unit_enabled("srvcc-github-agent.timer"),
+        },
         "os_updates": {
             "config": os_config,
             "unit_state": _unit_state("srv-control-os-update.service"),
             "timer_state": _unit_state("srv-control-os-auto-update.timer"),
+            "timer_enabled": _unit_enabled("srv-control-os-auto-update.timer"),
             "status": _read_json(OS_UPDATE_STATUS),
         },
         "backup": {"config": backup_config, "items": backups()},
