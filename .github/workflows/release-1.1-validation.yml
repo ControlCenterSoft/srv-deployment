@@ -1,6 +1,8 @@
 name: SRV Control Center 1.1.0 validation
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
