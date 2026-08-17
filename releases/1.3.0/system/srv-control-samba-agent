@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tempfile
@@ -16,6 +17,10 @@ RESULT_DIR = Path("/var/lib/srv-control/system-results")
 SECRET_DIR = Path("/var/lib/srv-control/action-secrets")
 IMPORT_DIR = Path("/var/lib/srv-control/domain-imports")
 WORKER = Path("/usr/local/libexec/srv-control-samba-admin")
+SMB_CONF = Path("/etc/samba/smb.conf")
+SHARES_INCLUDE = Path("/etc/samba/srv-control-shares.conf")
+SHARE_INCLUDE_LINE = f"include = {SHARES_INCLUDE}"
+SHARE_ACTIONS = {"samba-share-create", "samba-share-update", "samba-share-delete"}
 SAMBA_AD_PACKAGES = (
     "samba",
     "samba-common-bin",
@@ -35,6 +40,7 @@ SAMBA_AD_PACKAGES = (
     "btrfs-progs",
     "ldb-tools",
 )
+SECTION_RE = re.compile(r"^\s*\[[^\]]+\]\s*$")
 
 
 def now() -> str:
@@ -118,11 +124,143 @@ def ensure_samba_ad_dependencies() -> None:
         raise RuntimeError((install.stdout or "")[-6000:] or "failed to install Samba AD dependencies")
 
 
+def _read_file_snapshot(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"exists": False}
+    info = path.stat()
+    return {
+        "exists": True,
+        "data": path.read_bytes(),
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+    }
+
+
+def _restore_file_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
+    if not snapshot.get("exists"):
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".restore.", delete=False)
+    try:
+        handle.write(snapshot["data"])
+        handle.flush()
+        os.fchmod(handle.fileno(), int(snapshot["mode"]))
+        tmp = Path(handle.name)
+    finally:
+        handle.close()
+    os.chown(tmp, int(snapshot["uid"]), int(snapshot["gid"]))
+    os.replace(tmp, path)
+
+
+def _atomic_text_preserve(path: Path, text: str, default_mode: int) -> None:
+    if path.exists():
+        info = path.stat()
+        mode, uid, gid = stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid
+    else:
+        mode, uid, gid = default_mode, 0, 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".tmp.", delete=False
+    )
+    try:
+        handle.write(text)
+        handle.flush()
+        os.fchmod(handle.fileno(), mode)
+        tmp = Path(handle.name)
+    finally:
+        handle.close()
+    os.chown(tmp, uid, gid)
+    os.replace(tmp, path)
+
+
+def samba_role() -> str:
+    if not SMB_CONF.is_file():
+        return ""
+    result = subprocess.run(
+        ["testparm", "-s", "--suppress-prompt", "--parameter-name=server role", str(SMB_CONF)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stdout or "")[-5000:] or "testparm failed")
+    return (result.stdout or "").strip().casefold()
+
+
+def prepare_share_include() -> tuple[dict[str, Any], dict[str, Any], str]:
+    if not SMB_CONF.is_file():
+        raise RuntimeError("/etc/samba/smb.conf is missing")
+    conf_snapshot = _read_file_snapshot(SMB_CONF)
+    include_snapshot = _read_file_snapshot(SHARES_INCLUDE)
+    original_role = samba_role()
+
+    lines = SMB_CONF.read_text(encoding="utf-8", errors="strict").splitlines()
+    marker = SHARE_INCLUDE_LINE.casefold()
+    lines = [line for line in lines if line.strip().casefold() != marker]
+    global_index = next((i for i, line in enumerate(lines) if line.strip().casefold() == "[global]"), None)
+    if global_index is None:
+        raise RuntimeError("smb.conf does not contain [global]")
+
+    # An included file may switch parser context to [Share]. Therefore the
+    # include must be the LAST directive of [global], immediately before the
+    # first following service section. Inserting it right after [global] would
+    # make the remaining realm/server-role directives belong to the share.
+    insert_at = len(lines)
+    for index in range(global_index + 1, len(lines)):
+        if SECTION_RE.match(lines[index]) and lines[index].strip().casefold() != "[global]":
+            insert_at = index
+            break
+    lines.insert(insert_at, f"    {SHARE_INCLUDE_LINE}")
+    _atomic_text_preserve(SMB_CONF, "\n".join(lines).rstrip() + "\n", 0o644)
+    if not SHARES_INCLUDE.exists():
+        _atomic_text_preserve(
+            SHARES_INCLUDE,
+            "# Managed by SRV Control Center 1.3.0. Do not edit by hand.\n",
+            0o640,
+        )
+
+    prepared_role = samba_role()
+    if original_role and prepared_role != original_role:
+        _restore_file_snapshot(SMB_CONF, conf_snapshot)
+        _restore_file_snapshot(SHARES_INCLUDE, include_snapshot)
+        raise RuntimeError(
+            f"refusing share configuration: Samba role changed while normalizing include ({original_role} -> {prepared_role})"
+        )
+    return conf_snapshot, include_snapshot, original_role
+
+
+def restore_share_context(context: tuple[dict[str, Any], dict[str, Any], str]) -> None:
+    conf_snapshot, include_snapshot, _ = context
+    _restore_file_snapshot(SMB_CONF, conf_snapshot)
+    _restore_file_snapshot(SHARES_INCLUDE, include_snapshot)
+    subprocess.run(["systemctl", "reload", "samba-ad-dc.service"], check=False)
+
+
+def validate_share_context(context: tuple[dict[str, Any], dict[str, Any], str]) -> None:
+    _, _, original_role = context
+    final_role = samba_role()
+    if original_role and final_role != original_role:
+        restore_share_context(context)
+        raise RuntimeError(
+            f"Samba role changed after share operation ({original_role} -> {final_role}); configuration restored"
+        )
+
+
 def invoke(request: dict[str, Any]) -> tuple[bool, str]:
     if not WORKER.is_file():
         return False, "Samba administration worker is not installed"
-    if str(request.get("action") or "") == "service-install-samba-dc":
+    action = str(request.get("action") or "")
+    if action == "service-install-samba-dc":
         ensure_samba_ad_dependencies()
+
+    share_context: tuple[dict[str, Any], dict[str, Any], str] | None = None
+    if action in SHARE_ACTIONS:
+        share_context = prepare_share_include()
+
     completed = subprocess.run(
         [str(WORKER)],
         input=json.dumps(request, ensure_ascii=False),
@@ -140,6 +278,15 @@ def invoke(request: dict[str, Any]) -> tuple[bool, str]:
         decoded = {}
     ok = completed.returncode == 0 and decoded.get("ok") is True
     detail = str(decoded.get("detail") or output or "Samba action returned no detail")[-12000:]
+
+    if share_context is not None:
+        if ok:
+            try:
+                validate_share_context(share_context)
+            except Exception as exc:
+                return False, str(exc)
+        else:
+            restore_share_context(share_context)
     return ok, detail
 
 
