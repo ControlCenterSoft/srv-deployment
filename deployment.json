@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "enabled": true,
-  "channel": "stable",
-  "release": "1.1.0",
-  "release_id": "1.1.0",
-  "release_path": "releases/1.1.0",
-  "manifest": "releases/1.1.0/manifest.json",
-  "preflight": "releases/1.1.0/preflight.sh",
-  "apply": "releases/1.1.0/apply.sh",
-  "acceptance": "releases/1.1.0/acceptance.sh",
-  "rollback": "releases/1.1.0/rollback.sh",
-  "description": "User-requested administration release: system/domain authentication, SSO, group RBAC, GitHub and OS update controls, backups, Torrents, AdGuard VPN and Services."
+  "channel": "production",
+  "release": "1.2.0",
+  "release_id": "1.2.0",
+  "release_path": "releases/1.2.0",
+  "manifest": "releases/1.2.0/manifest.json",
+  "preflight": "releases/1.2.0/preflight.sh",
+  "apply": "releases/1.2.0/apply.sh",
+  "acceptance": "releases/1.2.0/acceptance.sh",
+  "rollback": "releases/1.2.0/rollback.sh",
+  "description": "SRV Control Center 1.2.0 production release: four-column dashboard with top processes, full-administrator RBAC, AdGuard VPN settings and Minecraft Bedrock Control."
 }
