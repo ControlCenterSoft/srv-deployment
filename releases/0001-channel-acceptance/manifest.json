@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "release_id": "0001-channel-acceptance",
+  "kind": "channel-acceptance",
+  "description": "Safe deployment-channel acceptance release. Does not modify /opt/srv-control; writes only a reversible marker under /var/lib/srv-deployment.",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "2193cff718c2c8afa163bb0dcfbf57e58989aabe67f6ac6e72d021e0bc53a2f4"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "2f7457e7a9eaef78953108638c42f4afe36ca2993452cef704f1bddce1b873a4"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "e759be3e862650095795ece01cd3d61741001d9e3303e7ec4384ba0d0d4e68d4"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "9f647c47910ed61609e52b17204139b568068504e921145e8bcac6b774f98a06"
+    }
+  },
+  "safety": {
+    "project_mutation": false,
+    "service_restart": false,
+    "network_change": false,
+    "rollback_supported": true
+  }
+}
