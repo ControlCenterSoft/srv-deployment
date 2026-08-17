@@ -54,7 +54,13 @@ if command -v testparm >/dev/null 2>&1; then
     fi
 fi
 
-PYTHONPATH="$PROJECT" "$PROJECT/venv/bin/python" - "$REMOTE_SHA" <<'PY'
+# The application database uses PostgreSQL peer authentication for role
+# srv-control. Run application-level acceptance checks as the same Unix user;
+# running this block as root causes a valid peer-auth rejection.
+runuser -u srv-control -- env \
+    PYTHONPATH="$PROJECT" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    "$PROJECT/venv/bin/python" - "$REMOTE_SHA" <<'PY'
 from __future__ import annotations
 
 import http.client
