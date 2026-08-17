@@ -143,6 +143,59 @@
         return filesystem.quota_reason || "Квоты не поддерживаются на этом томе.";
     }
 
+    function parsePrincipal(raw, access = "read") {
+        let token = String(raw || "").trim();
+        if (!token) return null;
+        let type = "user";
+        if (token.startsWith("@")) {
+            type = "group";
+            token = token.slice(1).trim();
+        }
+        token = token.replace(/^['"]+|['"]+$/g, "");
+        const slash = Math.max(token.lastIndexOf("\\"), token.lastIndexOf("/"));
+        if (slash >= 0) token = token.slice(slash + 1);
+        token = token.replace(/^['"]+|['"]+$/g, "").trim();
+        if (!token) return null;
+        if (token.toLocaleLowerCase("en") === "everyone") {
+            return {type: "everyone", name: "Everyone", access};
+        }
+        return {type, name: token, access};
+    }
+
+    function subjectKey(subject) {
+        return `${subject.type}:${String(subject.name || "").toLocaleLowerCase("en")}`;
+    }
+
+    function subjectsFromExternalShare(share) {
+        const valid = Array.isArray(share.valid_users) ? share.valid_users : [];
+        const read = Array.isArray(share.read_list) ? share.read_list : [];
+        const write = Array.isArray(share.write_list) ? share.write_list : [];
+        const access = new Map();
+        for (const item of read) {
+            const subject = parsePrincipal(item, "read");
+            if (subject) access.set(subjectKey(subject), subject);
+        }
+        for (const item of write) {
+            const subject = parsePrincipal(item, "write");
+            if (subject) access.set(subjectKey(subject), subject);
+        }
+        const ordered = [];
+        const source = valid.length ? valid : [...read, ...write];
+        for (const item of source) {
+            const base = parsePrincipal(item, share.read_only === false ? "write" : "read");
+            if (!base) continue;
+            const resolved = access.get(subjectKey(base)) || base;
+            if (!ordered.some((subject) => subjectKey(subject) === subjectKey(resolved))) ordered.push(resolved);
+        }
+        for (const resolved of access.values()) {
+            if (!ordered.some((subject) => subjectKey(subject) === subjectKey(resolved))) ordered.push(resolved);
+        }
+        if (!ordered.length) {
+            ordered.push({type: "everyone", name: "Everyone", access: share.read_only === false ? "write" : "read"});
+        }
+        return ordered;
+    }
+
     function renderReadOnlyShare(share) {
         const editor = byId("shareEditor");
         editor.innerHTML = `
@@ -150,22 +203,27 @@
                 <div class="status-item"><span>Имя</span><strong>${esc(share.name)}</strong></div>
                 <div class="status-item"><span>Путь</span><strong>${esc(share.path || "—")}</strong></div>
                 <div class="status-item"><span>Видимость</span><strong>${share.browseable ? "Открытая" : "Скрытая"}</strong></div>
-                <div class="status-item"><span>Тип</span><strong>${share.system ? "Системная" : "Внешняя"}</strong></div>
+                <div class="status-item"><span>Тип</span><strong>Системная</strong></div>
             </div>
-            <div class="danger-note">Эта шара не создана Control Center. 1.3.0 показывает её состояние, но не перезаписывает стороннюю или системную конфигурацию автоматически.</div>
+            <div class="danger-note">Системные Samba/AD-шары защищены от редактирования в общем редакторе. Это предотвращает повреждение SYSVOL, NETLOGON и служебной конфигурации домена.</div>
         `;
     }
 
     function renderEditor(share = null, creating = false) {
-        if (!creating && share && !share.managed) {
+        if (!creating && share && share.system) {
             renderReadOnlyShare(share);
             return;
         }
         const editor = byId("shareEditor");
+        const external = Boolean(!creating && share && !share.managed);
         const value = share || {name: "", comment: "", path: "", browseable: true, subjects: [{type: "everyone", name: "Everyone", access: "read"}], quota: {}};
+        if (external) value.subjects = subjectsFromExternalShare(value);
         const canWrite = Boolean(state.data && state.data.can_write);
         const fullAdmin = Boolean(state.data && state.data.full_admin);
         const limit = value.quota && value.quota.limit_gib ? value.quota.limit_gib : "";
+        const externalNote = external
+            ? '<div class="badge-row"><span class="badge warn">Внешняя шара: параметры будут изменены в существующем smb.conf/include. Каталог и данные не перемещаются. Квота и файловые ACL автоматически не меняются.</span></div>'
+            : "";
         editor.innerHTML = `
             <form id="shareForm">
                 <div class="field-grid">
@@ -175,15 +233,16 @@
                     <label><span>Квота, ГиБ</span><input id="sQuota" type="number" min="0" max="1048576" step="1" placeholder="0 = без ограничения" value="${esc(limit)}"></label>
                 </div>
                 <div class="checkbox-row"><label><input id="sBrowseable" type="checkbox" ${value.browseable !== false ? "checked" : ""}> Открытая / видна при просмотре сети</label></div>
-                <div class="badge-row"><span class="badge ${value.filesystem && value.filesystem.quota_supported ? "ok" : "warn"}">${esc(quotaLabel(value.filesystem))}</span></div>
+                ${externalNote}
+                ${external ? "" : `<div class="badge-row"><span class="badge ${value.filesystem && value.filesystem.quota_supported ? "ok" : "warn"}">${esc(quotaLabel(value.filesystem))}</span></div>`}
                 <div class="panel-title">Права доступа</div>
                 <div class="subject-list" id="subjectList"></div>
                 <div class="config-actions"><button class="secondary-button" id="subjectAdd" type="button">Добавить пользователя / группу</button></div>
                 <div class="config-actions">
                     <button class="action-button" type="submit">${creating ? "Создать шару" : "Сохранить"}</button>
-                    ${!creating ? '<button class="danger-button" id="shareDelete" type="button">Удалить публикацию</button>' : ""}
+                    ${!creating && !external ? '<button class="danger-button" id="shareDelete" type="button">Удалить публикацию</button>' : ""}
                 </div>
-                ${!creating && fullAdmin ? '<div class="checkbox-row"><label><input id="deleteShareData" type="checkbox"> При удалении также удалить каталог и все данные</label></div>' : ""}
+                ${!creating && !external && fullAdmin ? '<div class="checkbox-row"><label><input id="deleteShareData" type="checkbox"> При удалении также удалить каталог и все данные</label></div>' : ""}
             </form>
         `;
         const subjectList = byId("subjectList");
@@ -191,6 +250,10 @@
         for (const subject of subjects) subjectList.appendChild(subjectRow(subject));
         byId("subjectAdd").addEventListener("click", () => subjectList.appendChild(subjectRow()));
         for (const control of editor.querySelectorAll("input,select,button")) control.disabled = !canWrite;
+        if (external) {
+            byId("sName").disabled = true;
+            byId("sQuota").disabled = true;
+        }
 
         byId("shareForm").addEventListener("submit", async (event) => {
             event.preventDefault();
@@ -203,14 +266,15 @@
                 setMessage("Добавьте хотя бы одного пользователя, группу или Everyone.", true);
                 return;
             }
-            const quotaRaw = byId("sQuota").value.trim();
+            const quotaRaw = external ? "" : byId("sQuota").value.trim();
             const payload = {
-                name: byId("sName").value.trim(),
+                name: value.name || byId("sName").value.trim(),
                 comment: byId("sComment").value.trim(),
                 path: byId("sPath").value.trim() || null,
                 browseable: byId("sBrowseable").checked,
                 subjects: subjectsPayload,
                 quota: {limit_gib: quotaRaw === "" || Number(quotaRaw) === 0 ? null : Number(quotaRaw)},
+                external_share: external,
             };
             try {
                 if (creating) {
@@ -218,14 +282,14 @@
                     queueNotice("Создание сетевой шары поставлено в очередь.");
                 } else {
                     await postJson(`/api/v1/shares/${encodeURIComponent(value.name)}/update`, payload);
-                    queueNotice("Изменение сетевой шары поставлено в очередь.");
+                    queueNotice(external ? "Изменение внешней SMB-шары поставлено в очередь." : "Изменение сетевой шары поставлено в очередь.");
                 }
             } catch (error) {
                 setMessage(error.message, true);
             }
         });
 
-        if (!creating) {
+        if (!creating && !external) {
             byId("shareDelete").addEventListener("click", async () => {
                 const deleteData = Boolean(byId("deleteShareData") && byId("deleteShareData").checked);
                 const text = deleteData
