@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import grp
 import html
 import json
 import os
@@ -21,6 +22,7 @@ import zipfile
 STATE_DIR = Path("/var/lib/srv-control")
 REGISTRY = STATE_DIR / "minecraft-instances.json"
 STATUS = STATE_DIR / "minecraft-instances-status.json"
+UPDATE_STATUS = STATE_DIR / "minecraft-update-status.json"
 BACKUP_ROOT = STATE_DIR / "minecraft-backups"
 OFFICIAL_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
 DOWNLOAD_RE = re.compile(
@@ -28,14 +30,8 @@ DOWNLOAD_RE = re.compile(
     re.I,
 )
 RUNTIME_EXCLUDES = {
-    "worlds",
-    "server.properties",
-    "allowlist.json",
-    "permissions.json",
-    "whitelist.json",
-    "logs",
-    "backups",
-    ".runtime-backups",
+    "worlds", "server.properties", "allowlist.json", "permissions.json", "whitelist.json",
+    "logs", "backups", ".runtime-backups",
 }
 INSTANCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
@@ -64,12 +60,8 @@ def iid(value: object) -> str:
 
 def run(command: list[str], *, timeout: int = 300, check: bool = True) -> str:
     result = subprocess.run(
-        command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=timeout,
-        check=False,
+        command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=timeout, check=False,
         env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8", "HOME": "/root"},
     )
     output = (result.stdout or "")[-12000:]
@@ -99,7 +91,35 @@ def atomic_json(path: Path, value: Any) -> None:
     if path.exists():
         info = path.stat()
         os.chown(temporary, info.st_uid, info.st_gid)
+    else:
+        try:
+            os.chown(temporary, 0, grp.getgrnam("srv-control").gr_gid)
+        except Exception:
+            pass
     os.replace(temporary, path)
+
+
+def update_status(instance_id: str, action: str, *, data: dict[str, Any] | None = None, error: str | None = None) -> None:
+    value = read_json(UPDATE_STATUS, {"schema_version": 1, "checked_at": None, "instances": {}})
+    if not isinstance(value, dict):
+        value = {"schema_version": 1, "instances": {}}
+    instances = value.get("instances")
+    if not isinstance(instances, dict):
+        instances = {}
+        value["instances"] = instances
+    timestamp = now()
+    record: dict[str, Any] = {
+        "checked_at": timestamp,
+        "action": action,
+        "result": "error" if error else "success",
+        "error": error,
+    }
+    if data:
+        record.update(data)
+    instances[instance_id] = record
+    value["schema_version"] = 1
+    value["checked_at"] = timestamp
+    atomic_json(UPDATE_STATUS, value)
 
 
 def registry_and_instance(value: object) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -286,11 +306,10 @@ def apply_update(request: dict[str, Any]) -> dict[str, Any]:
     if bool(payload.get("eula_accepted")):
         instance["eula_accepted"] = True
         atomic_json(REGISTRY, registry)
-
     latest, url = latest_package()
     installed = current_version(instance)
     if version_tuple(installed) and version_tuple(latest) <= version_tuple(installed):
-        return {"id": instance["id"], "installed": installed, "latest": latest, "updated": False}
+        return {"id": instance["id"], "installed": installed, "latest": latest, "updated": False, "update_available": False}
 
     working = Path(clean(instance.get("working_directory"), 1024, True)).resolve(strict=True)
     if not working.is_dir() or not (working / "bedrock_server").is_file():
@@ -342,11 +361,8 @@ def apply_update(request: dict[str, Any]) -> dict[str, Any]:
                 subprocess.run(["systemctl", "start", unit], check=False)
             raise
     return {
-        "id": instance["id"],
-        "installed": installed,
-        "latest": latest,
-        "updated": True,
-        "content_backup": str(content_backup),
+        "id": instance["id"], "installed": installed, "latest": latest,
+        "updated": True, "update_available": False, "content_backup": str(content_backup),
     }
 
 
@@ -355,16 +371,25 @@ def main() -> int:
     if not isinstance(request, dict):
         raise SystemExit("request must be a JSON object")
     action = str(request.get("action") or "")
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    instance_id = ""
     try:
+        instance_id = iid(payload.get("id"))
         if action == "minecraft-update-check":
             data = check_update(request)
         elif action == "minecraft-update-apply":
             data = apply_update(request)
         else:
             raise RuntimeError("unsupported update action")
+        update_status(instance_id, action, data=data)
         print(json.dumps({"ok": True, "detail": json.dumps(data, ensure_ascii=False)}, ensure_ascii=False))
         return 0
     except Exception as exc:
+        if instance_id:
+            try:
+                update_status(instance_id, action, error=str(exc)[-2000:])
+            except Exception:
+                pass
         print(json.dumps({"ok": False, "detail": str(exc)[-12000:]}, ensure_ascii=False))
         return 1
 
