@@ -15,7 +15,7 @@
     },
     "acceptance": {
       "path": "acceptance-1.3.3.sh",
-      "sha256": "b030db4b547169f0063ae3709b119b38f472774a14a6a505846183bc0cdf5392"
+      "sha256": "ae0d068e4011ba0030089e98c6a509e2ef149847a92f74090602e9ee30779997"
     },
     "rollback": {
       "path": "rollback-1.3.3.sh",
