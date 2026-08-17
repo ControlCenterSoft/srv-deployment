@@ -1,0 +1,30 @@
+name: SRV diagnostics uploader validation
+
+on:
+  push:
+    branches: [feature/diagnostics-uploader]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell and safety contracts
+        run: |
+          set -Eeuo pipefail
+          bash -n tools/srvcc-send-diagnostics.sh
+          bash tools/srvcc-send-diagnostics.sh --help | grep -Fq 'diagnostics/latest'
+          grep -Fq 'DIAGNOSTICS SECURITY BLOCK' tools/srvcc-send-diagnostics.sh
+          grep -Fq 'github_pat_' tools/srvcc-send-diagnostics.sh
+          grep -Fq 'PRIVATE KEY' tools/srvcc-send-diagnostics.sh
+          grep -Fq 'state-publish.lock' tools/srvcc-send-diagnostics.sh
+          grep -Fq 'permissions.push' tools/srvcc-send-diagnostics.sh
+          ! grep -Fq '/root/.config/gh/hosts.yml' tools/srvcc-send-diagnostics.sh
+          ! grep -Fq '/root/.ssh' tools/srvcc-send-diagnostics.sh
+          ! grep -Fq '.env' tools/srvcc-send-diagnostics.sh
