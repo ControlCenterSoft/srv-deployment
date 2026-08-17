@@ -15,13 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate scripts and source syntax
+
+      - name: Validate scripts, exact source parts and PXE contract
         run: |
           set -Eeuo pipefail
           for f in releases/1.4.0/preflight.sh releases/1.4.0/apply.sh releases/1.4.0/acceptance.sh releases/1.4.0/rollback.sh; do bash -n "$f"; done
-          cat releases/1.4.0/payload/app/core/release14.parts/*.part > /tmp/release14-core.py
-          cat releases/1.4.0/payload/app/routers/release14.parts/*.part > /tmp/release14-router.py
-          cat releases/1.4.0/system/srv-control-release14-agent.parts/*.part > /tmp/release14-agent.py
+          python3 releases/1.4.0/tests/pxe_contract.py
+          cat releases/1.4.0/payload/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > /tmp/release14-core.py
+          cat releases/1.4.0/payload/app/routers/release14.parts/{00,01,02,03}.part > /tmp/release14-router.py
+          cat releases/1.4.0/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > /tmp/release14-agent.py
           python3 -m py_compile \
             releases/1.4.0/payload/app/main.py \
             /tmp/release14-core.py \
@@ -29,6 +31,34 @@ jobs:
             releases/1.4.0/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py \
             /tmp/release14-agent.py
           for f in releases/1.4.0/payload/static/js/*.js; do node --check "$f"; done
+
+      - name: Verify pinned upstream PXE boot assets
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL --retry 3 --retry-all-errors \
+            https://github.com/ipxe/ipxe/releases/download/v2.0.0/ipxeboot.tar.gz \
+            -o /tmp/ipxeboot.tar.gz
+          test "$(stat -c %s /tmp/ipxeboot.tar.gz)" -gt 250000
+          tar -tzf /tmp/ipxeboot.tar.gz > /tmp/ipxe-files.txt
+          for path in \
+            undionly.kpxe \
+            i386-efi/snponly.efi \
+            x86_64-efi/snponly.efi \
+            x86_64-sb/snponly-shim.efi \
+            x86_64-sb/snponly.efi \
+            arm32-efi/snponly.efi \
+            arm64-efi/snponly.efi \
+            arm64-sb/snponly-shim.efi \
+            arm64-sb/snponly.efi; do
+            grep -Eq "(^|/)${path//./\\.}$" /tmp/ipxe-files.txt || { echo "missing upstream iPXE asset: $path" >&2; exit 1; }
+          done
+          for name in wimboot wimboot.i386 wimboot.arm64; do
+            curl -fsSL --retry 3 --retry-all-errors \
+              "https://github.com/ipxe/wimboot/releases/download/v2.9.0/$name" \
+              -o "/tmp/$name"
+            test "$(stat -c %s "/tmp/$name")" -gt 50000 || { echo "invalid upstream $name" >&2; exit 1; }
+          done
+
       - name: Validate release manifest wiring
         run: |
           python3 - <<'PY'
@@ -39,11 +69,14 @@ jobs:
           assert cfg['release_path']=='releases/1.4.0',cfg
           manifest=json.loads(Path(cfg['manifest']).read_text())
           assert manifest['release_id']=='1.4.0',manifest
+          assert manifest['upgrade_from']=='>=1.3.0,<1.4.0',manifest
           for name,item in manifest['scripts'].items():
               path=Path(cfg['release_path'])/item['path']
               assert path.is_file(),(name,path)
               assert hashlib.sha256(path.read_bytes()).hexdigest()==item['sha256'],(name,path)
-          text=Path('releases/1.4.0/acceptance.sh').read_text()
-          assert 'not authorized' in text
-          assert 'unknown PXE device received installation payload' in text
+          acceptance=Path('releases/1.4.0/acceptance.sh').read_text()
+          assert 'unknown PXE device received installation payload' in acceptance
+          assert 'private PXE profile leaked through static media root' in acceptance
+          apply=Path('releases/1.4.0/apply.sh').read_text()
+          assert "{00,01,02,03,04,05,06,07,08,09,10,11,12}.part" in apply
           PY
