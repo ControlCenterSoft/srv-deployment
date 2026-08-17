@@ -10,11 +10,15 @@ backup_project(){ local r="$1"; install -d -m 0750 "$BACKUP_DIR/project/$(dirnam
 backup_abs(){ local p="$1" k="${1#/}"; install -d -m 0750 "$BACKUP_DIR/system/$(dirname "$k")"; if [[ -e "$p" || -L "$p" ]]; then cp -a "$p" "$BACKUP_DIR/system/$k"; else : > "$BACKUP_DIR/system/${k}.absent"; fi; }
 changed=(app/main.py app/core/release14.py app/routers/release14.py migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py templates/shell-1.4.html templates/services-1.4.html templates/dhcp-1.4.html templates/pxe-1.4.html templates/network-1.4.html templates/shares-1.4.html templates/system-1.4.html static/js/services-1.4.js static/js/dhcp-1.4.js static/js/pxe-1.4.js static/js/network-1.4.js static/js/shares-1.4.js static/js/system-1.4.js static/css/release-1.4.css)
 for p in "${changed[@]}"; do backup_project "$p"; done
-system_paths=(/usr/local/libexec/srv-control-release14-agent /usr/local/libexec/srv-control-pxe-probe /etc/systemd/system/srv-control-release14-agent.service /etc/systemd/system/srv-control-release14-agent.path /etc/systemd/system/srv-control-backup-retention.service /etc/systemd/system/srv-control-backup-retention.path)
+system_paths=(/usr/local/libexec/srv-control-backup /usr/local/libexec/srv-control-release14-agent /usr/local/libexec/srv-control-pxe-probe /etc/systemd/system/srv-control-release14-agent.service /etc/systemd/system/srv-control-release14-agent.path /etc/systemd/system/srv-control-backup-retention.service /etc/systemd/system/srv-control-backup-retention.path)
 for p in "${system_paths[@]}"; do backup_abs "$p"; done
 if [[ -f "$META" ]]; then cp -a "$META" "$BACKUP_DIR/state/release.json"; else : > "$BACKUP_DIR/state/release.json.absent"; fi
-log "Creating pre-release 1.4.0 backup"
+
+# Deliberately create the mandatory pre-release snapshot with the currently
+# installed 1.3 worker before replacing that worker with the 1.4 PXE-aware one.
+log "Creating pre-release 1.4.0 backup with current worker"
 /usr/local/libexec/srv-control-backup create --actor system --reason pre-release-1.4.0 > "$BACKUP_DIR/state/pre-release-backup.json"
+
 log "Installing incremental 1.4.0 application files"
 for p in "${changed[@]}"; do
     case "$p" in
@@ -31,11 +35,13 @@ for p in "${changed[@]}"; do
         *) install -D -m 0640 -o root -g "$APP_GROUP" "$RELEASE_DIR/payload/$p" "$PROJECT/$p" ;;
     esac
 done
+
 tmp_agent="$(mktemp)"
 cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > "$tmp_agent"
-python3 -m py_compile "$tmp_agent" "$RELEASE_DIR/system/srv-control-pxe-probe"
+python3 -m py_compile "$tmp_agent" "$RELEASE_DIR/system/srv-control-pxe-probe" "$RELEASE_DIR/system/srv-control-backup"
 install -m 0755 -o root -g root "$tmp_agent" /usr/local/libexec/srv-control-release14-agent
 install -m 0755 -o root -g root "$RELEASE_DIR/system/srv-control-pxe-probe" /usr/local/libexec/srv-control-pxe-probe
+install -m 0755 -o root -g root "$RELEASE_DIR/system/srv-control-backup" /usr/local/libexec/srv-control-backup
 rm -f "$tmp_agent"
 for u in srv-control-release14-agent.service srv-control-release14-agent.path srv-control-backup-retention.service srv-control-backup-retention.path; do install -m 0644 -o root -g root "$RELEASE_DIR/system/$u" "/etc/systemd/system/$u"; done
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$STATE_DIR/release14-actions" "$STATE_DIR/pxe" "$STATE_DIR/pxe/uploads"
