@@ -32,6 +32,48 @@ def _ensure_profile_tokens(profile_id: int, profile: dict) -> dict:
     return profile
 
 
+def _ubuntu_storage(config: dict) -> tuple[dict, list[str]]:
+    layout = str(config.get('storage_layout') or 'direct').strip().lower()
+    if layout not in {'direct', 'lvm'}:
+        raise RuntimeError('Ubuntu PXE storage_layout must be direct or lvm')
+    match = config.get('disk_match')
+    early = []
+    storage = {'layout': {'name': layout}}
+    if match is not None:
+        if not isinstance(match, dict) or not match:
+            raise RuntimeError('Ubuntu PXE disk_match must be a non-empty object')
+        allowed = {'serial', 'path', 'id_path', 'devpath', 'model', 'vendor', 'ssd', 'size'}
+        unknown = sorted(set(match) - allowed)
+        if unknown:
+            raise RuntimeError('unsupported Ubuntu disk_match keys: ' + ', '.join(unknown))
+        normalized = {}
+        for key, value in match.items():
+            if key == 'ssd':
+                if not isinstance(value, bool):
+                    raise RuntimeError('Ubuntu disk_match.ssd must be true or false')
+                normalized[key] = value
+            elif key == 'size':
+                value = str(value).strip().lower()
+                if value not in {'largest', 'smallest'}:
+                    raise RuntimeError('Ubuntu disk_match.size must be largest or smallest')
+                normalized[key] = value
+            else:
+                value = str(value).strip()
+                if not value or any(ch in value for ch in '\r\n\x00'):
+                    raise RuntimeError(f'invalid Ubuntu disk_match.{key}')
+                normalized[key] = value
+        storage['layout']['match'] = normalized
+    else:
+        # Keep the easy single-disk path automatic, but refuse to guess on a
+        # multi-disk machine. A non-zero early-command aborts autoinstall before
+        # storage configuration is applied.
+        early.append(
+            "sh -c 'n=0; for d in /sys/block/sd* /sys/block/vd* /sys/block/xvd* /sys/block/nvme*n* /sys/block/mmcblk*; "
+            "do [ -e \"$d\" ] && n=$((n+1)); done; [ \"$n\" -eq 1 ] || { echo SRV-PXE-multiple-install-disks >&2; exit 42; }'"
+        )
+    return storage, early
+
+
 def publish_linux(profile: dict, config: dict, target: Path, server: str) -> None:
     image_id = int(profile['image_id'])
     meta = profile.get('metadata') or {}
@@ -47,30 +89,42 @@ def publish_linux(profile: dict, config: dict, target: Path, server: str) -> Non
     if not report_token or not boot_token:
         raise RuntimeError('PXE profile tokens are missing')
 
-    user = str(config.get('username') or 'admin')
+    user = str(config.get('username') or 'admin').strip()
+    if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user):
+        raise RuntimeError('Linux PXE username must be a valid lowercase Unix account name')
     password = str(config.get('password_plain') or '')
     if not password:
         raise RuntimeError('Linux PXE profile requires password_plain in an assigned configuration profile')
     password_hash = run(['openssl', 'passwd', '-6', '-stdin'], input_text=password + '\n', timeout=20).strip()
     private = f'http://${{next-server}}/pxe/profile/{profile["id"]}/{boot_token}'
+    timezone_name = str(profile.get('timezone') or config.get('timezone') or 'Etc/UTC').strip()
+    if not re.fullmatch(r'[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*', timezone_name):
+        raise RuntimeError('invalid Linux PXE timezone')
 
     if flavor == 'ubuntu':
         seed = target / 'seed'
         seed.mkdir(parents=True, exist_ok=True)
         packages = config.get('apt_packages') if isinstance(config.get('apt_packages'), list) else []
-        user_data = {
-            'autoinstall': {
-                'version': 1,
-                'locale': profile.get('locale') or 'ru_RU.UTF-8',
-                'keyboard': {'layout': 'us'},
-                'identity': {'hostname': profile['computer_name'], 'username': user, 'password': password_hash},
-                'ssh': {'install-server': bool(config.get('ssh', True))},
-                'packages': [str(item) for item in packages],
-                'late-commands': [
-                    f'curtin in-target --target=/target -- sh -c "curl -fsS -X POST http://{server}/pxe/report/{profile["id"]}/{report_token}/success || true"'
-                ],
-            }
+        storage, early_commands = _ubuntu_storage(config)
+        autoinstall = {
+            'version': 1,
+            'locale': profile.get('locale') or 'ru_RU.UTF-8',
+            'keyboard': {'layout': 'us'},
+            'timezone': timezone_name,
+            'identity': {'hostname': profile['computer_name'], 'username': user, 'password': password_hash},
+            'ssh': {'install-server': bool(config.get('ssh', True))},
+            'packages': [str(item) for item in packages],
+            'storage': storage,
+            'late-commands': [
+                f'curtin in-target --target=/target -- sh -c "curl -fsS --retry 5 --retry-delay 2 -X POST http://{server}/pxe/report/{profile["id"]}/{report_token}/success || true"'
+            ],
+            'error-commands': [
+                f'curl -fsS --retry 3 --retry-delay 2 -X POST http://{server}/pxe/report/{profile["id"]}/{report_token}/failed || true'
+            ],
         }
+        if early_commands:
+            autoinstall['early-commands'] = early_commands
+        user_data = {'autoinstall': autoinstall}
         (seed / 'user-data').write_text('#cloud-config\n' + json.dumps(user_data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         (seed / 'meta-data').write_text(
             f'instance-id: srv-pxe-{profile["id"]}\nlocal-hostname: {profile["computer_name"]}\n',
@@ -78,9 +132,63 @@ def publish_linux(profile: dict, config: dict, target: Path, server: str) -> Non
         )
         args = f'ip=dhcp url=http://${{next-server}}/pxe/files/isos/{image_id}.iso autoinstall ds=nocloud-net;s={private}/seed/ ---'
     else:
-        preseed = f'''d-i debian-installer/locale string en_US\nd-i keyboard-configuration/xkb-keymap select us\nd-i netcfg/get_hostname string {profile['computer_name']}\nd-i passwd/user-fullname string {user}\nd-i passwd/username string {user}\nd-i passwd/user-password-crypted password {password_hash}\nd-i clock-setup/utc boolean true\nd-i partman-auto/method string regular\nd-i partman-auto/choose_recipe select atomic\nd-i partman/confirm boolean true\nd-i partman/confirm_nooverwrite boolean true\nd-i pkgsel/include string openssh-server curl\nd-i finish-install/reboot_in_progress note\nd-i preseed/late_command string in-target sh -c 'curl -fsS -X POST http://{server}/pxe/report/{profile['id']}/{report_token}/success || true'\n'''
+        install_disk = str(config.get('install_disk') or '').strip()
+        if install_disk and (not install_disk.startswith('/dev/') or not re.fullmatch(r'/dev/[A-Za-z0-9._/-]+', install_disk)):
+            raise RuntimeError('Debian PXE install_disk must be a /dev/... path')
+        mirror_host = str(config.get('mirror_host') or 'deb.debian.org').strip()
+        mirror_dir = str(config.get('mirror_directory') or '/debian').strip()
+        if not re.fullmatch(r'[A-Za-z0-9.-]+', mirror_host) or not mirror_dir.startswith('/') or any(ch in mirror_dir for ch in '\r\n\x00 '):
+            raise RuntimeError('invalid Debian PXE mirror configuration')
+        disk_lines = []
+        if install_disk:
+            disk_lines += [
+                f'd-i partman-auto/disk string {install_disk}',
+                f'd-i grub-installer/bootdev string {install_disk}',
+            ]
+        else:
+            # Debian defaults safely only when one disk exists. Immediately
+            # before partitioning, select that sole disk or abort on >1 disks.
+            disk_lines.append(
+                'd-i partman/early_command string sh -c \'set -- $(list-devices disk); '
+                '[ "$#" -eq 1 ] || exit 42; debconf-set partman-auto/disk "$1"; '
+                'debconf-set grub-installer/bootdev "$1"\''
+            )
+        preseed_lines = [
+            'd-i debian-installer/locale string en_US.UTF-8',
+            'd-i keyboard-configuration/xkb-keymap select us',
+            f"d-i netcfg/get_hostname string {profile['computer_name']}",
+            'd-i passwd/root-login boolean false',
+            f'd-i passwd/user-fullname string {user}',
+            f'd-i passwd/username string {user}',
+            f'd-i passwd/user-password-crypted password {password_hash}',
+            'd-i clock-setup/utc boolean true',
+            f'd-i time/zone string {timezone_name}',
+            'd-i clock-setup/ntp boolean true',
+            'd-i mirror/country string manual',
+            'd-i mirror/protocol string http',
+            f'd-i mirror/http/hostname string {mirror_host}',
+            f'd-i mirror/http/directory string {mirror_dir}',
+            'd-i mirror/http/proxy string',
+            *disk_lines,
+            'd-i partman-auto/method string regular',
+            'd-i partman-auto/choose_recipe select atomic',
+            'd-i partman-partitioning/confirm_write_new_label boolean true',
+            'd-i partman/choose_partition select finish',
+            'd-i partman/confirm boolean true',
+            'd-i partman/confirm_nooverwrite boolean true',
+            'd-i pkgsel/include string openssh-server curl',
+            'd-i grub-installer/only_debian boolean true',
+            'd-i finish-install/reboot_in_progress note',
+            f"d-i preseed/late_command string in-target sh -c 'curl -fsS --retry 5 --retry-delay 2 -X POST http://{server}/pxe/report/{profile['id']}/{report_token}/success || true'",
+        ]
+        preseed = '\n'.join(preseed_lines) + '\n'
         (target / 'preseed.cfg').write_text(preseed, encoding='utf-8')
-        args = f'auto=true priority=critical interface=auto preseed/url={private}/preseed.cfg ---'
+        # Network-provided preseeds are read only after the initial network
+        # setup, so hostname/locale/keymap are also provided as boot parameters.
+        args = (
+            f'auto=true priority=critical interface=auto hostname={profile["computer_name"]} '
+            f'locale=en_US.UTF-8 keymap=us url={private}/preseed.cfg ---'
+        )
 
     base = 'http://${next-server}/pxe/files'
     lines = [
@@ -91,8 +199,6 @@ def publish_linux(profile: dict, config: dict, target: Path, server: str) -> Non
     shims = meta.get('secure_boot_shims') if isinstance(meta.get('secure_boot_shims'), dict) else {}
     shim_name = str(shims.get(arch) or '')
     if shim_name:
-        # iPXE shim is a no-op when Secure Boot is disabled/non-UEFI, so the
-        # same profile works for both Secure Boot and normal UEFI/BIOS.
         lines.append(f'shim {base}/images/{image_id}/{shim_name} || goto denied')
     lines += [
         f'imgfetch --name srv-consume http://${{next-server}}/pxe/consume/{profile["id"]}/{boot_token}?mac=${{net0/mac}} || goto denied',
