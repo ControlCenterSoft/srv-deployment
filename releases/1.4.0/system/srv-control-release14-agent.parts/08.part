@@ -27,13 +27,13 @@ def _interface_ipv4(interface: str) -> str:
 def _pxe_autoexec() -> str:
     return (
         '#!ipxe\n'
-        'isset ${net0/ip} || dhcp || goto failed\n'
+        'isset ${netX/ip} || dhcp || goto failed\n'
         'isset ${next-server} || goto failed\n'
-        'chain http://${next-server}/pxe/boot.ipxe?mac=${net0/mac}&platform=${platform}&buildarch=${buildarch} || goto failed\n'
+        'chain http://${next-server}/pxe/boot.ipxe?mac=${netX/mac}&platform=${platform}&buildarch=${buildarch} || goto failed\n'
         'exit\n'
         ':failed\n'
         'echo SRV PXE automatic chainload failed.\n'
-        'echo MAC=${net0/mac} platform=${platform} buildarch=${buildarch} next-server=${next-server}\n'
+        'echo MAC=${netX/mac} platform=${platform} buildarch=${buildarch} next-server=${next-server}\n'
         'ifstat\n'
         'route\n'
         'sleep 5\n'
