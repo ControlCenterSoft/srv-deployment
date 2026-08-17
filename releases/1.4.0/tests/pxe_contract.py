@@ -65,6 +65,19 @@ def exercise_agent_runtime(agent: str) -> None:
     finally:
         ns['run'] = original_run
 
+    storage, early = ns['_ubuntu_storage']({'storage_layout': 'direct'})
+    if storage != {'layout': {'name': 'direct'}} or not early or 'exit 42' not in early[0]:
+        fail('Ubuntu automatic storage no longer blocks ambiguous multi-disk installs')
+    storage, early = ns['_ubuntu_storage']({'storage_layout': 'lvm', 'disk_match': {'serial': 'SAFE-*'}})
+    if storage.get('layout', {}).get('match', {}).get('serial') != 'SAFE-*' or early:
+        fail('Ubuntu explicit disk_match was not preserved deterministically')
+    try:
+        ns['_ubuntu_storage']({'disk_match': {'unsupported': 'x'}})
+    except RuntimeError:
+        pass
+    else:
+        fail('Ubuntu unsupported disk_match key was accepted')
+
     target = Path(tempfile.mkdtemp(prefix='srvcc-pxe-win-contract.'))
     base_called = {'count': 0}
 
@@ -155,6 +168,7 @@ def main() -> int:
     require(router, '/pxe/profile/{profile_id}/{token}/{artifact:path}', 'profile_boot_token_valid', '/pxe/consume/{profile_id}/{token}')
 
     require(core, 'def peek_boot_profile(', 'def consume_boot_profile(', 'install_authorized=false', "status='installing'")
+    require(core, "PXE_ENTRY = Path('/srv/pxe/media/boot/entry.ipxe')", "'needs_upgrade': bool(pxe_installed and not pxe_managed)")
     boot_route = router[router.index("@router.get('/pxe/boot.ipxe'"):router.index("@router.post('/pxe/report/")]
     require(boot_route, 'peek_boot_profile(mac)', 'boot_file.is_file()', 'Authorization retained', '_pxe_firmware_compatible(firmware, arch, image_arch)')
     if re.search(r'(?<!peek_)boot_profile\(mac\)', boot_route):
@@ -256,6 +270,30 @@ def main() -> int:
         "run(['sha256sum', str(target)]",
     )
 
+    software = effective_function(agent, 'def _software_commands(')
+    require(
+        software,
+        'PXE software package is missing',
+        'outside managed media root',
+        'unsupported PXE software package type',
+        'if "%SRV_RC%"=="3010" set "SRV_REBOOT=1"',
+        'goto setup_failed',
+    )
+    require(
+        agent,
+        'install_disk_number',
+        'install_disk_serial',
+        "Get-Disk ^| Where-Object",
+        'if not defined InstallDisk goto disk_failed',
+        'diskpart-selected.txt',
+        'Cannot select exactly one Windows installation disk',
+        ':setup_failed',
+        'if errorlevel 1 goto setup_failed',
+        'Add-Computer -DomainName',
+    )
+    if 'select disk 0' in agent:
+        fail('Windows PXE still contains a destructive hard-coded select disk 0')
+
     windows = effective_function(agent, 'def publish_windows(')
     require(
         windows,
@@ -265,6 +303,20 @@ def main() -> int:
         'dism /Get-WimInfo',
         'diskpart /s %DiskScript%',
         '/CheckIntegrity /Verify',
+    )
+
+    require(
+        agent,
+        'def _ubuntu_storage(',
+        "storage_layout must be direct or lvm",
+        'Ubuntu PXE disk_match must be a non-empty object',
+        'SRV-PXE-multiple-install-disks',
+        "'error-commands'",
+        'd-i partman/early_command string',
+        'list-devices disk',
+        'd-i mirror/http/hostname string',
+        'd-i grub-installer/bootdev string',
+        'priority=critical interface=auto hostname=',
     )
 
     linux = effective_function(agent, 'def publish_linux(')
@@ -296,7 +348,8 @@ def main() -> int:
     print(
         'PXE CONTRACT PASS: classic PXE/TFTP + UEFI HTTP Boot; BIOS + UEFI IA32/x64/ARM32/ARM64; '
         'x64/ARM64 Secure Boot; firmware/image gate; subnet-bound next-server; mutually-exclusive option93; '
-        'Windows exact-edition+WIM precheck; Linux pre-consume Secure Boot guard; deny-by-default; pinned-assets'
+        'Windows exact-edition+WIM+disk+postinstall safety; Linux disk/mirror/pre-consume safety; '
+        'deny-by-default; pinned-assets'
     )
     return 0
 
