@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0008-system-security-admin",
-  "release_id": "0008-system-security-admin",
-  "release_path": "releases/0008-system-security-admin",
-  "manifest": "releases/0008-system-security-admin/manifest.json",
-  "preflight": "releases/0008-system-security-admin/preflight.sh",
-  "apply": "releases/0008-system-security-admin/apply.sh",
-  "acceptance": "releases/0008-system-security-admin/acceptance.sh",
-  "rollback": "releases/0008-system-security-admin/rollback.sh",
-  "description": "Secure privileged system administration, OS update controls, reboot and managed AdGuard VPN service."
+  "release": "0009-system-action-history",
+  "release_id": "0009-system-action-history",
+  "release_path": "releases/0009-system-action-history",
+  "manifest": "releases/0009-system-action-history/manifest.json",
+  "preflight": "releases/0009-system-action-history/preflight.sh",
+  "apply": "releases/0009-system-action-history/apply.sh",
+  "acceptance": "releases/0009-system-action-history/acceptance.sh",
+  "rollback": "releases/0009-system-action-history/rollback.sh",
+  "description": "Expose privileged system action queue and result history in the System UI."
 }
