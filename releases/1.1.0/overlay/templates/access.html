@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Права пользователей — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css">
+    <link rel="stylesheet" href="/static/css/access.css">
+</head>
+<body>
+<div class="page">
+    <header class="page-header">
+        <div>
+            <h1>Права пользователей</h1>
+            <p>Авторизация системными и доменными учётными записями. Права назначаются группам.</p>
+        </div>
+        <div class="identity-badge" id="identityBadge">—</div>
+    </header>
+
+    <section class="panel">
+        <div class="panel-title">Назначить права группе</div>
+        <form id="grantForm" class="grant-form">
+            <label>
+                <span>Источник</span>
+                <select id="grantSource" required>
+                    <option value="local">Локальная группа</option>
+                    <option value="domain">Доменная группа</option>
+                    <option value="any">Любой источник</option>
+                </select>
+            </label>
+            <label>
+                <span>Группа</span>
+                <input id="grantGroup" required autocomplete="off">
+            </label>
+            <label>
+                <span>Модуль</span>
+                <select id="grantModule" required></select>
+            </label>
+            <label>
+                <span>Уровень</span>
+                <select id="grantAccess" required>
+                    <option value="read">Чтение</option>
+                    <option value="write">Запись</option>
+                </select>
+            </label>
+            <button type="submit">Сохранить</button>
+        </form>
+        <div class="action-message" id="grantMessage"></div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-title">Назначенные роли</div>
+        <div class="grant-table-wrap">
+            <table class="grant-table">
+                <thead>
+                    <tr>
+                        <th>Источник</th>
+                        <th>Группа</th>
+                        <th>Модуль</th>
+                        <th>Права</th>
+                        <th>Изменил</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="grantRows"></tbody>
+            </table>
+        </div>
+    </section>
+</div>
+<script src="/static/js/access.js"></script>
+</body>
+</html>
