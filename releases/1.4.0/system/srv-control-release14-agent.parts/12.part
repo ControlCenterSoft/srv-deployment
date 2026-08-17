@@ -155,6 +155,33 @@ def validate_pxe_runtime() -> str:
     return 'PXE runtime validation passed for BIOS + UEFI IA32/x64/ARM32/ARM64 and x64/ARM64 Secure Boot assets'
 
 
+# Official GitHub Release digests.  Runtime installation refuses any asset
+# whose SHA-256 differs, even if the HTTP request and size checks succeeded.
+PXE_ASSET_SHA256 = {
+    IPXE_ARCHIVE_URL: '01a526d4cc791fc30362259c609d6c506cc64a7bdff51b9a5eb788354e17eee1',
+    WIMBOOT_X64_URL: '5f067ccdc4d084d5bf77b6c853bd0f8402dfc2b4cd1b103d358993ae97fae8e3',
+    WIMBOOT_I386_URL: 'b770ad4fa6111d688c062478de3849806b9c3e94a6b770453ef56c94fec254d9',
+    WIMBOOT_ARM64_URL: 'b1440c6386981fb447b2f341294ec7a59546d496dff0f075b0f698c853f1c949',
+}
+
+
+def _download(url: str, target: Path, minimum: int) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    run(['curl', '-fL', '--retry', '3', '--retry-all-errors', '--connect-timeout', '20', '-o', str(target), url], timeout=300)
+    if not target.is_file() or target.stat().st_size < minimum:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f'downloaded PXE asset is unexpectedly small: {url}')
+    expected = PXE_ASSET_SHA256.get(url)
+    if not expected:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f'PXE asset has no pinned SHA-256: {url}')
+    actual = run(['sha256sum', str(target)], timeout=30).split()[0].lower()
+    if actual != expected:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f'PXE asset SHA-256 mismatch: {url}')
+    os.chmod(target, 0o644)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--prune-backups', action='store_true')
