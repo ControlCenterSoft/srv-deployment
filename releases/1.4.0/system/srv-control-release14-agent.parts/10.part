@@ -74,8 +74,25 @@ def publish_windows(profile: dict, config: dict, target: Path, server: str, cred
     if not report_token or not boot_token:
         raise RuntimeError('PXE profile tokens are missing')
 
-    diskpart_uefi = '''select disk 0\nclean\nconvert gpt\ncreate partition efi size=260\nformat quick fs=fat32 label=SYSTEM\nassign letter=S\ncreate partition msr size=16\ncreate partition primary\nformat quick fs=ntfs label=Windows\nassign letter=W\nexit\n'''
-    diskpart_bios = '''select disk 0\nclean\nconvert mbr\ncreate partition primary size=550\nformat quick fs=ntfs label=SYSTEM\nactive\nassign letter=S\ncreate partition primary\nformat quick fs=ntfs label=Windows\nassign letter=W\nexit\n'''
+    disk_number_raw = config.get('install_disk_number')
+    disk_serial = str(config.get('install_disk_serial') or '').strip()
+    if disk_number_raw not in (None, '') and disk_serial:
+        raise RuntimeError('Windows PXE: use only install_disk_number or install_disk_serial, not both')
+    disk_number = None
+    if disk_number_raw not in (None, ''):
+        try:
+            disk_number = int(disk_number_raw)
+        except Exception as exc:
+            raise RuntimeError('Windows PXE install_disk_number must be an integer') from exc
+        if disk_number < 0 or disk_number > 255:
+            raise RuntimeError('Windows PXE install_disk_number must be 0..255')
+    if disk_serial and (len(disk_serial) > 160 or any(ch in disk_serial for ch in '\r\n\x00')):
+        raise RuntimeError('invalid Windows PXE install_disk_serial')
+
+    # Disk templates intentionally do not select a disk. WinPE creates a
+    # temporary script with the validated runtime disk number prepended.
+    diskpart_uefi = '''clean\nconvert gpt\ncreate partition efi size=260\nformat quick fs=fat32 label=SYSTEM\nassign letter=S\ncreate partition msr size=16\ncreate partition primary\nformat quick fs=ntfs label=Windows\nassign letter=W\nexit\n'''
+    diskpart_bios = '''clean\nconvert mbr\ncreate partition primary size=550\nformat quick fs=ntfs label=SYSTEM\nactive\nassign letter=S\ncreate partition primary\nformat quick fs=ntfs label=Windows\nassign letter=W\nexit\n'''
     (target / 'diskpart-uefi.txt').write_text(diskpart_uefi, encoding='utf-8')
     (target / 'diskpart-bios.txt').write_text(diskpart_bios, encoding='utf-8')
 
@@ -126,7 +143,23 @@ def publish_windows(profile: dict, config: dict, target: Path, server: str, cred
     ]
     (target / 'SetupComplete.cmd').write_text('\r\n'.join(setup) + '\r\n', encoding='utf-8')
 
-    start = f'''@echo off\r\nsetlocal\r\nwpeinit\r\nwpeutil WaitForNetwork\r\nwpeutil UpdateBootInfo\r\nset Firmware=\r\nfor /f "tokens=3" %%A in ('reg query HKLM\\System\\CurrentControlSet\\Control /v PEFirmwareType ^| find "PEFirmwareType"') do set Firmware=%%A\r\nif /I "%Firmware%"=="0x1" goto bios\r\nif /I "%Firmware%"=="0x2" goto uefi\r\ngoto firmware_failed\r\n\r\n:bios\r\nif /I "{arch}"=="arm64" goto unsupported\r\nset DiskScript=X:\\Windows\\System32\\diskpart-bios.txt\r\nset BootMode=BIOS\r\ngoto network\r\n\r\n:uefi\r\nset DiskScript=X:\\Windows\\System32\\diskpart-uefi.txt\r\nset BootMode=UEFI\r\ngoto network\r\n\r\n:network\r\nnet use Z: \\\\{server}\\PXE$ /user:{cred['username']} {cred['password']}\r\nif errorlevel 1 goto failed\r\nif not exist Z:\\images\\{image_id}\\{install_name} goto failed\r\ndiskpart /s %DiskScript%\r\nif errorlevel 1 goto failed\r\ndism /Apply-Image /ImageFile:Z:\\images\\{image_id}\\{install_name} /Index:{index} /ApplyDir:W:\\\r\nif errorlevel 1 goto failed\r\nmkdir W:\\Windows\\Panther 2>NUL\r\ncopy /y X:\\Windows\\System32\\unattend.xml W:\\Windows\\Panther\\Unattend.xml\r\nmkdir W:\\Windows\\Setup\\Scripts 2>NUL\r\ncopy /y X:\\Windows\\System32\\SetupComplete.cmd W:\\Windows\\Setup\\Scripts\\SetupComplete.cmd\r\nbcdboot W:\\Windows /s S: /f %BootMode%\r\nif errorlevel 1 goto failed\r\nnet use Z: /delete /y >NUL 2>NUL\r\nwpeutil reboot\r\n\r\n:unsupported\r\necho Windows ARM64 cannot be installed in Legacy BIOS mode.\r\ngoto failed\r\n\r\n:firmware_failed\r\necho Cannot determine WinPE firmware mode. Installation stopped before disk erase.\r\ngoto failed_noreport\r\n\r\n:failed\r\ncurl.exe -fsS --retry 5 --retry-delay 2 -X POST http://{server}/pxe/report/{profile['id']}/{report_token}/failed >NUL 2>NUL\r\n:failed_noreport\r\necho Installation failed.\r\npause\r\n'''
+    if disk_number is not None:
+        disk_selector = f'set "InstallDisk={disk_number}"\r\n'
+    elif disk_serial:
+        serial_ps = disk_serial.replace("'", "''")
+        disk_selector = (
+            'set "InstallDisk="\r\n'
+            f'for /f "usebackq delims=" %%D in (`powershell.exe -NoProfile -Command "$d=@(Get-Disk ^| Where-Object {{ $_.SerialNumber -and $_.SerialNumber.Trim() -eq \'{serial_ps}\' }}); if($d.Count -eq 1){{ $d[0].Number }} else {{ exit 42 }}"`) do set "InstallDisk=%%D"\r\n'
+            'if not defined InstallDisk goto disk_failed\r\n'
+        )
+    else:
+        disk_selector = (
+            'set "InstallDisk="\r\n'
+            'for /f "usebackq delims=" %%D in (`powershell.exe -NoProfile -Command "$d=@(Get-Disk ^| Where-Object { $_.OperationalStatus -eq \'Online\' -and $_.BusType -ne \'USB\' }); if($d.Count -eq 1){ $d[0].Number } else { exit 42 }"`) do set "InstallDisk=%%D"\r\n'
+            'if not defined InstallDisk goto disk_failed\r\n'
+        )
+
+    start = f'''@echo off\r\nsetlocal\r\nwpeinit\r\nwpeutil WaitForNetwork\r\nwpeutil UpdateBootInfo\r\nset Firmware=\r\nfor /f "tokens=3" %%A in ('reg query HKLM\\System\\CurrentControlSet\\Control /v PEFirmwareType ^| find "PEFirmwareType"') do set Firmware=%%A\r\nif /I "%Firmware%"=="0x1" goto bios\r\nif /I "%Firmware%"=="0x2" goto uefi\r\ngoto firmware_failed\r\n\r\n:bios\r\nif /I "{arch}"=="arm64" goto unsupported\r\nset DiskTemplate=X:\\Windows\\System32\\diskpart-bios.txt\r\nset BootMode=BIOS\r\ngoto network\r\n\r\n:uefi\r\nset DiskTemplate=X:\\Windows\\System32\\diskpart-uefi.txt\r\nset BootMode=UEFI\r\ngoto network\r\n\r\n:network\r\nnet use Z: \\\\{server}\\PXE$ /user:{cred['username']} {cred['password']}\r\nif errorlevel 1 goto failed\r\nif not exist Z:\\images\\{image_id}\\{install_name} goto failed\r\n{disk_selector}set DiskScript=X:\\Windows\\System32\\diskpart-selected.txt\r\n> "%DiskScript%" echo select disk %InstallDisk%\r\ntype "%DiskTemplate%" >> "%DiskScript%"\r\ndiskpart /s %DiskScript%\r\nif errorlevel 1 goto failed\r\ndism /Apply-Image /ImageFile:Z:\\images\\{image_id}\\{install_name} /Index:{index} /ApplyDir:W:\\\r\nif errorlevel 1 goto failed\r\nmkdir W:\\Windows\\Panther 2>NUL\r\ncopy /y X:\\Windows\\System32\\unattend.xml W:\\Windows\\Panther\\Unattend.xml\r\nmkdir W:\\Windows\\Setup\\Scripts 2>NUL\r\ncopy /y X:\\Windows\\System32\\SetupComplete.cmd W:\\Windows\\Setup\\Scripts\\SetupComplete.cmd\r\nbcdboot W:\\Windows /s S: /f %BootMode%\r\nif errorlevel 1 goto failed\r\nnet use Z: /delete /y >NUL 2>NUL\r\nwpeutil reboot\r\n\r\n:disk_failed\r\necho Cannot select exactly one Windows installation disk. Configure install_disk_serial or install_disk_number.\r\ngoto failed\r\n\r\n:unsupported\r\necho Windows ARM64 cannot be installed in Legacy BIOS mode.\r\ngoto failed\r\n\r\n:firmware_failed\r\necho Cannot determine WinPE firmware mode. Installation stopped before disk erase.\r\ngoto failed_noreport\r\n\r\n:failed\r\ncurl.exe -fsS --retry 5 --retry-delay 2 -X POST http://{server}/pxe/report/{profile['id']}/{report_token}/failed >NUL 2>NUL\r\n:failed_noreport\r\necho Installation failed.\r\npause\r\n'''
     (target / 'startnet.cmd').write_text(start, encoding='utf-8')
     (target / 'winpeshl.ini').write_text('[LaunchApp]\r\nAppPath = %SYSTEMROOT%\\System32\\startnet.cmd\r\n', encoding='utf-8')
 
