@@ -112,16 +112,58 @@ def remove_pxe_samba_share() -> None:
         subprocess.run(['smbpasswd', '-x', 'srv-pxe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
+def validate_pxe_runtime() -> str:
+    required = [
+        TFTP_ROOT / 'undionly.kpxe',
+        TFTP_ROOT / 'i386-efi/snponly.efi',
+        TFTP_ROOT / 'x86_64-efi/snponly.efi',
+        TFTP_ROOT / 'x86_64-sb/snponly-shim.efi',
+        TFTP_ROOT / 'x86_64-sb/snponly.efi',
+        TFTP_ROOT / 'arm32-efi/snponly.efi',
+        TFTP_ROOT / 'arm64-efi/snponly.efi',
+        TFTP_ROOT / 'arm64-sb/snponly-shim.efi',
+        TFTP_ROOT / 'arm64-sb/snponly.efi',
+        PXE_MEDIA / 'boot/wimboot',
+        PXE_MEDIA / 'boot/wimboot.i386',
+        PXE_MEDIA / 'boot/wimboot.arm64',
+    ]
+    for directory in ('', 'i386-efi', 'x86_64-efi', 'x86_64-sb', 'arm32-efi', 'arm64-efi', 'arm64-sb'):
+        required.append((TFTP_ROOT / directory / 'autoexec.ipxe') if directory else TFTP_ROOT / 'autoexec.ipxe')
+    missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
+    if missing:
+        raise RuntimeError('PXE runtime missing required assets: ' + ', '.join(missing))
+    if not (PXE_ROOT / 'profiles').is_dir() or (PXE_ROOT / 'profiles').resolve() == PXE_MEDIA.resolve():
+        raise RuntimeError('PXE private profile root is invalid')
+    if DHCP_CONF.is_file() and shutil.which('dnsmasq'):
+        run(['dnsmasq', '--test'], timeout=30)
+        text_value = DHCP_CONF.read_text(encoding='utf-8', errors='replace')
+        for arch in ('0', '6', '7', '9', '10', '11'):
+            if f'option:client-arch,{arch}' not in text_value:
+                raise RuntimeError(f'DHCP PXE architecture option 93 value {arch} is missing')
+        if 'tag:ipxe,autoexec.ipxe' not in text_value:
+            raise RuntimeError('DHCP iPXE loop-break chain is missing')
+    return 'PXE runtime validation passed for BIOS + UEFI IA32/x64/ARM32/ARM64 and x64/ARM64 Secure Boot assets'
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--prune-backups', action='store_true')
     ap.add_argument('--network-rollback')
+    ap.add_argument('--refresh-pxe', action='store_true')
+    ap.add_argument('--validate-pxe', action='store_true')
     args = ap.parse_args()
     if args.prune_backups:
         print(prune_backups())
         return 0
     if args.network_rollback:
         print(network_rollback(args.network_rollback))
+        return 0
+    if args.refresh_pxe:
+        print(install_pxe())
+        print(validate_pxe_runtime())
+        return 0
+    if args.validate_pxe:
+        print(validate_pxe_runtime())
         return 0
     return process_queue()
 
