@@ -7,7 +7,7 @@
   "scripts": {
     "preflight": {
       "path": "preflight.sh",
-      "sha256": "053bfd6766428a7d544136270be8f0304987acd2b73387ba094c162c4e3df879"
+      "sha256": "40e0acf234d3f29b30304820fb3e8903c5ce27e99d160e0dd855129526853f38"
     },
     "apply": {
       "path": "apply.sh",
