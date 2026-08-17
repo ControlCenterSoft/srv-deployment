@@ -136,10 +136,9 @@ def network_overview():
     }
 
 
-@router.get("/dashboard/stream")
-async def dashboard_stream():
-    async def event_stream():
-        while True:
+async def metric_event_stream():
+    while True:
+        try:
             payload = {
                 "ok": True,
                 "data": snapshot(),
@@ -148,13 +147,47 @@ async def dashboard_stream():
 
             yield (
                 "event: metrics\n"
-                f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                "data: "
+                +
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                +
+                "\n\n"
             )
 
-            await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            break
 
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "data": None,
+                "error": str(exc)[:300],
+            }
+
+            yield (
+                "event: metrics\n"
+                "data: "
+                +
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                +
+                "\n\n"
+            )
+
+        await asyncio.sleep(2)
+
+
+@router.get("/dashboard/stream")
+async def dashboard_stream():
     return StreamingResponse(
-        event_stream(),
+        metric_event_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
