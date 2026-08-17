@@ -6,19 +6,19 @@
   "scripts": {
     "preflight": {
       "path": "preflight.sh",
-      "sha256": "8551b4deaeaa0401802687640f67f66e4d7870d2a330d4b77f0b93bf5030784e"
+      "sha256": "994a623dab5d91825da0726095e355b0efd9fccf6b0ae06218da25ac4298719d"
     },
     "apply": {
       "path": "apply.sh",
-      "sha256": "78de863ae4929d4ab55091a2baf8dc4358b598fad56aee6e0dcd2f99105c8a86"
+      "sha256": "837fb871d120b871d50587cfca02aeea04df81846f5dfe3e96aaa7269d5f7dc5"
     },
     "acceptance": {
       "path": "acceptance.sh",
-      "sha256": "c068675cd0a086a910a365844ecd81de197b2f7fc00d18c2984b192e851dbc8a"
+      "sha256": "e604cdafe472768be185d018bde390c5a442ebce9b57c9a668ddf3be590c589f"
     },
     "rollback": {
       "path": "rollback.sh",
-      "sha256": "51a954914b6573e41cf2613aa4cc1aed523f3236490a1c0510ce7c9549bc2534"
+      "sha256": "bd6b641c0d8fc7e7e7b6b98ea5146ad25b56b07a41524aa8a23e0ca58e00d53a"
     }
   }
 }
