@@ -142,15 +142,16 @@ def list_grants() -> list[dict]:
 
 def upsert_grant(
     *,
-    subject_type: str,
-    subject_name: str,
     source: str,
     module: str,
     access: str,
     actor: str,
+    subject_type: str = "group",
+    subject_name: str = "",
+    group_name: str | None = None,
 ) -> dict:
     subject_type = subject_type.strip().lower()
-    subject_name = subject_name.strip()
+    subject_name = (subject_name or group_name or "").strip()
     source = source.strip().lower()
     module = module.strip().lower()
     access = access.strip().lower()
