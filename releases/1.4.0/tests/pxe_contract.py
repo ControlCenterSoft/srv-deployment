@@ -159,6 +159,7 @@ def main() -> int:
     require(boot_route, 'peek_boot_profile(mac)', 'boot_file.is_file()', 'Authorization retained', '_pxe_firmware_compatible(firmware, arch, image_arch)')
     if re.search(r'(?<!peek_)boot_profile\(mac\)', boot_route):
         fail('boot.ipxe still consumes authorization before payload validation')
+
     firmware_gate = effective_function(router, 'def _pxe_firmware_compatible(')
     require(
         firmware_gate,
@@ -169,7 +170,7 @@ def main() -> int:
         'image == boot_arch',
     )
 
-    require(core, 'MANAGED_DHCP_OPTION_CODES = {3, 6, 66, 67, 93, 175}', 'def _validate_extra_dhcp_option(')
+    require(core, 'MANAGED_DHCP_OPTION_CODES = {3, 6, 60, 66, 67, 93, 175}', 'def _validate_extra_dhcp_option(')
     add_option = effective_function(core, 'def add_dhcp_option(')
     update_option = effective_function(core, 'def update_dhcp_option(')
     require(add_option, '_validate_extra_dhcp_option')
@@ -179,30 +180,55 @@ def main() -> int:
     require(
         dhcp,
         '_pxe_runtime_active()',
+        '_http_boot_assets_ready()',
         "_interface_ipv4(str(c['interface']), str(c['network']), str(c['netmask']))",
         'dhcp-match=set:ipxe,175',
         'dhcp-userclass=set:ipxe,iPXE',
+        'dhcp-vendorclass=set:httpclient,HTTPClient',
         'option:client-arch,0',
         'option:client-arch,6',
         'option:client-arch,7',
         'option:client-arch,9',
         'option:client-arch,10',
         'option:client-arch,11',
-        'tag-if=set:pxe-arm64,tag:arm64,tag:!ipxe',
-        'tag-if=set:pxe-arm32,tag:arm32,tag:!arm64,tag:!ipxe',
-        'tag-if=set:pxe-efi64,tag:efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
-        'tag-if=set:pxe-efi32,tag:efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
-        'tag-if=set:pxe-bios,tag:bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+        'option:client-arch,15',
+        'option:client-arch,16',
+        'option:client-arch,17',
+        'option:client-arch,18',
+        'option:client-arch,19',
+        'option:client-arch,20',
         'tag:pxe-bios,undionly.kpxe',
         'tag:pxe-efi32,i386/snponly.efi',
         'tag:pxe-efi64,x86_64-sb/snponly-shim.efi',
         'tag:pxe-arm32,arm32/snponly.efi',
         'tag:pxe-arm64,arm64-sb/snponly-shim.efi',
         'tag:pxe-noarch,undionly.kpxe',
-        'tag:ipxe,autoexec.ipxe',
+        'tag:ipxe,http://',
+        "('pxe-http-efi32', 'http-efi32', 'httpboot/i386/snponly.efi')",
+        "('pxe-http-efi64', 'http-efi64', 'httpboot/x86_64-sb/snponly-shim.efi')",
+        "('pxe-http-arm32', 'http-arm32', 'httpboot/arm32/snponly.efi')",
+        "('pxe-http-arm64', 'http-arm64', 'httpboot/arm64-sb/snponly-shim.efi')",
+        "('pxe-http-bios', 'http-bios', 'httpboot/bios/undionly.kpxe')",
+        'dhcp-option=tag:{selected},60,HTTPClient',
     )
+    if "('pxe-http-ebc'" in dhcp:
+        fail('HTTP EBC is advertised even though no architecture-safe EBC iPXE NBP is shipped')
     if "{c['gateway']}" in '\n'.join(line for line in dhcp.splitlines() if 'dhcp-boot=' in line):
         fail('effective PXE next-server is still derived from gateway instead of interface address')
+
+    install = effective_function(agent, 'def install_pxe() -> str:')
+    require(install, '_install_pxe_v14()', '_publish_http_boot_assets()', 'native UEFI HTTP Boot assets published')
+    http_publish = effective_function(agent, 'def _publish_http_boot_assets(')
+    require(
+        http_publish,
+        "'bios/undionly.kpxe'",
+        "'i386/snponly.efi'",
+        "'x86_64-sb/snponly-shim.efi'",
+        "'arm32/snponly.efi'",
+        "'arm64-sb/snponly-shim.efi'",
+        "PXE_MEDIA / 'boot/entry.ipxe'",
+        '_pxe_autoexec()',
+    )
 
     remove = effective_function(agent, 'def remove_pxe() -> str:')
     require(remove, "disable', '--now', 'tftpd-hpa.service", 'apply_dhcp()', 'DHCP boot advertisement disabled')
@@ -268,10 +294,9 @@ def main() -> int:
     exercise_agent_runtime(agent)
 
     print(
-        'PXE CONTRACT PASS: BIOS + UEFI IA32/x64/ARM32/ARM64, x64/ARM64 Secure Boot, '
-        'firmware/image gate, subnet-bound next-server, mutually-exclusive option93, '
-        'Windows exact-edition+WIM precheck, Linux pre-consume Secure Boot guard, '
-        'deny-by-default, pinned-assets'
+        'PXE CONTRACT PASS: classic PXE/TFTP + UEFI HTTP Boot; BIOS + UEFI IA32/x64/ARM32/ARM64; '
+        'x64/ARM64 Secure Boot; firmware/image gate; subnet-bound next-server; mutually-exclusive option93; '
+        'Windows exact-edition+WIM precheck; Linux pre-consume Secure Boot guard; deny-by-default; pinned-assets'
     )
     return 0
 
