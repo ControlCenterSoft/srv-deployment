@@ -69,7 +69,7 @@ jobs:
             SRVCC_STATE_REPO="$state_repo" \
             SRVCC_RELEASE_META="$release_meta" \
             SRVCC_LOG="$log" \
-              "$publisher"
+              bash "$publisher"
           }
 
           run_publisher
