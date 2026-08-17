@@ -14,13 +14,22 @@ for f in \
   payload/static/js/services-1.4.js payload/static/js/dhcp-1.4.js payload/static/js/pxe-1.4.js payload/static/js/network-1.4.js \
   payload/static/js/shares-1.4.js payload/static/js/system-1.4.js payload/static/css/release-1.4.css \
   system/srv-control-release14-agent.service system/srv-control-release14-agent.path \
-  system/srv-control-backup-retention.service system/srv-control-backup-retention.path; do
+  system/srv-control-backup-retention.service system/srv-control-backup-retention.path \
+  tests/pxe_contract.py; do
   [[ -s "$RELEASE_DIR/$f" ]] || fail "release file missing: $f"
 done
-for part_dir in payload/app/core/release14.parts payload/app/routers/release14.parts system/srv-control-release14-agent.parts; do
-  [[ -d "$RELEASE_DIR/$part_dir" ]] || fail "release part directory missing: $part_dir"
-  compgen -G "$RELEASE_DIR/$part_dir/*.part" >/dev/null || fail "release parts missing: $part_dir"
-done
+
+check_parts(){
+  local dir="$1"; shift
+  local expected actual
+  expected="$(printf '%s\n' "$@" | sort)"
+  actual="$(find "$RELEASE_DIR/$dir" -maxdepth 1 -type f -name '*.part' -printf '%f\n' | sort)"
+  [[ "$actual" == "$expected" ]] || fail "unexpected source parts in $dir; expected=[$(tr '\n' ' ' <<<"$expected")] actual=[$(tr '\n' ' ' <<<"$actual")]"
+}
+check_parts payload/app/core/release14.parts 00.part 01.part 02.part 03.part 04.part 05.part 06.part 07.part
+check_parts payload/app/routers/release14.parts 00.part 01.part 02.part 03.part
+check_parts system/srv-control-release14-agent.parts 00.part 01.part 02.part 03.part 04.part 05.part 06.part 07.part 08.part 09.part 10.part 11.part 12.part
+
 CURRENT="$(python3 - <<'PY'
 import json
 from pathlib import Path
@@ -32,14 +41,16 @@ PY
 runuser -u srv-control -- psql -d srv_control -Atqc 'SELECT 1' | grep -qx 1 || fail "srv_control database unavailable"
 REV="$(runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 "$PROJECT/venv/bin/alembic" -c "$PROJECT/alembic.ini" current 2>/dev/null || true)"
 grep -q '13f0a1300001' <<<"$REV" || fail "database is not at the 1.3 schema head: $REV"
+
 tmp_core="$(mktemp)"; tmp_router="$(mktemp)"; tmp_agent="$(mktemp)"
 trap 'rm -f "$tmp_core" "$tmp_router" "$tmp_agent"' EXIT
-cat "$RELEASE_DIR"/payload/app/core/release14.parts/*.part > "$tmp_core"
-cat "$RELEASE_DIR"/payload/app/routers/release14.parts/*.part > "$tmp_router"
-cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/*.part > "$tmp_agent"
+cat "$RELEASE_DIR"/payload/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > "$tmp_core"
+cat "$RELEASE_DIR"/payload/app/routers/release14.parts/{00,01,02,03}.part > "$tmp_router"
+cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > "$tmp_agent"
 "$PROJECT/venv/bin/python" -m py_compile "$RELEASE_DIR/payload/app/main.py" "$tmp_core" "$tmp_router" "$RELEASE_DIR/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py" "$tmp_agent" || fail "Python syntax check failed"
+python3 "$RELEASE_DIR/tests/pxe_contract.py" || fail "PXE firmware/safety contract failed"
 for f in apply.sh rollback.sh acceptance.sh preflight.sh; do bash -n "$RELEASE_DIR/$f" || fail "shell syntax failed: $f"; done
 FREE_KB="$(df -Pk "$PROJECT" | awk 'NR==2{print $4}')"
 (( FREE_KB >= 1048576 )) || fail "less than 1 GiB free on project filesystem"
 [[ -x /usr/local/libexec/srv-control-backup ]] || fail "backup worker missing"
-echo "PREFLIGHT PASS: current=$CURRENT db=13f0a1300001"
+echo "PREFLIGHT PASS: current=$CURRENT db=13f0a1300001 PXE-contract=pass"
