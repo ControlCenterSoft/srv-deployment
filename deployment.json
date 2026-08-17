@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0005-network-overview",
-  "release_id": "0005-network-overview",
-  "release_path": "releases/0005-network-overview",
-  "manifest": "releases/0005-network-overview/manifest.json",
-  "preflight": "releases/0005-network-overview/preflight.sh",
-  "apply": "releases/0005-network-overview/apply.sh",
-  "acceptance": "releases/0005-network-overview/acceptance.sh",
-  "rollback": "releases/0005-network-overview/rollback.sh",
-  "description": "Activate a read-only Internet/VPN network overview before transactional network management."
+  "release": "0006-network-diagnostics",
+  "release_id": "0006-network-diagnostics",
+  "release_path": "releases/0006-network-diagnostics",
+  "manifest": "releases/0006-network-diagnostics/manifest.json",
+  "preflight": "releases/0006-network-diagnostics/preflight.sh",
+  "apply": "releases/0006-network-diagnostics/apply.sh",
+  "acceptance": "releases/0006-network-diagnostics/acceptance.sh",
+  "rollback": "releases/0006-network-diagnostics/rollback.sh",
+  "description": "Add read-only route, DNS and GitHub HTTPS diagnostics to Internet/VPN."
 }
