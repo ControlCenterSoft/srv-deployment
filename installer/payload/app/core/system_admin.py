@@ -82,18 +82,60 @@ def service_catalog() -> list[dict]:
     ]
 
 
-def status() -> dict:
-    latest = None
+def action_queue(limit: int = 20) -> list[dict]:
+    items: list[dict] = []
     try:
-        results = sorted(
+        paths = sorted(
+            ACTION_DIR.glob("*.json"),
+            key=lambda item: item.stat().st_mtime,
+        )
+        for path in paths[: max(0, limit)]:
+            payload = _read_json(path)
+            if payload:
+                items.append(
+                    {
+                        "request_id": payload.get("request_id") or path.stem,
+                        "action": payload.get("action"),
+                        "actor": payload.get("actor"),
+                        "queued": True,
+                    }
+                )
+    except Exception:
+        pass
+    return items
+
+
+def action_history(limit: int = 12) -> list[dict]:
+    items: list[dict] = []
+    try:
+        paths = sorted(
             RESULT_DIR.glob("*.json"),
             key=lambda item: item.stat().st_mtime,
             reverse=True,
         )
-        if results:
-            latest = _read_json(results[0])
+        for path in paths[: max(0, limit)]:
+            payload = _read_json(path)
+            if not payload:
+                continue
+            items.append(
+                {
+                    "request_id": payload.get("request_id") or path.stem,
+                    "action": payload.get("action"),
+                    "actor": payload.get("actor"),
+                    "started_at": payload.get("started_at"),
+                    "finished_at": payload.get("finished_at"),
+                    "result": payload.get("result"),
+                    "detail": payload.get("detail"),
+                }
+            )
     except Exception:
         pass
+    return items
+
+
+def status() -> dict:
+    history = action_history()
+    queued = action_queue()
 
     return {
         "automatic_updates": {
@@ -105,7 +147,12 @@ def status() -> dict:
             "status": _read_json(UPDATE_STATUS),
         },
         "services": service_catalog(),
-        "latest_action": latest,
+        "latest_action": history[0] if history else None,
+        "actions": {
+            "queued_count": len(queued),
+            "queued": queued,
+            "history": history,
+        },
     }
 
 
