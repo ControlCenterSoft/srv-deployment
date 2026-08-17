@@ -4,8 +4,8 @@ umask 027
 
 PROJECT="${1:-/opt/srv-control}"
 REMOTE_SHA="${2:-unknown}"
-RELEASE_ID="1.1.0"
-RELEASE_VERSION="1.1.0"
+RELEASE_ID="1.2.0"
+RELEASE_VERSION="1.2.0"
 RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${RELEASE_DIR}/../.." && pwd -P)"
 PAYLOAD="${RELEASE_DIR}/payload"
@@ -17,9 +17,7 @@ RELEASE_META="${STATE_DIR}/release.json"
 APP_USER="srv-control"
 APP_GROUP="srv-control"
 
-log() {
-    printf '%s %s\n' "$(date -Is)" "$*"
-}
+log() { printf '%s %s\n' "$(date -Is)" "$*"; }
 
 install -d -m 0750 "$BACKUP_DIR/project" "$BACKUP_DIR/system" "$BACKUP_DIR/state"
 
@@ -44,20 +42,16 @@ backup_absolute_path() {
     fi
 }
 
-restore_config_value() {
+config_value() {
     local key="$1"
     python3 - "$STATE_DIR/github-update-config.json" "$key" <<'PY'
-import json
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
+import json, pathlib, sys
 try:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 except Exception:
-    data = {}
-value = data.get(sys.argv[2])
-if isinstance(value, (str, int)):
+    data={}
+value=data.get(sys.argv[2])
+if isinstance(value,(str,int)):
     print(value)
 PY
 }
@@ -88,8 +82,6 @@ for path in \
     /etc/pam.d/srv-control \
     /etc/nginx/sites-available/srv-control \
     /var/lib/srv-control/session.key \
-    /var/lib/srv-control/auth.json \
-    /var/lib/srv-control/admin-bootstrap.txt \
     /var/lib/srv-control/login-guard.json \
     /var/lib/srv-control/os-update-config.json \
     /var/lib/srv-control/backup-config.json \
@@ -111,30 +103,23 @@ else
 fi
 
 systemctl show srv-control.service -p MainPID --value > "$BACKUP_DIR/state/main-pid.before"
-for unit in \
-    srvcc-github-agent.timer \
-    srv-control-backup.timer \
-    srv-control-os-auto-update.timer
-do
+for unit in srvcc-github-agent.timer srv-control-backup.timer srv-control-os-auto-update.timer; do
     systemctl is-enabled "$unit" > "$BACKUP_DIR/state/${unit}.enabled" 2>/dev/null || true
     systemctl is-active "$unit" > "$BACKUP_DIR/state/${unit}.active" 2>/dev/null || true
 done
 
-GH_SOURCE="$(restore_config_value source)"
-GH_MODE="$(restore_config_value mode)"
-GH_INTERVAL="$(restore_config_value interval_minutes)"
+GH_SOURCE="$(config_value source)"
+GH_MODE="$(config_value mode)"
+GH_INTERVAL="$(config_value interval_minutes)"
 GH_SOURCE="${GH_SOURCE:-https://github.com/filosoff31/srv-deployment.git}"
 GH_MODE="${GH_MODE:-automatic}"
 GH_INTERVAL="${GH_INTERVAL:-5}"
 
 log "Creating visible pre-release backup"
-"$SYSTEM/srv-control-backup" \
-    create \
-    --actor system \
-    --reason pre-release-1.1.0 \
+"$SYSTEM/srv-control-backup" create --actor system --reason pre-release-1.2.0 \
     > "$BACKUP_DIR/state/pre-release-backup.json"
 
-log "Installing SRV Control Center 1.1.0 application payload"
+log "Installing SRV Control Center 1.2.0 application payload"
 for rel in app migrations static templates; do
     rm -rf "$PROJECT/$rel"
     cp -a "$PAYLOAD/$rel" "$PROJECT/$rel"
@@ -143,148 +128,66 @@ install -m 0640 "$PAYLOAD/alembic.ini" "$PROJECT/alembic.ini"
 install -m 0640 "$PAYLOAD/requirements.lock" "$PROJECT/requirements.lock"
 
 chown -R root:"$APP_GROUP" \
-    "$PROJECT/app" \
-    "$PROJECT/migrations" \
-    "$PROJECT/static" \
-    "$PROJECT/templates" \
-    "$PROJECT/alembic.ini" \
-    "$PROJECT/requirements.lock"
-find "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" \
-    -type d -exec chmod 0750 {} +
-find "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" \
-    -type f -exec chmod 0640 {} +
+    "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" \
+    "$PROJECT/alembic.ini" "$PROJECT/requirements.lock"
+find "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" -type d -exec chmod 0750 {} +
+find "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" -type f -exec chmod 0640 {} +
 
-log "Installing 1.1.0 privileged helpers"
+log "Installing 1.2.0 privileged helpers"
 install -d -m 0755 /usr/local/libexec
 for executable in \
-    srv-control-system-agent \
-    srv-control-os-update \
-    srv-control-adguard-monitor \
-    srv-control-backup \
-    srv-control-os-auto-update
+    srv-control-system-agent srv-control-os-update srv-control-adguard-monitor \
+    srv-control-backup srv-control-os-auto-update
 do
-    install -m 0755 -o root -g root \
-        "$SYSTEM/$executable" \
-        "/usr/local/libexec/$executable"
+    install -m 0755 -o root -g root "$SYSTEM/$executable" "/usr/local/libexec/$executable"
 done
 
 for unit in \
-    srv-control-system-agent.service \
-    srv-control-system-agent.path \
-    srv-control-os-update.service \
-    srv-control-adguard-monitor.service \
-    srv-control-adguard-monitor.timer \
-    srv-control-backup.service \
-    srv-control-backup.timer \
-    srv-control-os-auto-update.service \
+    srv-control-system-agent.service srv-control-system-agent.path \
+    srv-control-os-update.service srv-control-adguard-monitor.service \
+    srv-control-adguard-monitor.timer srv-control-backup.service \
+    srv-control-backup.timer srv-control-os-auto-update.service \
     srv-control-os-auto-update.timer
 do
-    install -m 0644 -o root -g root \
-        "$SYSTEM/$unit" \
-        "/etc/systemd/system/$unit"
+    install -m 0644 -o root -g root "$SYSTEM/$unit" "/etc/systemd/system/$unit"
 done
 
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" \
-    "$STATE_DIR" \
-    "$STATE_DIR/system-actions" \
-    "$STATE_DIR/system-results"
+    "$STATE_DIR" "$STATE_DIR/system-actions" "$STATE_DIR/system-results"
 install -d -m 0750 -o root -g "$APP_GROUP" "$STATE_DIR/backups"
 
-python3 - "$STATE_DIR" <<'PY'
-import json
-import os
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-
-def create(name, data, mode=0o640):
-    path = root / name
-    if path.exists():
-        return
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(path, mode)
-
-create("login-guard.json", {"schema_version": 2, "entries": {}})
-create("os-update-config.json", {"schema_version": 1, "mode": "manual", "interval_hours": 24})
-create(
-    "backup-config.json",
-    {
-        "schema_version": 1,
-        "scheduled": False,
-        "daily_time": "03:00",
-        "backup_before_update": True,
-    },
-)
-PY
-chown "$APP_USER:$APP_GROUP" \
-    "$STATE_DIR/login-guard.json" \
-    "$STATE_DIR/os-update-config.json" \
-    "$STATE_DIR/backup-config.json"
-chmod 0640 \
-    "$STATE_DIR/login-guard.json" \
-    "$STATE_DIR/os-update-config.json" \
-    "$STATE_DIR/backup-config.json"
-
-log "Applying 1.1.0 database migration"
+log "Applying 1.2.0 database migration"
 runuser -u "$APP_USER" -- env \
-    PYTHONPATH="$PROJECT" \
-    PYTHONDONTWRITEBYTECODE=1 \
-    "$PROJECT/venv/bin/alembic" \
-    -c "$PROJECT/alembic.ini" \
-    upgrade head
-
-log "Rotating web session key and removing private Control Center credentials"
-python3 - "$STATE_DIR/session.key" <<'PY'
-import os
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-tmp = path.with_name(path.name + ".new")
-tmp.write_text(os.urandom(32).hex() + "\n", encoding="ascii")
-os.chmod(tmp, 0o600)
-tmp.replace(path)
-PY
-chown "$APP_USER:$APP_GROUP" "$STATE_DIR/session.key"
-chmod 0600 "$STATE_DIR/session.key"
-rm -f "$STATE_DIR/auth.json" "$STATE_DIR/admin-bootstrap.txt"
+    PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 \
+    "$PROJECT/venv/bin/alembic" -c "$PROJECT/alembic.ini" upgrade head
 
 systemctl daemon-reload
 systemctl enable --now srv-control-system-agent.path
 systemctl enable --now srv-control-adguard-monitor.timer
 systemctl start srv-control-adguard-monitor.service || true
 
-log "Installing PAM/NSS and Kerberos/SPNEGO integration"
-bash "$SYSTEM/install-auth.sh"
-
 sync_time="$(date -Is)"
 python3 - "$RELEASE_META" "$RELEASE_VERSION" "$RELEASE_ID" "$sync_time" "$REMOTE_SHA" <<'PY'
-import json
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-payload = {
-    "version": sys.argv[2],
-    "release_id": sys.argv[3],
-    "synced_at": sys.argv[4],
-    "git_sha": sys.argv[5],
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1])
+payload={
+    "version":sys.argv[2],
+    "release_id":sys.argv[3],
+    "synced_at":sys.argv[4],
+    "git_sha":sys.argv[5],
 }
-path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+path.write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
 PY
 chmod 0644 "$RELEASE_META"
 
-log "Installing 1.1.0 GitHub updater"
+log "Installing 1.2.0 GitHub updater"
 bash "$SYSTEM/srvcc-configure-auto-updates" \
-    --repo "$GH_SOURCE" \
-    --mode "$GH_MODE" \
-    --interval-minutes "$GH_INTERVAL" \
-    --no-check-now
+    --repo "$GH_SOURCE" --mode "$GH_MODE" --interval-minutes "$GH_INTERVAL" --no-check-now
 
 if python3 - "$STATE_DIR/backup-config.json" <<'PY'
-import json, pathlib, sys
-data=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+import json,pathlib,sys
+try: data=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception: data={}
 raise SystemExit(0 if data.get("scheduled") else 1)
 PY
 then
@@ -294,8 +197,9 @@ else
 fi
 
 if python3 - "$STATE_DIR/os-update-config.json" <<'PY'
-import json, pathlib, sys
-data=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+import json,pathlib,sys
+try: data=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception: data={}
 raise SystemExit(0 if data.get("mode") == "automatic" else 1)
 PY
 then
