@@ -178,6 +178,7 @@ jobs:
           CONF="$(sudo find /tmp/domain-smoke/restored -type f -name smb.conf -print -quit)"
           SAM="$(sudo find /tmp/domain-smoke/restored -type f -name sam.ldb -print -quit)"
           sudo test -s "$CONF" && sudo test -s "$SAM"
+          sudo mkdir -p /tmp/domain-smoke/restored/cache
           sudo testparm -s --suppress-prompt "$CONF" >/dev/null
           EXPECTED_SID="$(sudo python3 - <<'PY'
           import json,tarfile
