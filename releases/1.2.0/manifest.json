@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "release_id": "1.1.0",
-  "release_version": "1.1.0",
-  "description": "System and domain authentication, group and user RBAC, GitHub and OS update controls, backups, Torrents rename, dedicated AdGuard VPN and Services administration.",
-  "upgrade_from": ">=1.0.0,<1.1.0",
+  "release_id": "1.2.0",
+  "release_version": "1.2.0",
+  "description": "Four-column dashboard and top processes, full-administrator RBAC, AdGuard VPN configuration and Minecraft Bedrock Control.",
+  "upgrade_from": ">=1.1.0,<1.2.0",
   "scripts": {
     "preflight": {
       "path": "preflight.sh",
