@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import html
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from typing import Any
+import zipfile
+
+
+STATE_DIR = Path("/var/lib/srv-control")
+REGISTRY = STATE_DIR / "minecraft-instances.json"
+STATUS = STATE_DIR / "minecraft-instances-status.json"
+BACKUP_ROOT = STATE_DIR / "minecraft-backups"
+OFFICIAL_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
+DOWNLOAD_RE = re.compile(
+    r"https://(?:www\.)?minecraft\.net/bedrockdedicatedserver/bin-linux/bedrock-server-([0-9]+(?:\.[0-9]+){2,4})\.zip",
+    re.I,
+)
+RUNTIME_EXCLUDES = {
+    "worlds",
+    "server.properties",
+    "allowlist.json",
+    "permissions.json",
+    "whitelist.json",
+    "logs",
+    "backups",
+    ".runtime-backups",
+}
+INSTANCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def clean(value: object, maximum: int = 256, required: bool = False) -> str:
+    raw = str(value if value is not None else "").strip()
+    if any(ch in raw for ch in "\r\n\x00"):
+        raise RuntimeError("invalid control character")
+    if len(raw) > maximum:
+        raise RuntimeError("value is too long")
+    if required and not raw:
+        raise RuntimeError("value is required")
+    return raw
+
+
+def iid(value: object) -> str:
+    value = clean(value, 32, True).lower()
+    if not INSTANCE_RE.fullmatch(value):
+        raise RuntimeError("invalid Minecraft instance id")
+    return value
+
+
+def run(command: list[str], *, timeout: int = 300, check: bool = True) -> str:
+    result = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+        env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8", "HOME": "/root"},
+    )
+    output = (result.stdout or "")[-12000:]
+    if check and result.returncode != 0:
+        raise RuntimeError(output or f"command failed: {' '.join(command)}")
+    return output.strip()
+
+
+def read_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def atomic_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".tmp.", delete=False)
+    try:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o640)
+        temporary = Path(handle.name)
+    finally:
+        handle.close()
+    if path.exists():
+        info = path.stat()
+        os.chown(temporary, info.st_uid, info.st_gid)
+    os.replace(temporary, path)
+
+
+def registry_and_instance(value: object) -> tuple[dict[str, Any], dict[str, Any]]:
+    registry = read_json(REGISTRY, {})
+    if not isinstance(registry, dict) or not isinstance(registry.get("instances"), list):
+        raise RuntimeError("Minecraft instance registry is invalid")
+    target = iid(value)
+    for item in registry["instances"]:
+        if isinstance(item, dict) and str(item.get("id") or "") == target:
+            return registry, item
+    raise RuntimeError("Minecraft instance not found")
+
+
+def version_tuple(value: str | None) -> tuple[int, ...]:
+    if not value:
+        return ()
+    try:
+        return tuple(int(part) for part in value.split("."))
+    except Exception:
+        return ()
+
+
+def current_version(instance: dict[str, Any]) -> str | None:
+    status = read_json(STATUS, {})
+    if isinstance(status, dict):
+        for item in status.get("instances") or []:
+            if isinstance(item, dict) and str(item.get("id")) == str(instance.get("id")):
+                value = clean(item.get("version") or "", 64)
+                if value:
+                    return value
+    value = clean(instance.get("version") or "", 64)
+    return value or None
+
+
+def latest_package() -> tuple[str, str]:
+    request = urllib.request.Request(OFFICIAL_PAGE, headers={"User-Agent": "SRV-Control-Center/1.3"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        raw = response.read(10 * 1024 * 1024).decode("utf-8", errors="replace")
+    normalized = html.unescape(raw).replace("\\u002F", "/").replace("\\/", "/")
+    found = [(match.group(1), match.group(0)) for match in DOWNLOAD_RE.finditer(normalized)]
+    if not found:
+        raise RuntimeError("official Minecraft page did not expose a Linux Bedrock package URL")
+    found.sort(key=lambda item: version_tuple(item[0]))
+    return found[-1]
+
+
+def service_active(unit: str) -> bool:
+    return bool(unit) and subprocess.run(["systemctl", "is-active", "--quiet", unit], check=False).returncode == 0
+
+
+def make_content_backup(instance: dict[str, Any]) -> Path:
+    working = Path(clean(instance.get("working_directory"), 1024, True))
+    target_dir = BACKUP_ROOT / iid(instance.get("id"))
+    target_dir.mkdir(parents=True, exist_ok=True)
+    archive = target_dir / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-pre-update.tar.gz")
+    names = [name for name in ("worlds", "server.properties", "allowlist.json", "permissions.json") if (working / name).exists()]
+    if names:
+        run(["tar", "--xattrs", "--acls", "-czf", str(archive), "-C", str(working), *names], timeout=3600)
+    else:
+        with tarfile.open(archive, "w:gz"):
+            pass
+    os.chmod(archive, 0o600)
+    return archive
+
+
+def backup_runtime(working: Path, installed: str | None) -> Path:
+    root = working / ".runtime-backups" / (installed or "unknown")
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target.mkdir()
+    for child in working.iterdir():
+        if child.name in RUNTIME_EXCLUDES:
+            continue
+        if child.is_symlink():
+            raise RuntimeError("runtime contains symbolic links; update aborted")
+        destination = target / child.name
+        if child.is_dir():
+            shutil.copytree(child, destination, symlinks=False)
+        elif child.is_file():
+            shutil.copy2(child, destination)
+    return target
+
+
+def zip_entry_safe(member: zipfile.ZipInfo) -> bool:
+    path = Path(member.filename)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return False
+    unix_mode = (member.external_attr >> 16) & 0xFFFF
+    if unix_mode:
+        mode_type = stat.S_IFMT(unix_mode)
+        if mode_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+            return False
+    return True
+
+
+def extract_package(archive: Path, destination: Path) -> None:
+    with zipfile.ZipFile(archive) as package:
+        members = package.infolist()
+        if len(members) > 100000:
+            raise RuntimeError("Bedrock package contains too many entries")
+        total = sum(max(0, member.file_size) for member in members)
+        if total > 4 * 1024 * 1024 * 1024:
+            raise RuntimeError("Bedrock package expands beyond safety limit")
+        for member in members:
+            if not zip_entry_safe(member):
+                raise RuntimeError(f"unsafe entry in Bedrock package: {member.filename}")
+        package.extractall(destination)
+    binary = destination / "bedrock_server"
+    if not binary.is_file() or binary.is_symlink():
+        raise RuntimeError("Bedrock package does not contain a regular bedrock_server executable")
+
+
+def clear_runtime(working: Path) -> None:
+    for child in list(working.iterdir()):
+        if child.name in RUNTIME_EXCLUDES:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def install_runtime(working: Path, extracted: Path) -> None:
+    clear_runtime(working)
+    for child in extracted.iterdir():
+        if child.name in RUNTIME_EXCLUDES:
+            continue
+        target = working / child.name
+        if child.is_symlink():
+            raise RuntimeError("extracted runtime contains a symbolic link")
+        if child.is_dir():
+            shutil.copytree(child, target, symlinks=False)
+        elif child.is_file():
+            shutil.copy2(child, target)
+    binary = working / "bedrock_server"
+    if not binary.is_file():
+        raise RuntimeError("bedrock_server is missing after runtime installation")
+    os.chmod(binary, 0o750)
+
+
+def restore_runtime(working: Path, backup: Path) -> None:
+    clear_runtime(working)
+    for child in backup.iterdir():
+        target = working / child.name
+        if child.is_dir():
+            shutil.copytree(child, target, symlinks=False)
+        else:
+            shutil.copy2(child, target)
+
+
+def preserve_owner(working: Path) -> tuple[int, int]:
+    info = working.stat()
+    return info.st_uid, info.st_gid
+
+
+def chown_runtime(working: Path, uid: int, gid: int) -> None:
+    for root, dirs, files in os.walk(working):
+        root_path = Path(root)
+        if ".runtime-backups" in root_path.parts:
+            continue
+        os.chown(root_path, uid, gid)
+        for name in dirs:
+            if name == ".runtime-backups":
+                continue
+            os.chown(root_path / name, uid, gid)
+        for name in files:
+            os.chown(root_path / name, uid, gid)
+
+
+def check_update(request: dict[str, Any]) -> dict[str, Any]:
+    _, instance = registry_and_instance(request.get("payload", {}).get("id"))
+    latest, _ = latest_package()
+    installed = current_version(instance)
+    available = not version_tuple(installed) or version_tuple(latest) > version_tuple(installed)
+    return {"id": instance["id"], "installed": installed, "latest": latest, "update_available": available}
+
+
+def apply_update(request: dict[str, Any]) -> dict[str, Any]:
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    registry, instance = registry_and_instance(payload.get("id"))
+    accepted = bool(instance.get("eula_accepted")) or bool(payload.get("eula_accepted"))
+    if not accepted:
+        raise RuntimeError("Minecraft EULA/privacy acceptance is required before downloading updates")
+    if bool(payload.get("eula_accepted")):
+        instance["eula_accepted"] = True
+        atomic_json(REGISTRY, registry)
+
+    latest, url = latest_package()
+    installed = current_version(instance)
+    if version_tuple(installed) and version_tuple(latest) <= version_tuple(installed):
+        return {"id": instance["id"], "installed": installed, "latest": latest, "updated": False}
+
+    working = Path(clean(instance.get("working_directory"), 1024, True)).resolve(strict=True)
+    if not working.is_dir() or not (working / "bedrock_server").is_file():
+        raise RuntimeError("Minecraft runtime is not available")
+    unit = clean(instance.get("service") or "", 128)
+    was_active = service_active(unit)
+    owner = preserve_owner(working)
+    content_backup = make_content_backup(instance)
+    runtime_backup = backup_runtime(working, installed)
+
+    with tempfile.TemporaryDirectory(prefix="minecraft-update.", dir=STATE_DIR) as temp_name:
+        temp = Path(temp_name)
+        archive = temp / "bedrock.zip"
+        request_obj = urllib.request.Request(url, headers={"User-Agent": "SRV-Control-Center/1.3"})
+        with urllib.request.urlopen(request_obj, timeout=90) as response, archive.open("wb") as output:
+            copied = 0
+            while True:
+                chunk = response.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > 2 * 1024 * 1024 * 1024:
+                    raise RuntimeError("Bedrock package exceeds download safety limit")
+                output.write(chunk)
+        if archive.stat().st_size < 5 * 1024 * 1024:
+            raise RuntimeError("downloaded Bedrock package is unexpectedly small")
+        extracted = temp / "extracted"
+        extracted.mkdir()
+        extract_package(archive, extracted)
+
+        if was_active:
+            run(["systemctl", "stop", unit], timeout=90)
+        try:
+            install_runtime(working, extracted)
+            chown_runtime(working, *owner)
+            if was_active:
+                run(["systemctl", "start", unit], timeout=90)
+                if not service_active(unit):
+                    raise RuntimeError("updated Minecraft service did not become active")
+            instance["version"] = latest
+            instance["last_updated_at"] = now()
+            atomic_json(REGISTRY, registry)
+        except Exception:
+            if was_active:
+                subprocess.run(["systemctl", "stop", unit], check=False)
+            restore_runtime(working, runtime_backup)
+            chown_runtime(working, *owner)
+            if was_active:
+                subprocess.run(["systemctl", "start", unit], check=False)
+            raise
+    return {
+        "id": instance["id"],
+        "installed": installed,
+        "latest": latest,
+        "updated": True,
+        "content_backup": str(content_backup),
+    }
+
+
+def main() -> int:
+    request = json.loads(sys.stdin.read())
+    if not isinstance(request, dict):
+        raise SystemExit("request must be a JSON object")
+    action = str(request.get("action") or "")
+    try:
+        if action == "minecraft-update-check":
+            data = check_update(request)
+        elif action == "minecraft-update-apply":
+            data = apply_update(request)
+        else:
+            raise RuntimeError("unsupported update action")
+        print(json.dumps({"ok": True, "detail": json.dumps(data, ensure_ascii=False)}, ensure_ascii=False))
+        return 0
+    except Exception as exc:
+        print(json.dumps({"ok": False, "detail": str(exc)[-12000:]}, ensure_ascii=False))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
