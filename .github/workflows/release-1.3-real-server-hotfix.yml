@@ -22,16 +22,28 @@ jobs:
           python3 - <<'PY'
           import hashlib,json
           from pathlib import Path
+
           cfg=json.loads(Path('deployment.json').read_text())
           manifest=json.loads(Path(cfg['manifest']).read_text())
           item=manifest['scripts']['acceptance']
           expected=str(Path(cfg['release_path']) / item['path'])
+
           assert cfg['channel']=='production',cfg
           assert cfg['release_id']=='1.3.0',cfg
           assert cfg['acceptance']==expected,(cfg['acceptance'],expected)
+
           data=Path(expected).read_bytes()
           assert hashlib.sha256(data).hexdigest()==item['sha256']
           text=data.decode('utf-8')
+          source=Path('releases/1.3.0/acceptance.sh').read_text(encoding='utf-8')
+
           assert 'mkdir -p -- "$restored/cache"' in text
-          assert 'acceptance hotfix anchor not found; refusing unsafe patch' in text
+          assert 'defaultNamingContext' in text
+          assert '-b "$restored_base_dn" -s base objectSid' in text
+          assert 'restored domain naming context missing' in text
+          assert 'restored domain SID missing' in text
+          assert 'acceptance SID hotfix anchor not found; refusing unsafe patch' in text
+
+          old_sid = '''    restored_sid="$(ldbsearch -H "$restored_sam" -b '' -s base objectSid 2>/dev/null | awk '/^objectSid: /{print $2; exit}')"\n    [[ "$restored_sid" == "$live_sid" ]] || fail "restored domain SID mismatch"\n'''
+          assert old_sid in source, 'production acceptance SID anchor changed unexpectedly'
           PY
