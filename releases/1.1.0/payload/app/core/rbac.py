@@ -18,6 +18,7 @@ MODULES = {
 }
 ACCESS_LEVELS = {"read", "write"}
 SOURCES = {"local", "domain", "any"}
+SUBJECT_TYPES = {"group", "user"}
 
 
 @dataclass(frozen=True)
@@ -26,8 +27,35 @@ class Permission:
     access: str
 
 
+def _name_keys(value: str) -> set[str]:
+    raw = str(value or "").strip().casefold()
+    if not raw:
+        return set()
+    values = {raw}
+    if "\\" in raw:
+        local = raw.rsplit("\\", 1)[-1].strip()
+        if local:
+            values.add(local)
+    if "@" in raw:
+        local = raw.split("@", 1)[0].strip()
+        if local:
+            values.add(local)
+    return values
+
+
 def _group_keys(identity: Identity) -> set[str]:
-    return {group.casefold() for group in identity.groups}
+    keys: set[str] = set()
+    for group in identity.groups:
+        keys.update(_name_keys(group))
+    return keys
+
+
+def _user_keys(identity: Identity) -> set[str]:
+    return _name_keys(identity.username)
+
+
+def _source_for_identity(identity: Identity) -> str:
+    return "domain" if identity.auth_source in {"domain", "sso"} else "local"
 
 
 def permissions_for(identity: Identity) -> dict[str, str]:
@@ -35,26 +63,35 @@ def permissions_for(identity: Identity) -> dict[str, str]:
         return {module: "write" for module in MODULES}
 
     group_keys = _group_keys(identity)
-    if not group_keys:
-        return {}
+    user_keys = _user_keys(identity)
+    source = _source_for_identity(identity)
 
     with engine.connect() as connection:
         rows = connection.execute(
             text(
                 """
-                SELECT group_name, source, module, access
+                SELECT group_name, source, subject_type, module, access
                 FROM rbac_group_permissions
                 WHERE enabled = true
                   AND source IN ('any', :source)
                 """
             ),
-            {"source": "domain" if identity.auth_source in {"domain", "sso"} else "local"},
+            {"source": source},
         ).mappings()
 
         result: dict[str, str] = {}
         for row in rows:
-            if str(row["group_name"]).casefold() not in group_keys:
+            subject_type = str(row.get("subject_type") or "group")
+            subject_keys = _name_keys(str(row["group_name"]))
+            if subject_type == "group":
+                applies = bool(subject_keys & group_keys)
+            elif subject_type == "user":
+                applies = bool(subject_keys & user_keys)
+            else:
+                applies = False
+            if not applies:
                 continue
+
             module = str(row["module"])
             access = str(row["access"])
             if module not in MODULES or access not in ACCESS_LEVELS:
@@ -86,27 +123,42 @@ def require_permission(identity: Identity, module: str, access: str = "read") ->
 def list_grants() -> list[dict]:
     with engine.connect() as connection:
         return [
-            dict(row)
+            {
+                **dict(row),
+                "subject_name": row["group_name"],
+            }
             for row in connection.execute(
                 text(
                     """
-                    SELECT id, group_name, source, module, access, enabled,
+                    SELECT id, group_name, subject_type, source, module, access, enabled,
                            updated_by, updated_at
                     FROM rbac_group_permissions
-                    ORDER BY source, group_name, module
+                    ORDER BY subject_type, source, group_name, module
                     """
                 )
             ).mappings()
         ]
 
 
-def upsert_grant(*, group_name: str, source: str, module: str, access: str, actor: str) -> dict:
-    group_name = group_name.strip()
+def upsert_grant(
+    *,
+    subject_type: str,
+    subject_name: str,
+    source: str,
+    module: str,
+    access: str,
+    actor: str,
+) -> dict:
+    subject_type = subject_type.strip().lower()
+    subject_name = subject_name.strip()
     source = source.strip().lower()
     module = module.strip().lower()
     access = access.strip().lower()
-    if not group_name:
-        raise ValueError("group_name is required")
+
+    if subject_type not in SUBJECT_TYPES:
+        raise ValueError("invalid subject_type")
+    if not subject_name:
+        raise ValueError("subject_name is required")
     if source not in SOURCES:
         raise ValueError("invalid source")
     if module not in MODULES:
@@ -119,28 +171,31 @@ def upsert_grant(*, group_name: str, source: str, module: str, access: str, acto
             text(
                 """
                 INSERT INTO rbac_group_permissions
-                    (group_name, source, module, access, enabled, updated_by)
+                    (group_name, subject_type, source, module, access, enabled, updated_by)
                 VALUES
-                    (:group_name, :source, :module, :access, true, :actor)
-                ON CONFLICT (group_name, source, module)
+                    (:subject_name, :subject_type, :source, :module, :access, true, :actor)
+                ON CONFLICT (subject_type, group_name, source, module)
                 DO UPDATE SET
                     access = EXCLUDED.access,
                     enabled = true,
                     updated_by = EXCLUDED.updated_by,
                     updated_at = now()
-                RETURNING id, group_name, source, module, access, enabled,
+                RETURNING id, group_name, subject_type, source, module, access, enabled,
                           updated_by, updated_at
                 """
             ),
             {
-                "group_name": group_name,
+                "subject_name": subject_name,
+                "subject_type": subject_type,
                 "source": source,
                 "module": module,
                 "access": access,
                 "actor": actor,
             },
         ).mappings().one()
-        return dict(row)
+        result = dict(row)
+        result["subject_name"] = result["group_name"]
+        return result
 
 
 def delete_grant(grant_id: int) -> bool:
