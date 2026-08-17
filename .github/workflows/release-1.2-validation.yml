@@ -16,18 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate 1.2.0 release descriptor
+      - name: Validate archived 1.2.0 release descriptor
         run: |
           python3 - <<'PY'
           import json
           from pathlib import Path
-          cfg=json.loads(Path('deployment.json').read_text())
-          assert cfg['release_id']=='1.2.0', cfg
-          assert cfg['release_path']=='releases/1.2.0', cfg
-          assert cfg['manifest']=='releases/1.2.0/manifest.json', cfg
-          manifest=json.loads(Path(cfg['manifest']).read_text())
+          root=Path('releases/1.2.0')
+          manifest=json.loads((root/'manifest.json').read_text())
           assert manifest['release_id']=='1.2.0', manifest
           assert manifest['release_version']=='1.2.0', manifest
+
+          # deployment.json tracks the currently promoted production release.
+          # Only validate 1.2.0 wiring when 1.2.0 itself is the active descriptor.
+          cfg=json.loads(Path('deployment.json').read_text())
+          if cfg.get('release_id')=='1.2.0':
+              assert cfg['release_path']=='releases/1.2.0', cfg
+              assert cfg['manifest']=='releases/1.2.0/manifest.json', cfg
           PY
 
       - name: Validate release script checksums
