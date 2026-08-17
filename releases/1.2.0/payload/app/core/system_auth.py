@@ -139,6 +139,14 @@ def _group_names(username: str) -> tuple[str, ...]:
     return tuple(names)
 
 
+def shutil_which(command: str) -> str | None:
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(directory) / command
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def _looks_domain_identity(username: str) -> bool:
     if "@" in username or "\\" in username:
         return True
@@ -149,14 +157,6 @@ def _looks_domain_identity(username: str) -> bool:
         return result.returncode == 0 and bool(result.stdout.strip())
     except Exception:
         return False
-
-
-def shutil_which(command: str) -> str | None:
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = Path(directory) / command
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
 
 
 def resolve_identity(
@@ -181,6 +181,29 @@ def resolve_identity(
     )
 
 
+def _elevate_rbac_admin(identity: Identity) -> Identity:
+    if identity.is_admin:
+        return identity
+    try:
+        # Lazy import avoids a module-import cycle: rbac imports Identity.
+        from app.core.rbac import is_full_admin
+
+        if not is_full_admin(identity):
+            return identity
+    except Exception:
+        # Authentication must remain available if the DB is temporarily
+        # unavailable; only RBAC elevation is skipped in that case.
+        return identity
+    return Identity(
+        username=identity.username,
+        uid=identity.uid,
+        gid=identity.gid,
+        groups=identity.groups,
+        auth_source=identity.auth_source,
+        is_admin=True,
+    )
+
+
 def authenticate_system(username: str, password: str) -> Identity | None:
     username = username.strip()
     if not username or not password or shutil_which("pamtester") is None:
@@ -198,7 +221,8 @@ def authenticate_system(username: str, password: str) -> Identity | None:
         return None
     if result.returncode != 0:
         return None
-    return resolve_identity(username, source_hint)
+    identity = resolve_identity(username, source_hint)
+    return _elevate_rbac_admin(identity) if identity is not None else None
 
 
 def create_session(identity: Identity) -> tuple[str, str]:
@@ -213,18 +237,10 @@ def create_session(identity: Identity) -> tuple[str, str]:
         "nonce": secrets.token_urlsafe(12),
     }
     body = _b64encode(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )
     signature = _b64encode(
-        hmac.new(
-            _session_key(),
-            body.encode("ascii"),
-            hashlib.sha256,
-        ).digest()
+        hmac.new(_session_key(), body.encode("ascii"), hashlib.sha256).digest()
     )
     return f"{body}.{signature}", csrf
 
@@ -235,11 +251,7 @@ def parse_session(request: Request) -> dict | None:
         return None
     body, signature = token.rsplit(".", 1)
     expected = _b64encode(
-        hmac.new(
-            _session_key(),
-            body.encode("ascii"),
-            hashlib.sha256,
-        ).digest()
+        hmac.new(_session_key(), body.encode("ascii"), hashlib.sha256).digest()
     )
     if not hmac.compare_digest(signature, expected):
         return None
@@ -257,7 +269,7 @@ def parse_session(request: Request) -> dict | None:
     )
     if identity is None:
         return None
-    payload["identity"] = identity
+    payload["identity"] = _elevate_rbac_admin(identity)
     return payload
 
 
@@ -282,7 +294,8 @@ def sso_identity(request: Request) -> Identity | None:
     username = request.headers.get("X-SRVCC-Remote-User", "").strip()
     if not username:
         return None
-    return resolve_identity(username, "sso")
+    identity = resolve_identity(username, "sso")
+    return _elevate_rbac_admin(identity) if identity is not None else None
 
 
 def _guard_key(username: str, client_ip: str | None) -> str:
@@ -308,21 +321,15 @@ def _guard_update(
                 state = {}
         except Exception:
             state = {}
-        entries = (
-            state.get("entries")
-            if isinstance(state.get("entries"), dict)
-            else {}
-        )
-        item = (
-            entries.get(key)
-            if isinstance(entries.get(key), dict)
-            else {"failures": [], "locked_until": 0}
-        )
+        entries = state.get("entries") if isinstance(state.get("entries"), dict) else {}
+        item = entries.get(key) if isinstance(entries.get(key), dict) else {
+            "failures": [],
+            "locked_until": 0,
+        }
         failures = [
             int(value)
             for value in item.get("failures", [])
-            if isinstance(value, (int, float))
-            and int(value) >= now - LOGIN_WINDOW
+            if isinstance(value, (int, float)) and int(value) >= now - LOGIN_WINDOW
         ]
         locked_until = int(item.get("locked_until", 0) or 0)
         if success is True:
