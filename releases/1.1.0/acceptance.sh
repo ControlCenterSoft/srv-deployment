@@ -33,12 +33,18 @@ migration="$(
     runuser -u srv-control -- psql -d srv_control -Atc \
         "SELECT version_num FROM alembic_version LIMIT 1;"
 )"
-[[ "$migration" == "11f0a1100001" ]] \
+[[ "$migration" == "11f0a1100002" ]] \
     || fail "unexpected database migration head: $migration"
 
 runuser -u srv-control -- psql -d srv_control -Atc \
     "SELECT count(*) FROM rbac_group_permissions;" >/dev/null \
     || fail "RBAC table unavailable"
+
+subject_type_column="$(
+    runuser -u srv-control -- psql -d srv_control -Atc \
+        "SELECT count(*) FROM information_schema.columns WHERE table_name='rbac_group_permissions' AND column_name='subject_type';"
+)"
+[[ "$subject_type_column" == "1" ]] || fail "RBAC subject_type column unavailable"
 
 nginx -t >/dev/null 2>&1 || fail "nginx configuration is invalid"
 
@@ -137,7 +143,8 @@ from app.core.rbac import permissions_for
 assert permissions_for(root) == admin_permissions
 
 group = "srvcc-acceptance-temporary"
-grant_id = None
+group_grant_id = None
+user_grant_id = None
 try:
     grant = upsert_grant(
         group_name=group,
@@ -146,7 +153,7 @@ try:
         access="read",
         actor="acceptance",
     )
-    grant_id = int(grant["id"])
+    group_grant_id = int(grant["id"])
     identity = Identity(
         username="acceptance",
         uid=65000,
@@ -164,14 +171,39 @@ try:
         access="write",
         actor="acceptance",
     )
-    grant_id = int(grant["id"])
+    group_grant_id = int(grant["id"])
     assert has_permission(identity, "network", "read") is True
     assert has_permission(identity, "network", "write") is True
-finally:
-    if grant_id is not None:
-        delete_grant(grant_id)
 
-print(json.dumps({"release": release, "auth_gate": True, "rbac": True}, ensure_ascii=False))
+    user_grant = upsert_grant(
+        subject_type="user",
+        subject_name="acceptance",
+        source="local",
+        module="downloads",
+        access="read",
+        actor="acceptance",
+    )
+    user_grant_id = int(user_grant["id"])
+    assert user_grant.get("subject_type") == "user", user_grant
+    assert has_permission(identity, "downloads", "read") is True
+    assert has_permission(identity, "downloads", "write") is False
+    user_grant = upsert_grant(
+        subject_type="user",
+        subject_name="acceptance",
+        source="local",
+        module="downloads",
+        access="write",
+        actor="acceptance",
+    )
+    user_grant_id = int(user_grant["id"])
+    assert has_permission(identity, "downloads", "write") is True
+finally:
+    if user_grant_id is not None:
+        delete_grant(user_grant_id)
+    if group_grant_id is not None:
+        delete_grant(group_grant_id)
+
+print(json.dumps({"release": release, "auth_gate": True, "rbac_group": True, "rbac_user": True}, ensure_ascii=False))
 PY
 
 smoke_backup_id=""
