@@ -141,11 +141,11 @@ def validate_pxe_runtime() -> str:
             if f'option:client-arch,{arch}' not in text_value:
                 raise RuntimeError(f'DHCP PXE architecture option 93 value {arch} is missing')
         required_boot_rules = (
-            'tag:bios,undionly.kpxe',
-            'tag:efi32,i386/snponly.efi',
-            'tag:efi64,x86_64-sb/snponly-shim.efi',
-            'tag:arm32,arm32/snponly.efi',
-            'tag:arm64,arm64-sb/snponly-shim.efi',
+            'tag:pxe-bios,undionly.kpxe',
+            'tag:pxe-efi32,i386/snponly.efi',
+            'tag:pxe-efi64,x86_64-sb/snponly-shim.efi',
+            'tag:pxe-arm32,arm32/snponly.efi',
+            'tag:pxe-arm64,arm64-sb/snponly-shim.efi',
             'tag:pxe-noarch,undionly.kpxe',
             'tag:ipxe,autoexec.ipxe',
         )
@@ -155,7 +155,7 @@ def validate_pxe_runtime() -> str:
     return 'PXE runtime validation passed for BIOS + UEFI IA32/x64/ARM32/ARM64 and x64/ARM64 Secure Boot assets'
 
 
-# Official GitHub Release digests.  Runtime installation refuses any asset
+# Official GitHub Release digests. Runtime installation refuses any asset
 # whose SHA-256 differs, even if the HTTP request and size checks succeeded.
 PXE_ASSET_SHA256 = {
     IPXE_ARCHIVE_URL: '01a526d4cc791fc30362259c609d6c506cc64a7bdff51b9a5eb788354e17eee1',
@@ -180,6 +180,236 @@ def _download(url: str, target: Path, minimum: int) -> None:
         target.unlink(missing_ok=True)
         raise RuntimeError(f'PXE asset SHA-256 mismatch: {url}')
     os.chmod(target, 0o644)
+
+
+# Final fail-safe overrides. They deliberately live after the compatibility
+# layer so the effective runtime behaviour is unambiguous and contract-testable.
+def _interface_ipv4(interface: str, network: str | None = None, netmask: str | None = None) -> str:
+    from ipaddress import ip_address, ip_network
+
+    iface = str(interface or '').strip()
+    if not iface or not re.fullmatch(r'[A-Za-z0-9_.:-]+', iface):
+        raise RuntimeError('invalid DHCP/PXE interface')
+    out = run(['ip', '-4', '-o', 'addr', 'show', 'dev', iface, 'scope', 'global'], timeout=20, check=False)
+    addresses = []
+    for line in out.splitlines():
+        match = re.search(r'\binet\s+([0-9.]+)/', line)
+        if match and match.group(1) != '0.0.0.0' and not match.group(1).startswith('127.'):
+            addresses.append(match.group(1))
+    if network and netmask:
+        try:
+            subnet = ip_network(f'{network}/{netmask}', strict=False)
+        except Exception as exc:
+            raise RuntimeError('invalid configured DHCP subnet while selecting PXE next-server') from exc
+        addresses = [value for value in addresses if ip_address(value) in subnet]
+    addresses = list(dict.fromkeys(addresses))
+    if not addresses:
+        suffix = f' inside {network}/{netmask}' if network and netmask else ''
+        raise RuntimeError(f'interface {iface} has no usable IPv4 address{suffix}; cannot publish PXE next-server')
+    if len(addresses) != 1:
+        raise RuntimeError(
+            f'interface {iface} has ambiguous PXE server addresses: {", ".join(addresses)}; '
+            'leave exactly one LAN IPv4 address in the configured DHCP subnet'
+        )
+    return addresses[0]
+
+
+def _pxe_runtime_active() -> bool:
+    if not (TFTP_ROOT / 'undionly.kpxe').is_file():
+        return False
+    return subprocess.run(
+        ['systemctl', 'is-active', '--quiet', 'tftpd-hpa.service'],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def apply_dhcp() -> str:
+    rows = psql_json('SELECT * FROM dhcp_configs WHERE id=1') or []
+    if not rows:
+        raise RuntimeError('DHCP configuration is not defined')
+    c = rows[0]
+    if not c.get('enabled'):
+        subprocess.run(['systemctl', 'disable', '--now', 'dnsmasq.service'], check=False)
+        return 'DHCP configuration saved; service disabled'
+    required = ['interface', 'network', 'netmask', 'range_start', 'range_end', 'gateway']
+    if any(not c.get(key) for key in required):
+        raise RuntimeError('DHCP configuration is incomplete')
+
+    server = _interface_ipv4(str(c['interface']), str(c['network']), str(c['netmask']))
+    options = psql_json('SELECT code,value FROM dhcp_options WHERE enabled=true ORDER BY code,id') or []
+    reservations = psql_json('SELECT mac,ip_address,hostname FROM dhcp_reservations WHERE enabled=true ORDER BY ip_address') or []
+    dns = c.get('dns') or []
+    lines = [
+        '# Managed by SRV Control Center 1.4.0',
+        'port=0',
+        'bind-interfaces',
+        f"interface={c['interface']}",
+        'dhcp-authoritative',
+        f"dhcp-range={c['range_start']},{c['range_end']},{c['netmask']},{c.get('lease_time') or '12h'}",
+        f"dhcp-option=option:router,{c['gateway']}",
+    ]
+    if dns:
+        lines.append('dhcp-option=option:dns-server,' + ','.join(str(item) for item in dns))
+    for item in options:
+        value = str(item['value']).replace('\n', '').replace('\r', '')
+        lines.append(f"dhcp-option={int(item['code'])},{value}")
+    for item in reservations:
+        host = (',' + str(item['hostname'])) if item.get('hostname') else ''
+        lines.append(f"dhcp-host={item['mac']},{item['ip_address']}{host}")
+
+    if _pxe_runtime_active():
+        # DHCP option 93 may legally contain an architecture list. Raw matches
+        # can therefore set several tags at once. Derive one priority tag so a
+        # client can never receive contradictory bootfile names.
+        lines += [
+            'dhcp-vendorclass=set:pxeclient,PXEClient',
+            'dhcp-match=set:ipxe,175',
+            'dhcp-userclass=set:ipxe,iPXE',
+            'dhcp-match=set:bios,option:client-arch,0',
+            'dhcp-match=set:efi32,option:client-arch,6',
+            'dhcp-match=set:efi64,option:client-arch,7',
+            'dhcp-match=set:efi64,option:client-arch,9',
+            'dhcp-match=set:arm32,option:client-arch,10',
+            'dhcp-match=set:arm64,option:client-arch,11',
+            'tag-if=set:pxe-arm64,tag:arm64,tag:!ipxe',
+            'tag-if=set:pxe-arm32,tag:arm32,tag:!arm64,tag:!ipxe',
+            'tag-if=set:pxe-efi64,tag:efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+            'tag-if=set:pxe-efi32,tag:efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+            'tag-if=set:pxe-bios,tag:bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+            'tag-if=set:pxe-noarch,tag:pxeclient,tag:!bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+            f'dhcp-boot=tag:pxe-bios,undionly.kpxe,,{server}',
+            f'dhcp-boot=tag:pxe-efi32,i386/snponly.efi,,{server}',
+            f'dhcp-boot=tag:pxe-efi64,x86_64-sb/snponly-shim.efi,,{server}',
+            f'dhcp-boot=tag:pxe-arm32,arm32/snponly.efi,,{server}',
+            f'dhcp-boot=tag:pxe-arm64,arm64-sb/snponly-shim.efi,,{server}',
+            f'dhcp-boot=tag:pxe-noarch,undionly.kpxe,,{server}',
+            f'dhcp-boot=tag:ipxe,autoexec.ipxe,,{server}',
+        ]
+
+    DHCP_CONF.parent.mkdir(parents=True, exist_ok=True)
+    DHCP_CONF.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    os.chmod(DHCP_CONF, 0o644)
+    run(['dnsmasq', '--test'], timeout=30)
+    run(['systemctl', 'enable', '--now', 'dnsmasq.service'], timeout=30)
+    run(['systemctl', 'restart', 'dnsmasq.service'], timeout=30)
+    pxe_state = 'enabled' if _pxe_runtime_active() else 'disabled'
+    return (
+        f"DHCP active on {c['interface']} range {c['range_start']}..{c['range_end']} "
+        f"PXE={pxe_state} next-server={server}"
+    )
+
+
+def _server_ip() -> str:
+    rows = psql_json(
+        "SELECT interface,network,netmask FROM dhcp_configs WHERE id=1 AND interface IS NOT NULL"
+    ) or []
+    if rows and rows[0].get('interface'):
+        row = rows[0]
+        return _interface_ipv4(str(row['interface']), str(row.get('network') or ''), str(row.get('netmask') or ''))
+    raise RuntimeError('DHCP/LAN interface must be configured before publishing a PXE profile')
+
+
+def remove_pxe() -> str:
+    subprocess.run(['systemctl', 'disable', '--now', 'tftpd-hpa.service'], check=False)
+    remove_pxe_samba_share()
+    run(['apt-get', 'remove', '-y', 'tftpd-hpa'], timeout=900)
+    # Firmware binaries and images are preserved intentionally, but DHCP must
+    # immediately stop advertising those now-dead TFTP boot files.
+    if shutil.which('dnsmasq') and DHCP_CONF.exists():
+        apply_dhcp()
+    return 'PXE service removed; DHCP boot advertisement disabled; images/profiles preserved'
+
+
+_publish_windows_v14 = publish_windows
+
+
+def publish_windows(profile: dict, config: dict, target: Path, server: str, cred: dict) -> None:
+    meta = profile.get('metadata') or {}
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    editions = meta.get('editions') if isinstance(meta.get('editions'), list) else []
+    if not editions:
+        raise RuntimeError('Windows image edition list is empty; re-prepare the ISO before authorizing installation')
+
+    requested = str(profile.get('windows_edition') or '').strip()
+    if not requested:
+        if len(editions) != 1:
+            raise RuntimeError('Windows image contains multiple editions; select an exact edition before PXE authorization')
+        requested = str(editions[0].get('name') or '').strip()
+    exact = [item for item in editions if str(item.get('name') or '').strip().casefold() == requested.casefold()]
+    if len(exact) != 1 or int(exact[0].get('index') or 0) <= 0:
+        names = ', '.join(str(item.get('name') or '') for item in editions[:20])
+        raise RuntimeError(f'Windows edition {requested!r} was not found exactly in the prepared image; available: {names}')
+    selected = exact[0]
+    index = int(selected['index'])
+
+    safe_profile = dict(profile)
+    safe_meta = dict(meta)
+    # The legacy generator uses substring matching; put the already exact-
+    # validated edition first so its generated index is deterministic.
+    safe_meta['editions'] = [selected] + [item for item in editions if item is not selected]
+    safe_profile['metadata'] = safe_meta
+    safe_profile['windows_edition'] = str(selected.get('name') or requested)
+    _publish_windows_v14(safe_profile, config, target, server, cred)
+
+    startnet = target / 'startnet.cmd'
+    text_value = startnet.read_text(encoding='utf-8')
+    image_id = int(profile['image_id'])
+    install_name = str(meta.get('install_image') or 'install.wim')
+    image_arg = f'Z:\\images\\{image_id}\\{install_name}'
+    disk_marker = 'diskpart /s %DiskScript%'
+    if disk_marker not in text_value:
+        raise RuntimeError('generated WinPE script has no diskpart safety boundary')
+    precheck = (
+        f'dism /Get-WimInfo /WimFile:{image_arg} /Index:{index}\r\n'
+        'if errorlevel 1 goto failed\r\n'
+    )
+    text_value = text_value.replace(disk_marker, precheck + disk_marker, 1)
+    old_apply = f'dism /Apply-Image /ImageFile:{image_arg} /Index:{index} /ApplyDir:W:\\'
+    new_apply = old_apply + ' /CheckIntegrity /Verify'
+    if old_apply not in text_value:
+        raise RuntimeError('generated WinPE script has no expected DISM Apply-Image command')
+    text_value = text_value.replace(old_apply, new_apply, 1)
+    startnet.write_text(text_value, encoding='utf-8')
+
+
+_publish_linux_v14 = publish_linux
+
+
+def publish_linux(profile: dict, config: dict, target: Path, server: str) -> None:
+    _publish_linux_v14(profile, config, target, server)
+
+    # Debian must not pause to request an unspecified root password.
+    preseed_path = target / 'preseed.cfg'
+    if preseed_path.is_file():
+        value = preseed_path.read_text(encoding='utf-8')
+        root_rule = 'd-i passwd/root-login boolean false\n'
+        if root_rule not in value:
+            value = root_rule + value
+            preseed_path.write_text(value, encoding='utf-8')
+
+    # iPXE's shim command skips the download when Secure Boot is not needed.
+    # Therefore every Linux profile gets a shim guard. If the ISO did not
+    # provide a signed shim, Secure Boot fails here BEFORE one-time consume.
+    boot_path = target / 'boot.ipxe'
+    value = boot_path.read_text(encoding='utf-8')
+    if '\nshim ' not in value:
+        profile_config = profile.get('config') or {}
+        if isinstance(profile_config, str):
+            profile_config = json.loads(profile_config)
+        boot_token = str(profile_config.get('boot_token') or '')
+        if not boot_token:
+            raise RuntimeError('PXE profile boot token is missing')
+        private = f'http://${{next-server}}/pxe/profile/{profile["id"]}/{boot_token}'
+        consume_marker = 'imgfetch --name srv-consume '
+        pos = value.find(consume_marker)
+        if pos < 0:
+            raise RuntimeError('generated Linux PXE script has no authorization consume boundary')
+        guard = f'shim {private}/secure-boot-shim-not-available.efi || goto denied\n'
+        value = value[:pos] + guard + value[pos:]
+        boot_path.write_text(value, encoding='utf-8')
 
 
 def main() -> int:
