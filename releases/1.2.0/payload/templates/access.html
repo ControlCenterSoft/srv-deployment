@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Права пользователей — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.1.0-ui7">
+    <link rel="stylesheet" href="/static/css/access.css?v=1.1.0-ui7">
+</head>
+<body>
+<div class="page">
+    <header class="page-header">
+        <div>
+            <h1>Права пользователей</h1>
+            <p>Назначение доступа Control Center локальным и доменным группам и пользователям.</p>
+        </div>
+        <div class="identity-badge" id="identityBadge">—</div>
+    </header>
+
+    <section class="summary-grid directory-summary">
+        <div class="panel">
+            <div class="panel-title">Авторизация</div>
+            <div class="stat-row"><span>Системная PAM</span><strong id="pamState">—</strong></div>
+            <div class="stat-row"><span>Домен</span><strong id="domainState">—</strong></div>
+            <div class="stat-row"><span>SSO</span><strong id="ssoState">—</strong></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">Каталог</div>
+            <div class="stat-row"><span>Локальные пользователи</span><strong id="localUserCount">—</strong></div>
+            <div class="stat-row"><span>Доменные пользователи</span><strong id="domainUserCount">—</strong></div>
+            <div class="stat-row"><span>Группы</span><strong id="groupCount">—</strong></div>
+        </div>
+    </section>
+
+    <section class="subject-grid">
+        <article class="panel subject-panel">
+            <div class="subject-panel-head">
+                <div>
+                    <div class="panel-title">Группы</div>
+                    <p>Назначьте права выбранной локальной или доменной группе.</p>
+                </div>
+                <span class="subject-count" id="groupSubjectCount">0</span>
+            </div>
+            <form id="groupGrantForm" class="subject-form" data-subject-type="group">
+                <label>
+                    <span>Источник</span>
+                    <select id="groupGrantSource" required>
+                        <option value="local">Локальные</option>
+                        <option value="domain">Доменные</option>
+                        <option value="any">Все источники</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Группа</span>
+                    <select id="groupGrantSubject" required></select>
+                </label>
+                <div class="rights-row">
+                    <label>
+                        <span>Модуль</span>
+                        <select id="groupGrantModule" required></select>
+                    </label>
+                    <label>
+                        <span>Уровень</span>
+                        <select id="groupGrantAccess" required>
+                            <option value="read">Чтение</option>
+                            <option value="write">Запись</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="submit">Сохранить права группе</button>
+            </form>
+        </article>
+
+        <article class="panel subject-panel">
+            <div class="subject-panel-head">
+                <div>
+                    <div class="panel-title">Пользователи</div>
+                    <p>Назначьте персональные права без вывода полного списка учётных записей на страницу.</p>
+                </div>
+                <span class="subject-count" id="userSubjectCount">0</span>
+            </div>
+            <form id="userGrantForm" class="subject-form" data-subject-type="user">
+                <label>
+                    <span>Источник</span>
+                    <select id="userGrantSource" required>
+                        <option value="local">Локальные</option>
+                        <option value="domain">Доменные</option>
+                        <option value="any">Все источники</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Пользователь</span>
+                    <select id="userGrantSubject" required></select>
+                </label>
+                <div class="rights-row">
+                    <label>
+                        <span>Модуль</span>
+                        <select id="userGrantModule" required></select>
+                    </label>
+                    <label>
+                        <span>Уровень</span>
+                        <select id="userGrantAccess" required>
+                            <option value="read">Чтение</option>
+                            <option value="write">Запись</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="submit">Сохранить права пользователю</button>
+            </form>
+        </article>
+    </section>
+
+    <div class="action-message" id="grantMessage"></div>
+
+    <section class="panel">
+        <div class="panel-title-row access-title-row">
+            <div>
+                <div class="panel-title">Назначенные права</div>
+                <p>Прямые пользовательские правила и групповые правила действуют совместно; уровень «Запись» имеет приоритет над «Чтением».</p>
+            </div>
+        </div>
+        <div class="grant-table-wrap">
+            <table class="grant-table">
+                <thead>
+                    <tr>
+                        <th>Тип</th>
+                        <th>Источник</th>
+                        <th>Группа / пользователь</th>
+                        <th>Модуль</th>
+                        <th>Права</th>
+                        <th>Изменил</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="grantRows"></tbody>
+            </table>
+        </div>
+    </section>
+</div>
+<script src="/static/js/access.js?v=1.1.0-ui7"></script>
+</body>
+</html>

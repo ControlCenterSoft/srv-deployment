@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+
+
+CONFIG = Path("/var/lib/srv-control/os-update-config.json")
+BACKUP_CONFIG = Path("/var/lib/srv-control/backup-config.json")
+BACKUP = "/usr/local/libexec/srv-control-backup"
+UPDATE = "/usr/local/libexec/srv-control-os-update"
+
+
+def load(path: Path, default: dict) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else dict(default)
+    except Exception:
+        return dict(default)
+
+
+def run(command: list[str]) -> None:
+    subprocess.run(command, check=True)
+
+
+def main() -> int:
+    config = load(CONFIG, {"mode": "manual", "interval_hours": 24})
+    if config.get("mode") != "automatic":
+        return 0
+    backup = load(BACKUP_CONFIG, {"backup_before_update": True})
+    if bool(backup.get("backup_before_update", True)):
+        run([BACKUP, "create", "--actor", "system", "--reason", "pre-os-update"])
+    run([UPDATE])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
