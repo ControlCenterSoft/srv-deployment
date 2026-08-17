@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "release_id": "0004-deployment-reliability",
+  "release_version": "0.4.0",
+  "description": "Harden deployment, enable graceful worker reloads and expose deployment status in the System module.",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "b06fe8e56b3e67ebec93056212074815f1d3cc477a9d57527a6605c51bc85711"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "8ecc998012288767880891d83aa5225dd6ba23f8edb183a2ba6cbfb59a646023"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "f4d3ca170d116a9478461ae5b6ec9999a213089be87fe46504a2a94b6fed17e9"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "15dbbf70a476dd4fef9ae6d322eedabdb2ca30be75ca458bb0f8c8b9eea3400d"
+    }
+  }
+}

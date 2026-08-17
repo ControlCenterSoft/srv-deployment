@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0003-system-overview",
-  "release_id": "0003-system-overview",
-  "release_path": "releases/0003-system-overview",
-  "manifest": "releases/0003-system-overview/manifest.json",
-  "preflight": "releases/0003-system-overview/preflight.sh",
-  "apply": "releases/0003-system-overview/apply.sh",
-  "acceptance": "releases/0003-system-overview/acceptance.sh",
-  "rollback": "releases/0003-system-overview/rollback.sh",
-  "description": "Activate a read-only System module with live server, resource, storage, service and release status."
+  "release": "0004-deployment-reliability",
+  "release_id": "0004-deployment-reliability",
+  "release_path": "releases/0004-deployment-reliability",
+  "manifest": "releases/0004-deployment-reliability/manifest.json",
+  "preflight": "releases/0004-deployment-reliability/preflight.sh",
+  "apply": "releases/0004-deployment-reliability/apply.sh",
+  "acceptance": "releases/0004-deployment-reliability/acceptance.sh",
+  "rollback": "releases/0004-deployment-reliability/rollback.sh",
+  "description": "Harden deployment, enable graceful worker reloads and expose deployment status in the System module."
 }
