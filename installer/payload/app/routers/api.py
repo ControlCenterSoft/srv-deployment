@@ -155,10 +155,21 @@ async def auth_login(request: Request):
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
     client_ip = _client_ip(request)
+
     retry_after = login_retry_after(username, client_ip)
     if retry_after > 0:
-        _audit(actor=username or None, client_ip=client_ip, action="auth.login", success=False, details={"reason": "rate-limited"})
-        raise HTTPException(status_code=429, detail="too many login attempts; try again later", headers={"Retry-After": str(retry_after)})
+        _audit(
+            actor=username or None,
+            client_ip=client_ip,
+            action="auth.login",
+            success=False,
+            details={"reason": "rate-limited"},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="too many login attempts; try again later",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     account = authenticate(username, password)
     if account is None:
@@ -168,8 +179,27 @@ async def auth_login(request: Request):
 
     record_login_result(username, client_ip, True)
     token, csrf = create_session(username, bool(account.get("must_change")))
-    response = JSONResponse({"ok": True, "data": {"authenticated": True, "username": username, "must_change": bool(account.get("must_change")), "csrf_token": csrf}, "error": None})
-    response.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL, httponly=True, samesite="strict", secure=_secure_cookie(request), path="/")
+    response = JSONResponse(
+        {
+            "ok": True,
+            "data": {
+                "authenticated": True,
+                "username": username,
+                "must_change": bool(account.get("must_change")),
+                "csrf_token": csrf,
+            },
+            "error": None,
+        }
+    )
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=SESSION_TTL,
+        httponly=True,
+        samesite="strict",
+        secure=_secure_cookie(request),
+        path="/",
+    )
     _audit(actor=username, client_ip=client_ip, action="auth.login", success=True)
     return response
 
@@ -192,16 +222,51 @@ async def auth_change_password(request: Request):
         payload = await request.json()
     except Exception:
         payload = {}
+
     try:
-        change_password(str(session.get("u")), str(payload.get("current_password") or ""), str(payload.get("new_password") or ""))
+        change_password(
+            str(session.get("u")),
+            str(payload.get("current_password") or ""),
+            str(payload.get("new_password") or ""),
+        )
     except ValueError as exc:
-        _audit(actor=str(session.get("u")), client_ip=_client_ip(request), action="auth.change_password", success=False, details={"reason": str(exc)})
+        _audit(
+            actor=str(session.get("u")),
+            client_ip=_client_ip(request),
+            action="auth.change_password",
+            success=False,
+            details={"reason": str(exc)},
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     token, csrf = create_session(str(session.get("u")), False)
-    response = JSONResponse({"ok": True, "data": {"authenticated": True, "username": session.get("u"), "must_change": False, "csrf_token": csrf}, "error": None})
-    response.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL, httponly=True, samesite="strict", secure=_secure_cookie(request), path="/")
-    _audit(actor=str(session.get("u")), client_ip=_client_ip(request), action="auth.change_password", success=True)
+    response = JSONResponse(
+        {
+            "ok": True,
+            "data": {
+                "authenticated": True,
+                "username": session.get("u"),
+                "must_change": False,
+                "csrf_token": csrf,
+            },
+            "error": None,
+        }
+    )
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=SESSION_TTL,
+        httponly=True,
+        samesite="strict",
+        secure=_secure_cookie(request),
+        path="/",
+    )
+    _audit(
+        actor=str(session.get("u")),
+        client_ip=_client_ip(request),
+        action="auth.change_password",
+        success=True,
+    )
     return response
 
 
@@ -214,7 +279,10 @@ def dashboard_metrics():
 def system_administration_status(request: Request):
     session = parse_session(request)
     authenticated = session is not None
-    data = system_admin_status(include_actions=authenticated, include_service_detail=authenticated)
+    data = system_admin_status(
+        include_actions=authenticated,
+        include_service_detail=authenticated,
+    )
     data["auth"] = {
         "authenticated": authenticated,
         "username": session.get("u") if session else None,
@@ -234,6 +302,7 @@ async def system_action(action: str, request: Request):
         payload = await request.json()
     except Exception:
         payload = {}
+
     if action == "reboot" and payload.get("confirm") != "REBOOT":
         raise HTTPException(status_code=400, detail="reboot confirmation is required")
     if action == "service-remove-adguard-vpn" and payload.get("confirm") != "REMOVE":
@@ -243,9 +312,22 @@ async def system_action(action: str, request: Request):
     try:
         queued = enqueue_system_action(action, actor, _client_ip(request))
     except Exception as exc:
-        _audit(actor=actor, client_ip=_client_ip(request), action=f"system.{action}", success=False, details={"reason": str(exc)})
+        _audit(
+            actor=actor,
+            client_ip=_client_ip(request),
+            action=f"system.{action}",
+            success=False,
+            details={"reason": str(exc)},
+        )
         raise HTTPException(status_code=500, detail="failed to queue system action") from exc
-    _audit(actor=actor, client_ip=_client_ip(request), action=f"system.{action}", success=True, details=queued)
+
+    _audit(
+        actor=actor,
+        client_ip=_client_ip(request),
+        action=f"system.{action}",
+        success=True,
+        details=queued,
+    )
     return {"ok": True, "data": queued, "error": None}
 
 
@@ -274,7 +356,11 @@ async def network_plan(request: Request):
     plan = build_plan(payload, current)
     return {
         "ok": plan.get("valid") is True,
-        "data": {"plan": plan, "current": current, "capabilities": network_capabilities()},
+        "data": {
+            "plan": plan,
+            "current": current,
+            "capabilities": network_capabilities(),
+        },
         "error": None if plan.get("valid") is True else "network plan validation failed",
     }
 
@@ -294,4 +380,8 @@ async def metric_event_stream():
 
 @router.get("/dashboard/stream")
 async def dashboard_stream():
-    return StreamingResponse(metric_event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        metric_event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
