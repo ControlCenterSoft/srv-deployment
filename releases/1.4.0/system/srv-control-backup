@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 import urllib.request
 import uuid
 
-
 APP_USER = "srv-control"
 APP_GROUP = "srv-control"
 BACKUP_DIR = Path("/var/lib/srv-control/backups")
@@ -27,9 +26,6 @@ MANAGED_PATHS = (
     Path("/var/lib/srv-control/github-update-config.json"),
     Path("/var/lib/srv-control/os-update-config.json"),
     Path("/var/lib/srv-control/backup-config.json"),
-    # Release 1.4 configuration/secrets. PXE media and generated per-attempt
-    # private profile artifacts are intentionally not duplicated into every
-    # configuration backup; restored active authorizations are revoked below.
     Path("/var/lib/srv-control/network-config.json"),
     Path("/var/lib/srv-control/pxe/smb-credential.json"),
     Path("/etc/dnsmasq.d/srv-control.conf"),
@@ -73,9 +69,7 @@ def run(command: list[str], *, timeout: int = 300) -> str:
     )
     output = result.stdout or ""
     if result.returncode != 0:
-        raise RuntimeError(
-            f"command failed ({result.returncode}): {' '.join(command)}\n{output[-4000:]}"
-        )
+        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}\n{output[-4000:]}")
     return output
 
 
@@ -143,21 +137,17 @@ def create_backup(actor: str, reason: str) -> dict:
     backup_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:10]
     archive = BACKUP_DIR / f"{backup_id}.tar.gz"
     metadata_path = BACKUP_DIR / f"{backup_id}.json"
-
     root = make_shared_temp("srvcc-backup.")
     try:
         stage = root / "content"
         stage.mkdir(mode=0o750)
         os.chown(stage, uid, gid)
         dump = stage / "srv_control.dump"
-        run([
-            "runuser", "-u", APP_USER, "--", "pg_dump", "-Fc", "-d", "srv_control", "-f", str(dump)
-        ], timeout=600)
+        run(["runuser", "-u", APP_USER, "--", "pg_dump", "-Fc", "-d", "srv_control", "-f", str(dump)], timeout=600)
         if not dump.is_file() or dump.stat().st_size == 0:
             raise RuntimeError("database dump was not created")
         os.chown(dump, uid, gid)
         os.chmod(dump, 0o640)
-
         _copy_managed(stage)
         (stage / "backup-info.json").write_text(
             json.dumps({
@@ -176,7 +166,6 @@ def create_backup(actor: str, reason: str) -> dict:
             tar.add(stage, arcname="content", recursive=True)
     finally:
         remove_tree(root)
-
     os.chown(archive, 0, gid)
     os.chmod(archive, 0o640)
     metadata = {
@@ -279,10 +268,49 @@ END $$;
     run(["runuser", "-u", APP_USER, "--", "psql", "-d", "srv_control", "-v", "ON_ERROR_STOP=1", "-c", sql], timeout=60)
 
 
+def _is_active(unit: str) -> bool:
+    return subprocess.run(
+        ["systemctl", "is-active", "--quiet", unit],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def _validate_and_reload_restored_services(previously_active: dict[str, bool]) -> None:
+    """Validate restored configs before restarting only services that were active."""
+    dnsmasq_conf = Path("/etc/dnsmasq.d/srv-control.conf")
+    if dnsmasq_conf.is_file() and shutil.which("dnsmasq"):
+        run(["dnsmasq", "--test"], timeout=30)
+        if previously_active.get("dnsmasq.service"):
+            run(["systemctl", "restart", "dnsmasq.service"], timeout=60)
+
+    samba_conf = Path("/etc/samba/smb.conf")
+    if samba_conf.is_file() and shutil.which("testparm"):
+        run(["testparm", "-s", str(samba_conf)], timeout=30)
+        for unit in ("samba-ad-dc.service", "smbd.service", "samba.service"):
+            if previously_active.get(unit):
+                run(["systemctl", "restart", unit], timeout=90)
+                break
+
+    if previously_active.get("tftpd-hpa.service"):
+        run(["systemctl", "restart", "tftpd-hpa.service"], timeout=60)
+
+    if Path("/etc/nginx/sites-available/srv-control").is_file() and shutil.which("nginx"):
+        run(["nginx", "-t"], timeout=30)
+        if previously_active.get("nginx.service"):
+            run(["systemctl", "reload", "nginx.service"], timeout=60)
+
+
 def _restore_raw(backup_id: str) -> dict:
     uid, gid = service_ids()
     metadata, archive = load_metadata(backup_id)
     root = make_shared_temp("srvcc-restore.")
+    managed_units = (
+        "dnsmasq.service", "tftpd-hpa.service", "samba-ad-dc.service",
+        "smbd.service", "samba.service", "nginx.service",
+    )
+    previously_active = {unit: _is_active(unit) for unit in managed_units}
     try:
         _safe_extract(archive, root)
         content = root / "content"
@@ -302,16 +330,12 @@ def _restore_raw(backup_id: str) -> dict:
             ])
             run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "srv_control"])
             run(["runuser", "-u", "postgres", "--", "createdb", "--owner=srv-control", "srv_control"])
-            run([
-                "runuser", "-u", APP_USER, "--", "pg_restore", "--no-owner", "-d", "srv_control", str(dump)
-            ], timeout=600)
+            run(["runuser", "-u", APP_USER, "--", "pg_restore", "--no-owner", "-d", "srv_control", str(dump)], timeout=600)
             migrate_restored_database()
             invalidate_restored_pxe_authorizations()
             _restore_files(content)
             run(["systemctl", "daemon-reload"])
-            if Path("/etc/nginx/sites-available/srv-control").is_file():
-                run(["nginx", "-t"])
-                subprocess.run(["systemctl", "reload", "nginx.service"], check=False)
+            _validate_and_reload_restored_services(previously_active)
         finally:
             run(["systemctl", "start", "srv-control.service"], timeout=30)
     finally:
