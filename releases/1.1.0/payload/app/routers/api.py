@@ -313,7 +313,8 @@ async def access_grant_upsert(request: Request):
         payload = {}
     try:
         grant = upsert_grant(
-            group_name=str(payload.get("group_name") or ""),
+            subject_type=str(payload.get("subject_type") or "group"),
+            subject_name=str(payload.get("subject_name") or payload.get("group_name") or ""),
             source=str(payload.get("source") or ""),
             module=str(payload.get("module") or ""),
             access=str(payload.get("access") or ""),
