@@ -34,6 +34,14 @@ def require(text: str, *needles: str) -> None:
         fail('missing PXE contract anchors: ' + ', '.join(repr(item) for item in missing))
 
 
+def effective_function(text: str, signature: str) -> str:
+    start = text.rfind(signature)
+    if start < 0:
+        fail(f'missing effective function: {signature}')
+    end = text.find('\ndef ', start + len(signature))
+    return text[start:] if end < 0 else text[start:end]
+
+
 def main() -> int:
     core = source(ROOT / 'payload/app/core/release14.parts')
     router = source(ROOT / 'payload/app/routers/release14.parts')
@@ -53,9 +61,11 @@ def main() -> int:
     if re.search(r'(?<!peek_)boot_profile\(mac\)', boot_route):
         fail('boot.ipxe still consumes authorization before payload validation')
 
-    # DHCP option 93 matrix and iPXE loop breaking.
+    # DHCP option 93 matrix and iPXE loop breaking. Validate the final definition
+    # because the release agent intentionally overrides older 1.4 prototypes.
+    dhcp = effective_function(agent, 'def apply_dhcp() -> str:')
     require(
-        agent,
+        dhcp,
         'dhcp-match=set:ipxe,175',
         'dhcp-userclass=set:ipxe,iPXE',
         'option:client-arch,0',
@@ -69,18 +79,18 @@ def main() -> int:
         'x86_64-sb/snponly-shim.efi',
         'arm32-efi/snponly.efi',
         'arm64-sb/snponly-shim.efi',
+        "server = _interface_ipv4(str(c['interface']))",
     )
+    if "{c['gateway']}" in '\n'.join(line for line in dhcp.splitlines() if 'dhcp-boot=' in line):
+        fail('effective PXE next-server is still derived from gateway instead of interface address')
+
     require(agent, "IPXE_VERSION = 'v2.0.0'", 'ipxeboot.tar.gz', "WIMBOOT_X64_URL", "WIMBOOT_I386_URL", "WIMBOOT_ARM64_URL")
     require(agent, 'platform=${platform}', 'buildarch=${buildarch}', 'isset ${net0/ip} || dhcp', 'route\\n', 'shell\\n')
 
-    # next-server must be the actual PXE/DHCP interface address, not the LAN gateway field.
-    require(agent, 'def _interface_ipv4(', "server = _interface_ipv4(str(c['interface']))")
-    if "{c['gateway']}" in '\n'.join(line for line in agent.splitlines() if 'dhcp-boot=' in line):
-        fail('PXE next-server is still derived from gateway instead of interface address')
-
     # Windows: one x64 profile must be able to install in both real firmware modes.
+    windows = effective_function(agent, 'def publish_windows(')
     require(
-        agent,
+        windows,
         'PEFirmwareType',
         'diskpart-bios.txt',
         'diskpart-uefi.txt',
@@ -91,26 +101,28 @@ def main() -> int:
         'bcdboot W:\\\\Windows /s S: /f %BootMode%',
         'wimboot.i386',
         'wimboot.arm64',
+        '/pxe/profile/',
+        'imgfetch --name srv-consume',
+        '/pxe/consume/',
+        'boot || goto denied',
     )
-    windows_start = agent.index('def publish_windows(')
-    linux_start = agent.index('def publish_linux(')
-    windows = agent[windows_start:linux_start]
-    require(windows, '/pxe/profile/', 'imgfetch --name srv-consume', '/pxe/consume/', 'boot || goto denied')
     if windows.index('imgfetch --name srv-consume') > windows.index('boot || goto denied'):
         fail('Windows authorization consume happens after boot')
 
     # Linux: unattended Ubuntu/Debian plus signed distro shim when present.
-    linux = agent[linux_start:]
+    linux = effective_function(agent, 'def publish_linux(')
     require(linux, 'ds=nocloud-net;s=', 'preseed/url=', 'secure_boot_shims', 'shim {base}/images/', 'imgfetch --name srv-consume')
 
     # Samba AD DC is a supported production role; never expose the private profiles share.
-    require(agent, 'active directory domain controller', "['samba-tool', 'user', 'create'", 'PXE_MEDIA', 'valid users = srv-pxe')
-    if "path = {PXE_ROOT}" in agent:
-        fail('PXE Samba share still includes the private profiles directory')
+    samba = effective_function(agent, 'def ensure_pxe_samba_share(')
+    require(samba, 'active directory domain controller', "['samba-tool', 'user', 'create'", 'PXE_MEDIA', 'valid users = srv-pxe')
+    if "path = {PXE_ROOT}" in samba:
+        fail('effective PXE Samba share still includes the private profiles directory')
 
     # Exactly one executable entry point after all compatibility overrides.
-    if agent.count("if __name__ == '__main__'") != 1 and agent.count("if __name__=='__main__'") != 1:
-        fail('release14 agent must contain exactly one __main__ entry point')
+    entries = agent.count("if __name__ == '__main__'") + agent.count("if __name__=='__main__'")
+    if entries != 1:
+        fail(f'release14 agent must contain exactly one __main__ entry point, found {entries}')
 
     print('PXE CONTRACT PASS: BIOS + UEFI IA32/x64/ARM32/ARM64, x64/ARM64 Secure Boot, Windows BIOS/UEFI, Linux unattended, deny-by-default')
     return 0
