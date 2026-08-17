@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh SRV Control Center Samba AD snapshot
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Persistent=true
+Unit=srv-control-samba-monitor.service
+
+[Install]
+WantedBy=timers.target
