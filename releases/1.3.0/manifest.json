@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "release_id": "1.2.0",
+  "release_version": "1.2.0",
+  "description": "Four-column dashboard and top processes, full-administrator RBAC, AdGuard VPN configuration and Minecraft Bedrock Control.",
+  "upgrade_from": ">=1.1.0,<1.2.0",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "c18ccd977464ef16279580d9dd7e79537521a4f18739cb4cf63d52a53056ebfa"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "feda04d7e27ab4a96e5aedd3c610581ce9cea85066b86731ff7407062b193deb"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "07d4fb9f366ce8b5eabf145be83de0089d86d4b96976545dfc3da94c74a8be85"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "2f39ecde340171dc12c21bcdcd6d06e5b7e1207c3d97879668b83f8d436d1f1e"
+    }
+  }
+}
