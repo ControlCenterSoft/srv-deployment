@@ -54,9 +54,18 @@ def main() -> int:
 
     require(core, 'def peek_boot_profile(', 'def consume_boot_profile(', 'install_authorized=false', "status='installing'")
     boot_route = router[router.index("@router.get('/pxe/boot.ipxe'"):router.index("@router.post('/pxe/report/")]
-    require(boot_route, 'peek_boot_profile(mac)', 'boot_file.is_file()', 'Authorization retained')
+    require(boot_route, 'peek_boot_profile(mac)', 'boot_file.is_file()', 'Authorization retained', '_pxe_firmware_compatible(firmware, arch, image_arch)')
     if re.search(r'(?<!peek_)boot_profile\(mac\)', boot_route):
         fail('boot.ipxe still consumes authorization before payload validation')
+    firmware_gate = effective_function(router, 'def _pxe_firmware_compatible(')
+    require(
+        firmware_gate,
+        "fw in {'pcbios', 'bios'}",
+        "return image in {'i386', 'x86_64'}",
+        "if fw == 'efi':",
+        "image not in {'i386', 'x86_64', 'arm32', 'arm64'}",
+        'image == boot_arch',
+    )
 
     # Structured network/PXE fields own these DHCP options.  A raw duplicate
     # must be rejected so option 67 cannot silently override managed PXE.
@@ -149,7 +158,7 @@ def main() -> int:
     if entries != 1:
         fail(f'release14 agent must contain exactly one __main__ entry point, found {entries}')
 
-    print('PXE CONTRACT PASS: BIOS + UEFI IA32/x64/ARM32/ARM64, x64/ARM64 Secure Boot, Windows BIOS/UEFI, Linux unattended, deny-by-default, pinned-assets')
+    print('PXE CONTRACT PASS: BIOS + UEFI IA32/x64/ARM32/ARM64, x64/ARM64 Secure Boot, firmware/image gate, Windows BIOS/UEFI, Linux unattended, deny-by-default, pinned-assets')
     return 0
 
 
