@@ -53,6 +53,7 @@
 .panel-subtitle {
     color: var(--muted);
     font-size: 12px;
+    line-height: 1.45;
     margin-top: 6px;
 }
 
@@ -71,10 +72,69 @@
     white-space: nowrap;
 }
 
-.status-pill.available {
+.status-pill.available,
+.status-pill.active {
     border-color: rgba(85, 194, 138, 0.35);
     background: rgba(85, 194, 138, 0.10);
     color: #8ed9af;
+}
+
+.status-pill.inactive {
+    border-color: rgba(142, 161, 181, 0.28);
+    background: rgba(142, 161, 181, 0.07);
+    color: var(--muted);
+}
+
+.update-module-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+    align-items: stretch;
+    margin-bottom: 18px;
+}
+
+.update-module-grid > .panel {
+    margin-bottom: 0;
+}
+
+.update-module {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 100%;
+}
+
+.update-module-head {
+    min-height: 58px;
+}
+
+.update-runtime {
+    display: grid;
+    gap: 8px;
+    margin: -2px 0 16px;
+    padding: 10px 12px;
+    border: 1px solid rgba(36, 54, 75, 0.60);
+    border-radius: 9px;
+    background: rgba(20, 32, 45, 0.55);
+}
+
+.update-runtime-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-width: 0;
+    font-size: 12px;
+}
+
+.update-runtime-row span {
+    color: var(--muted);
+}
+
+.update-runtime-row strong {
+    color: var(--text);
+    font-weight: 650;
+    text-align: right;
 }
 
 .settings-grid {
@@ -86,6 +146,16 @@
 
 .compact-settings {
     grid-template-columns: minmax(210px, 0.8fr) minmax(180px, 0.65fr) minmax(280px, 1fr);
+}
+
+.settings-stack {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+}
+
+.settings-stack > *,
+.settings-stack .settings-actions {
+    grid-column: 1;
 }
 
 .settings-grid label,
@@ -169,6 +239,10 @@
     gap: 9px;
     flex-wrap: wrap;
     padding-top: 1px;
+}
+
+.settings-stack .settings-actions {
+    padding-top: 3px;
 }
 
 .action-button,
@@ -306,6 +380,12 @@ button:disabled {
     line-height: 1.45;
 }
 
+.update-module .action-message,
+.update-module .update-result {
+    margin-top: auto;
+    padding-top: 12px;
+}
+
 .action-message.error {
     color: #f09a9a;
 }
@@ -335,9 +415,15 @@ button:disabled {
     background: var(--accent);
 }
 
+@media (max-width: 1180px) {
+    .update-module-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 @media (max-width: 1050px) {
-    .settings-grid,
-    .compact-settings {
+    .settings-grid:not(.settings-stack),
+    .compact-settings:not(.settings-stack) {
         grid-template-columns: 1fr 1fr;
     }
 
