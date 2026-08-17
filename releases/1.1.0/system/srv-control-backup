@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import shutil
 import subprocess
 import tarfile
@@ -15,8 +17,11 @@ import urllib.request
 import uuid
 
 
+APP_USER = "srv-control"
+APP_GROUP = "srv-control"
 BACKUP_DIR = Path("/var/lib/srv-control/backups")
 RELEASE_META = Path("/var/lib/srv-control/release.json")
+PROJECT = Path("/opt/srv-control")
 MANAGED_PATHS = (
     Path("/etc/srv-control"),
     Path("/var/lib/srv-control/github-update-config.json"),
@@ -38,6 +43,7 @@ MANAGED_PATHS = (
     Path("/usr/local/sbin/srvcc-configure-auto-updates"),
     Path("/usr/local/libexec/srv-control-system-agent"),
     Path("/usr/local/libexec/srv-control-os-update"),
+    Path("/usr/local/libexec/srv-control-os-auto-update"),
 )
 
 
@@ -53,12 +59,28 @@ def run(command: list[str], *, timeout: int = 300) -> str:
     )
     output = result.stdout or ""
     if result.returncode != 0:
-        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}\n{output[-4000:]}")
+        raise RuntimeError(
+            f"command failed ({result.returncode}): {' '.join(command)}\n{output[-4000:]}"
+        )
     return output
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def service_ids() -> tuple[int, int]:
+    user = pwd.getpwnam(APP_USER)
+    group = grp.getgrnam(APP_GROUP)
+    return user.pw_uid, group.gr_gid
+
+
+def prepare_backup_dir() -> tuple[int, int]:
+    uid, gid = service_ids()
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chown(BACKUP_DIR, 0, gid)
+    os.chmod(BACKUP_DIR, 0o750)
+    return uid, gid
 
 
 def release_version() -> str:
@@ -77,6 +99,18 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def make_shared_temp(prefix: str) -> Path:
+    uid, gid = service_ids()
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir="/var/tmp"))
+    os.chown(path, 0, gid)
+    os.chmod(path, 0o750)
+    return path
+
+
+def remove_tree(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def _copy_managed(stage: Path) -> None:
     files_root = stage / "files"
     for source in MANAGED_PATHS:
@@ -91,19 +125,41 @@ def _copy_managed(stage: Path) -> None:
 
 
 def create_backup(actor: str, reason: str) -> dict:
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(BACKUP_DIR, 0o750)
-    backup_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:10]
+    uid, gid = prepare_backup_dir()
+    backup_id = (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + "-"
+        + uuid.uuid4().hex[:10]
+    )
     archive = BACKUP_DIR / f"{backup_id}.tar.gz"
     metadata_path = BACKUP_DIR / f"{backup_id}.json"
 
-    with tempfile.TemporaryDirectory(prefix="srvcc-backup.", dir="/var/tmp") as tmp:
-        stage = Path(tmp) / "content"
-        stage.mkdir()
-        run([
-            "runuser", "-u", "postgres", "--",
-            "pg_dump", "-Fc", "-d", "srv_control", "-f", str(stage / "srv_control.dump"),
-        ])
+    root = make_shared_temp("srvcc-backup.")
+    try:
+        stage = root / "content"
+        stage.mkdir(mode=0o750)
+        os.chown(stage, uid, gid)
+        dump = stage / "srv_control.dump"
+        run(
+            [
+                "runuser",
+                "-u",
+                APP_USER,
+                "--",
+                "pg_dump",
+                "-Fc",
+                "-d",
+                "srv_control",
+                "-f",
+                str(dump),
+            ],
+            timeout=600,
+        )
+        if not dump.is_file() or dump.stat().st_size == 0:
+            raise RuntimeError("database dump was not created")
+        os.chown(dump, uid, gid)
+        os.chmod(dump, 0o640)
+
         _copy_managed(stage)
         (stage / "backup-info.json").write_text(
             json.dumps(
@@ -117,12 +173,16 @@ def create_backup(actor: str, reason: str) -> dict:
                 },
                 ensure_ascii=False,
                 indent=2,
-            ) + "\n",
+            )
+            + "\n",
             encoding="utf-8",
         )
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(stage, arcname="content", recursive=True)
+    finally:
+        remove_tree(root)
 
+    os.chown(archive, 0, gid)
     os.chmod(archive, 0o640)
     metadata = {
         "schema_version": 1,
@@ -135,13 +195,20 @@ def create_backup(actor: str, reason: str) -> dict:
         "size": archive.stat().st_size,
         "sha256": sha256(archive),
     }
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.chown(metadata_path, 0, gid)
     os.chmod(metadata_path, 0o640)
     return metadata
 
 
 def load_metadata(backup_id: str) -> tuple[dict, Path]:
-    if not backup_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in backup_id):
+    if not backup_id or any(
+        ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        for ch in backup_id
+    ):
         raise RuntimeError("invalid backup id")
     metadata_path = BACKUP_DIR / f"{backup_id}.json"
     if not metadata_path.is_file():
@@ -163,12 +230,15 @@ def delete_backup(backup_id: str) -> dict:
 
 
 def _safe_extract(archive: Path, target: Path) -> None:
+    target_root = target.resolve()
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar.getmembers():
             resolved = (target / member.name).resolve()
-            if target.resolve() not in resolved.parents and resolved != target.resolve():
+            if resolved != target_root and target_root not in resolved.parents:
                 raise RuntimeError("unsafe path in backup archive")
-        tar.extractall(target)
+            if member.issym() or member.islnk():
+                raise RuntimeError("backup archive contains links")
+        tar.extractall(target, filter="data")
 
 
 def _restore_files(content: Path) -> None:
@@ -183,42 +253,122 @@ def _restore_files(content: Path) -> None:
             destination.unlink()
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.is_dir():
-            shutil.copytree(source, destination, symlinks=True)
+            shutil.copytree(source, destination, symlinks=False)
         else:
             shutil.copy2(source, destination, follow_symlinks=False)
 
 
+def migrate_restored_database() -> None:
+    alembic = PROJECT / "venv/bin/alembic"
+    config = PROJECT / "alembic.ini"
+    if not alembic.is_file() or not config.is_file():
+        raise RuntimeError("current Control Center migration environment is missing")
+    run(
+        [
+            "runuser",
+            "-u",
+            APP_USER,
+            "--",
+            "env",
+            f"PYTHONPATH={PROJECT}",
+            "PYTHONDONTWRITEBYTECODE=1",
+            str(alembic),
+            "-c",
+            str(config),
+            "upgrade",
+            "head",
+        ],
+        timeout=600,
+    )
+
+
 def _restore_raw(backup_id: str) -> dict:
+    uid, gid = service_ids()
     metadata, archive = load_metadata(backup_id)
-    with tempfile.TemporaryDirectory(prefix="srvcc-restore.", dir="/var/tmp") as tmp:
-        root = Path(tmp)
+    root = make_shared_temp("srvcc-restore.")
+    try:
         _safe_extract(archive, root)
         content = root / "content"
         dump = content / "srv_control.dump"
         if not dump.is_file():
             raise RuntimeError("database dump missing from backup")
+        os.chown(content, 0, gid)
+        os.chmod(content, 0o750)
+        os.chown(dump, uid, gid)
+        os.chmod(dump, 0o640)
 
         run(["systemctl", "stop", "srv-control.service"], timeout=30)
         try:
-            run([
-                "runuser", "-u", "postgres", "--", "psql", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
-                "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='srv_control' AND pid <> pg_backend_pid();",
-            ])
-            run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "srv_control"])
-            run(["runuser", "-u", "postgres", "--", "createdb", "--owner=srv-control", "srv_control"])
-            run([
-                "runuser", "-u", "postgres", "--", "pg_restore", "--no-owner", "--role=srv-control",
-                "-d", "srv_control", str(dump),
-            ], timeout=600)
+            run(
+                [
+                    "runuser",
+                    "-u",
+                    "postgres",
+                    "--",
+                    "psql",
+                    "-d",
+                    "postgres",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-c",
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname='srv_control' AND pid <> pg_backend_pid();",
+                ]
+            )
+            run(
+                [
+                    "runuser",
+                    "-u",
+                    "postgres",
+                    "--",
+                    "dropdb",
+                    "--if-exists",
+                    "srv_control",
+                ]
+            )
+            run(
+                [
+                    "runuser",
+                    "-u",
+                    "postgres",
+                    "--",
+                    "createdb",
+                    "--owner=srv-control",
+                    "srv_control",
+                ]
+            )
+            run(
+                [
+                    "runuser",
+                    "-u",
+                    APP_USER,
+                    "--",
+                    "pg_restore",
+                    "--no-owner",
+                    "-d",
+                    "srv_control",
+                    str(dump),
+                ],
+                timeout=600,
+            )
+            migrate_restored_database()
             _restore_files(content)
             run(["systemctl", "daemon-reload"])
             if Path("/etc/nginx/sites-available/srv-control").is_file():
                 run(["nginx", "-t"])
-                subprocess.run(["systemctl", "reload", "nginx.service"], check=False)
+                subprocess.run(
+                    ["systemctl", "reload", "nginx.service"],
+                    check=False,
+                )
         finally:
             run(["systemctl", "start", "srv-control.service"], timeout=30)
+    finally:
+        remove_tree(root)
 
-    with urllib.request.urlopen("http://127.0.0.1:8876/api/v1/health", timeout=10) as response:
+    with urllib.request.urlopen(
+        "http://127.0.0.1:8876/api/v1/health",
+        timeout=10,
+    ) as response:
         health = json.load(response)
     if health.get("ok") is not True:
         raise RuntimeError("Control Center healthcheck failed after restore")
@@ -235,8 +385,12 @@ def restore_backup(backup_id: str, actor: str) -> dict:
         try:
             _restore_raw(str(safety["id"]))
         except Exception as rollback_error:
-            raise RuntimeError(f"restore failed: {original}; safety rollback failed: {rollback_error}") from original
-        raise RuntimeError(f"restore failed and safety backup was restored: {original}") from original
+            raise RuntimeError(
+                f"restore failed: {original}; safety rollback failed: {rollback_error}"
+            ) from original
+        raise RuntimeError(
+            f"restore failed and safety backup was restored: {original}"
+        ) from original
 
 
 def main() -> int:
