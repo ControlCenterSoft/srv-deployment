@@ -2,187 +2,80 @@
 <html lang="ru">
 <head>
     <meta charset="utf-8">
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1"
-    >
-    <title>Интернет / VPN — SRV Control Center</title>
-
-    <link
-        rel="stylesheet"
-        href="/static/css/module.css"
-    >
-    <link
-        rel="stylesheet"
-        href="/static/css/network.css"
-    >
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Сеть — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css">
+    <link rel="stylesheet" href="/static/css/network.css">
 </head>
-
 <body>
-
 <div class="page">
-
     <header class="page-header">
-
         <div>
-            <h1>Интернет / VPN</h1>
-            <p>
-                Топология, диагностика соединения и безопасное
-                планирование WAN/LAN без применения изменений.
-            </p>
+            <h1>Сеть</h1>
+            <p>Текущая топология, проверка связности и валидация параметров WAN/LAN.</p>
         </div>
-
         <div class="live-status">
-            <span
-                class="live-dot"
-                id="networkLiveDot"
-            ></span>
-            <span id="networkLiveText">
-                Проверка...
-            </span>
+            <span class="live-dot" id="networkLiveDot"></span>
+            <span id="networkLiveText">Проверка...</span>
         </div>
-
     </header>
 
-
     <section class="summary-grid">
-
         <div class="panel">
-            <div class="panel-title">
-                Маршрутизация
-            </div>
-
-            <div class="stat-row">
-                <span>Кандидат WAN</span>
-                <strong id="networkWan">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Шлюз</span>
-                <strong id="networkGateway">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Metric</span>
-                <strong id="networkMetric">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>LAN-кандидаты</span>
-                <strong id="networkLan">—</strong>
-            </div>
+            <div class="panel-title">Маршрут по умолчанию</div>
+            <div class="stat-row"><span>WAN-интерфейс</span><strong id="networkWan">—</strong></div>
+            <div class="stat-row"><span>Шлюз</span><strong id="networkGateway">—</strong></div>
+            <div class="stat-row"><span>Метрика</span><strong id="networkMetric">—</strong></div>
         </div>
-
-
         <div class="panel">
-            <div class="panel-title">
-                DNS / VPN
-            </div>
-
-            <div class="stat-row">
-                <span>DNS</span>
-                <strong id="networkDns">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>VPN-интерфейсы</span>
-                <strong id="networkVpn">—</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Режим управления</span>
-                <strong>Dry-run</strong>
-            </div>
-
-            <div class="stat-row">
-                <span>Применение изменений</span>
-                <strong>Заблокировано в 0.7.0</strong>
-            </div>
+            <div class="panel-title">LAN и DNS</div>
+            <div class="stat-row"><span>LAN-кандидаты</span><strong id="networkLan">—</strong></div>
+            <div class="stat-row"><span>DNS</span><strong id="networkDns">—</strong></div>
+            <div class="stat-row"><span>VPN-интерфейсы</span><strong id="networkVpn">—</strong></div>
         </div>
-
     </section>
 
-
     <section class="panel">
-        <div class="panel-title">
-            Диагностика соединения
-        </div>
-
-        <div class="stat-row">
-            <span>Итог</span>
-            <strong id="diagnosticsSummary">—</strong>
-        </div>
-
-        <div class="stat-row">
-            <span>Проверено</span>
-            <strong id="diagnosticsCheckedAt">—</strong>
-        </div>
-
-        <div
-            class="service-grid"
-            id="diagnosticsGrid"
-        ></div>
+        <div class="panel-title">Проверка связности</div>
+        <div class="stat-row"><span>Результат</span><strong id="diagnosticsSummary">—</strong></div>
+        <div class="stat-row"><span>Проверено</span><strong id="diagnosticsCheckedAt">—</strong></div>
+        <div class="service-grid" id="diagnosticsGrid"></div>
     </section>
 
-
     <section class="panel">
-        <div class="panel-title">
-            Сетевые интерфейсы
-        </div>
-
-        <div
-            class="service-grid"
-            id="networkInterfaces"
-        ></div>
+        <div class="panel-title">Интерфейсы</div>
+        <div class="service-grid" id="networkInterfaces"></div>
     </section>
 
-
-    <section class="panel">
-        <div class="panel-title">
-            Планировщик WAN / LAN
+    <section class="panel network-plan-panel">
+        <div class="panel-title-row">
+            <div>
+                <div class="panel-title">Проверка параметров WAN/LAN</div>
+                <p class="panel-note">Проверяет выбранные интерфейсы, LAN CIDR, DHCP-пул и DNS. Проверка не изменяет сетевую конфигурацию сервера.</p>
+            </div>
+            <span class="plan-badge">Проверка</span>
         </div>
 
-        <p class="panel-note">
-            Планировщик проверяет параметры и строит будущую транзакцию
-            с rollback. Никакие файлы сети, маршруты, firewall или DHCP
-            этим релизом не изменяются.
-        </p>
-
-        <form
-            class="config-form"
-            id="networkPlanForm"
-        >
+        <form id="networkPlanForm" class="network-plan-form">
             <div class="form-grid">
-
                 <label class="form-field">
                     <span>Режим WAN</span>
                     <select id="planWanMode">
                         <option value="dhcp">DHCP</option>
-                        <option value="pppoe">PPPoE</option>
-                        <option value="l2tp">L2TP</option>
                     </select>
                 </label>
-
                 <label class="form-field">
                     <span>WAN-интерфейс</span>
                     <select id="planWanInterface"></select>
                 </label>
-
                 <label class="form-field">
                     <span>LAN-интерфейс</span>
                     <select id="planLanInterface"></select>
                 </label>
-
                 <label class="form-field">
-                    <span>Адрес SRV в LAN</span>
-                    <input
-                        id="planLanAddress"
-                        type="text"
-                        value="192.168.10.1/24"
-                        autocomplete="off"
-                    >
+                    <span>LAN-адрес</span>
+                    <input id="planLanAddress" type="text" value="192.168.10.1/24" placeholder="192.168.10.1/24">
                 </label>
-
                 <label class="form-field">
                     <span>DHCP</span>
                     <select id="planDhcpEnabled">
@@ -190,27 +83,14 @@
                         <option value="false">Выключен</option>
                     </select>
                 </label>
-
                 <label class="form-field">
-                    <span>Начало DHCP</span>
-                    <input
-                        id="planDhcpStart"
-                        type="text"
-                        value="192.168.10.100"
-                        autocomplete="off"
-                    >
+                    <span>DHCP начало</span>
+                    <input id="planDhcpStart" type="text" value="192.168.10.100">
                 </label>
-
                 <label class="form-field">
-                    <span>Конец DHCP</span>
-                    <input
-                        id="planDhcpEnd"
-                        type="text"
-                        value="192.168.10.200"
-                        autocomplete="off"
-                    >
+                    <span>DHCP конец</span>
+                    <input id="planDhcpEnd" type="text" value="192.168.10.240">
                 </label>
-
                 <label class="form-field">
                     <span>DNS</span>
                     <select id="planDnsMode">
@@ -218,92 +98,29 @@
                         <option value="custom">Вручную</option>
                     </select>
                 </label>
-
                 <label class="form-field form-field-wide">
-                    <span>DNS-серверы вручную</span>
-                    <input
-                        id="planDnsServers"
-                        type="text"
-                        placeholder="1.1.1.1, 8.8.8.8"
-                        autocomplete="off"
-                    >
+                    <span>DNS-серверы</span>
+                    <input id="planDnsServers" type="text" placeholder="1.1.1.1, 8.8.8.8">
                 </label>
-
             </div>
-
             <div class="form-actions">
-                <button
-                    class="action-button"
-                    type="submit"
-                >
-                    Проверить и построить план
-                </button>
-
-                <span class="form-hint">
-                    PPPoE/L2TP логины и пароли в 0.7.0 не принимаются.
-                </span>
+                <button class="action-button" type="submit">Проверить параметры</button>
             </div>
         </form>
     </section>
 
-
-    <section
-        class="panel"
-        id="networkPlanResultPanel"
-        hidden
-    >
-        <div class="panel-title">
-            Результат dry-run
-        </div>
-
-        <div
-            class="plan-status"
-            id="networkPlanStatus"
-        ></div>
-
-        <div
-            class="message-list"
-            id="networkPlanMessages"
-        ></div>
-
-        <div class="plan-columns">
-
+    <section class="panel" id="networkPlanResultPanel" hidden>
+        <div class="panel-title">Результат проверки</div>
+        <div id="networkPlanStatus" class="plan-status"></div>
+        <div id="networkPlanMessages" class="plan-messages"></div>
+        <div class="plan-columns single-column">
             <div>
-                <h3>План операции</h3>
-                <ol
-                    class="plan-list"
-                    id="networkPlanSteps"
-                ></ol>
+                <strong class="plan-heading">Выполненные проверки</strong>
+                <ol id="networkPlanSteps" class="plan-list"></ol>
             </div>
-
-            <div>
-                <h3>Rollback</h3>
-                <ol
-                    class="plan-list"
-                    id="networkRollbackSteps"
-                ></ol>
-            </div>
-
         </div>
     </section>
-
-
-    <section class="panel">
-        <div class="panel-title">
-            Защита следующего этапа
-        </div>
-
-        <p class="panel-note">
-            Реальное применение WAN/LAN будет включено только после
-            аутентификации администратора, защищённого хранения секретов,
-            staging-конфигурации, watchdog rollback и проверки сохранения
-            доступа к Control Center.
-        </p>
-    </section>
-
 </div>
-
 <script src="/static/js/internet.js"></script>
-
 </body>
 </html>
