@@ -35,19 +35,22 @@ ALLOWED_ACTIONS = {
     "service-connect-adguard-vpn-socks",
     "service-disconnect-adguard-vpn",
     "service-update-adguard-vpn",
+    "service-configure-adguard-vpn",
     "service-install-pxe",
     "service-remove-pxe",
+    "minecraft-configure",
+    "minecraft-start",
+    "minecraft-stop",
+    "minecraft-restart",
 }
 
 
 def _read_json(path: Path) -> dict | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            return payload
+        return payload if isinstance(payload, dict) else None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _unit_state(name: str) -> str:
@@ -143,12 +146,15 @@ def backups() -> list[dict]:
     items: list[dict] = []
     if not BACKUP_DIR.is_dir():
         return items
-    for metadata_path in sorted(BACKUP_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True):
+    for metadata_path in sorted(
+        BACKUP_DIR.glob("*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    ):
         payload = _read_json(metadata_path)
         if not payload:
             continue
-        archive_name = str(payload.get("archive") or "")
-        archive = BACKUP_DIR / archive_name
+        archive = BACKUP_DIR / str(payload.get("archive") or "")
         if not archive.is_file():
             continue
         item = dict(payload)
@@ -182,17 +188,16 @@ def action_history(limit: int = 30) -> list[dict]:
         paths = sorted(RESULT_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
         for path in paths[: max(0, min(limit, 50))]:
             payload = _read_json(path)
-            if not payload:
-                continue
-            items.append({
-                "request_id": payload.get("request_id") or path.stem,
-                "action": payload.get("action"),
-                "actor": payload.get("actor"),
-                "started_at": payload.get("started_at"),
-                "finished_at": payload.get("finished_at"),
-                "result": payload.get("result"),
-                "detail": str(payload.get("detail") or "")[-1600:] or None,
-            })
+            if payload:
+                items.append({
+                    "request_id": payload.get("request_id") or path.stem,
+                    "action": payload.get("action"),
+                    "actor": payload.get("actor"),
+                    "started_at": payload.get("started_at"),
+                    "finished_at": payload.get("finished_at"),
+                    "result": payload.get("result"),
+                    "detail": str(payload.get("detail") or "")[-1600:] or None,
+                })
     except Exception:
         pass
     return items
@@ -240,7 +245,10 @@ def status(*, include_actions: bool = False, include_service_detail: bool = Fals
 
 
 def backup_archive(backup_id: str) -> Path | None:
-    if not backup_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in backup_id):
+    if not backup_id or any(
+        ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        for ch in backup_id
+    ):
         return None
     metadata = _read_json(BACKUP_DIR / f"{backup_id}.json")
     if not metadata:
@@ -249,7 +257,12 @@ def backup_archive(backup_id: str) -> Path | None:
     return archive if archive.is_file() else None
 
 
-def enqueue(action: str, actor: str, client_ip: str | None, payload: dict | None = None) -> dict:
+def enqueue(
+    action: str,
+    actor: str,
+    client_ip: str | None,
+    payload: dict | None = None,
+) -> dict:
     if action not in ALLOWED_ACTIONS:
         raise ValueError("unsupported system action")
     ACTION_DIR.mkdir(parents=True, exist_ok=True)
