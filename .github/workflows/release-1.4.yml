@@ -38,7 +38,7 @@ jobs:
           curl -fsSL --retry 3 --retry-all-errors \
             https://github.com/ipxe/ipxe/releases/download/v2.0.0/ipxeboot.tar.gz \
             -o /tmp/ipxeboot.tar.gz
-          test "$(stat -c %s /tmp/ipxeboot.tar.gz)" -gt 250000
+          echo '01a526d4cc791fc30362259c609d6c506cc64a7bdff51b9a5eb788354e17eee1  /tmp/ipxeboot.tar.gz' | sha256sum -c -
           tar -tzf /tmp/ipxeboot.tar.gz > /tmp/ipxe-files.txt
           for path in \
             ipxeboot/undionly.kpxe \
@@ -52,11 +52,16 @@ jobs:
             ipxeboot/arm64-sb/snponly.efi; do
             grep -Fxq "$path" /tmp/ipxe-files.txt || { echo "missing upstream iPXE asset: $path" >&2; grep -E '(^|/)(i386|x86_64|arm32|arm64)(-sb)?/.*snponly' /tmp/ipxe-files.txt || true; exit 1; }
           done
+          declare -A digests=(
+            [wimboot]='5f067ccdc4d084d5bf77b6c853bd0f8402dfc2b4cd1b103d358993ae97fae8e3'
+            [wimboot.i386]='b770ad4fa6111d688c062478de3849806b9c3e94a6b770453ef56c94fec254d9'
+            [wimboot.arm64]='b1440c6386981fb447b2f341294ec7a59546d496dff0f075b0f698c853f1c949'
+          )
           for name in wimboot wimboot.i386 wimboot.arm64; do
             curl -fsSL --retry 3 --retry-all-errors \
               "https://github.com/ipxe/wimboot/releases/download/v2.9.0/$name" \
               -o "/tmp/$name"
-            test "$(stat -c %s "/tmp/$name")" -gt 50000 || { echo "invalid upstream $name" >&2; exit 1; }
+            echo "${digests[$name]}  /tmp/$name" | sha256sum -c -
           done
 
       - name: Validate release manifest wiring
