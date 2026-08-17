@@ -1,8 +1,8 @@
-# Установка SRV Control Center 1.0.0
+# Установка SRV Control Center
 
 ## Чистая машина
 
-Поддерживается Debian/Ubuntu с `apt-get` и systemd. Инсталлятор предназначен для машины, где `/opt/srv-control` ещё не содержит установленный Control Center.
+Поддерживается Debian/Ubuntu с `apt-get` и systemd. Clean installer предназначен для машины, где `/opt/srv-control` ещё не содержит установленный Control Center.
 
 ```bash
 curl -fL -o install.sh \
@@ -11,18 +11,34 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Bootstrap скачивает только актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому приложение устанавливается непосредственно из полного payload активного релиза `releases/<version>/payload`; отдельной копии исходников в `installer/payload` больше нет.
+Bootstrap скачивает актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому устанавливается полный payload активного `releases/<version>/payload`.
 
-Инсталлятор устанавливает зависимости, PostgreSQL, Python virtualenv, migrations, `srv-control.service`, Nginx, системные helper/unit-файлы из активного релиза и release-fingerprint updater.
+Установщик создаёт PostgreSQL role/database, Python virtualenv, применяет Alembic migrations, устанавливает `srv-control.service`, Nginx, system helpers активного релиза и GitHub updater. Если TCP/80 уже занят, reverse proxy выбирает свободный резервный порт из поддерживаемых installer вариантов.
 
-Если TCP/80 уже занят, reverse proxy пробует 8080, затем 8880.
+## Авторизация 1.1.0
+
+В 1.1.0 отдельная пользовательская база Control Center не создаётся. Вход использует системный PAM/NSS:
+
+- локальные Linux-учётные записи входят своим системным паролем;
+- при настроенной доменной интеграции доступны доменные учётные записи через системный PAM/NSS;
+- root и пользователи серверных административных групп получают полный доступ;
+- остальные права определяются RBAC-группами Control Center;
+- пользовательские пароли не записываются в БД Control Center или state-файлы.
+
+При наличии Samba AD DC установщик создаёт/экспортирует HTTP Kerberos keytab и добавляет SPNEGO location в Nginx. Доменный клиент, способный получить Kerberos ticket для HTTP/FQDN сервера, использует SSO. Если SSO не сработал, остаётся интерактивный вход доменной учётной записью.
+
+Страница «Права пользователей» читает локальные данные через NSS и доменный каталог через доступные server-domain tools; она не создаёт отдельные учётные записи Control Center.
 
 ## Основные пути
 
 ```text
 /opt/srv-control                         приложение
 /etc/srv-control/control.toml            конфигурация
+/etc/pam.d/srv-control                    PAM service
 /var/lib/srv-control                     состояние Control Center
+/var/lib/srv-control/backups             резервные копии
+/var/lib/srv-control/session.key          ключ web-сессий
+/var/lib/srv-control/http.keytab          HTTP keytab SSO при наличии
 /var/lib/srv-deployment                  deployment state и rollback backups
 /var/lib/srvcc-agent/deploy-repo         checkout GitHub main
 /var/lib/srvcc-agent/last-deployed-sha   последний product deployment
@@ -31,11 +47,34 @@ Bootstrap скачивает только актуальный `main`. `installe
 /var/log/srvcc-agent.log                 журнал updater
 ```
 
-## Автоматические обновления
+## GitHub updates
 
-По умолчанию после чистой установки включается проверка GitHub каждые 5 минут. Updater не переустанавливает приложение только из-за нового commit: он сравнивает fingerprint активного product-релиза.
+Режим обновления настраивается из «Система» или командой:
 
-Проверка:
+```bash
+sudo /usr/local/sbin/srvcc-configure-auto-updates \
+  --repo https://github.com/filosoff31/srv-deployment.git \
+  --mode automatic \
+  --interval-minutes 5
+```
+
+Ручная проверка без применения:
+
+```bash
+sudo /usr/local/sbin/srvcc-github-agent check --actor root
+```
+
+Применение доступного product release:
+
+```bash
+sudo /usr/local/sbin/srvcc-github-agent apply --actor root
+```
+
+Если включена политика backup-before-update, updater сначала создаёт резервную копию и блокирует deployment при ошибке backup.
+
+Полное описание: `docs/AUTO-UPDATES.md`.
+
+## Проверка установки
 
 ```bash
 systemctl status srv-control.service --no-pager -l
@@ -43,25 +82,27 @@ systemctl status srvcc-github-agent.timer --no-pager -l
 curl -fsS http://127.0.0.1:8876/api/v1/health
 cat /var/lib/srv-control/github-update-config.json
 cat /var/lib/srv-control/github-update-status.json
-tail -n 100 /var/log/srvcc-agent.log
 ```
 
-## Обновление существующей версии 0.8.0+
+Для 1.1.0 дополнительно:
 
 ```bash
-curl -fL -o /tmp/srvcc-configure-auto-updates.sh \
-  https://raw.githubusercontent.com/filosoff31/srv-deployment/main/bootstrap/configure-auto-updates.sh
-sudo bash /tmp/srvcc-configure-auto-updates.sh \
-  --mode automatic \
-  --interval-minutes 5 \
-  --check-now
+getent passwd root
+pamtester srv-control <local-user> authenticate acct_mgmt
+systemctl status srv-control-system-agent.path --no-pager -l
+ls -ld /var/lib/srv-control/backups
 ```
 
-Полное описание режимов updater: `docs/AUTO-UPDATES.md`.
+При настроенном AD/SPNEGO:
 
-## Повторный запуск clean installer
+```bash
+klist -k /var/lib/srv-control/http.keytab
+nginx -T | grep -A8 -B2 'auth_gss on'
+```
 
-Clean installer намеренно завершается с ошибкой, если `/opt/srv-control` уже содержит файлы. Для действующего сервера используется updater, а не повторная чистая установка.
+## Повторный clean install
+
+Clean installer намеренно не перезаписывает существующий `/opt/srv-control`. Для установленной системы используется product updater. Полная destructive reinstall выполняется только отдельным явно подтверждаемым reinstall-процессом.
 
 ## server-state
 

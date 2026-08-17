@@ -1,38 +1,45 @@
-# SRV Control Center — Release 1.0.0
+# SRV Control Center
 
 `filosoff31/srv-deployment` — production-репозиторий SRV Control Center.
 
-С версии **1.0.0** ранее накопленные инкрементальные сборки `0001`–`0010` объединены в один самодостаточный baseline-релиз. Старые каталоги релизов удаляются из актуального дерева `main`; их история при этом остаётся доступна в Git history.
+## Стабильный baseline 1.0.0
 
-## Что входит в 1.0.0
+Начиная с 1.0.0 ранее накопленные инкрементальные сборки 0.x объединены в самодостаточный baseline. Активный product-релиз определяется `deployment.json`, а каждый каталог `releases/<version>` содержит полный payload, системные helper/unit-файлы и собственные preflight/apply/acceptance/rollback.
 
-Release 1.0.0 объединяет все функции, которые были фактически доведены до production до консолидации:
+В 1.0.0 входят уже доведённые до production возможности: FastAPI/PostgreSQL Control Center, dashboard/health, системный обзор, сетевой overview/diagnostics и dry-run WAN/LAN planner, GitHub deployment metadata, защищённые системные действия, обновления ОС, AdGuard VPN CLI, graceful rotation Uvicorn workers, clean installer и GitHub updater.
 
-- базовый FastAPI Control Center и PostgreSQL;
-- dashboard и health API;
-- отображение версии релиза и времени GitHub-синхронизации;
-- раздел «Система» с CPU, RAM, дисками, службами и deployment status;
-- сетевой обзор и диагностика;
-- безопасный read-only планировщик WAN/LAN;
-- административная сессия, CSRF-защита и журнал системных действий;
-- перезагрузка сервера через отдельный privileged system agent;
-- ручное и автоматическое обновление ОС/пакетов;
-- установка/удаление AdGuard VPN CLI и безопасный мониторинг его состояния;
-- graceful rotation двух Uvicorn workers без остановки listener;
-- preflight / apply / acceptance / rollback для product update;
-- clean-install bootstrap для новой Debian/Ubuntu-машины;
-- GitHub → SRV deployment и SRV → GitHub `server-state`.
+## Release 1.1.0 — переработка администрирования
 
-Релиз 1.0.0 **не включает ещё не реализованные функции из последующего плана**. Они будут развиваться уже поверх стабильной ветки 1.x.
+1.1.0 содержит только изменения, утверждённые владельцем проекта в `docs/RELEASE-1.1.0-SCOPE.md`:
 
-## Новая структура релизов
+- обязательная авторизация через локальные Linux/PAM или доменные учётные записи без собственной базы пользователей/паролей Control Center;
+- Kerberos/SPNEGO SSO для доменной среды;
+- полный доступ root и серверных администраторов;
+- групповой RBAC Read/Write для «Домен / Samba», PXE Server, Minecraft, Docker, «Сеть» и «Торренты»;
+- отдельный раздел «Права пользователей» с каталогом локальных/доменных пользователей и групп;
+- настройки GitHub source/mode/period, отдельные операции «Проверить обновления» и «Обновить»;
+- ручной/автоматический режим обновления ОС с периодом 1–24 часа;
+- резервные копии БД, state/config и управляемых системных параметров с расписанием, backup-before-update, скачиванием, удалением и восстановлением;
+- «Загрузки» переименованы в «Торренты»;
+- отдельные пункты «AdGuard VPN» и «Сервисы»;
+- каталог сервисов содержит AdGuard VPN и PXE Server с фактическим состоянием и install/remove действиями согласно RBAC;
+- компактная кнопка перезагрузки находится рядом со статусом «Данные актуальны»;
+- временные UI-заглушки для неготовых функций не отображаются.
 
-Активный production-релиз определяется только `deployment.json`.
+## Структура релизов
 
 ```text
 deployment.json
 releases/
-└── 1.0.0/
+├── 1.0.0/
+│   ├── manifest.json
+│   ├── preflight.sh
+│   ├── apply.sh
+│   ├── acceptance.sh
+│   ├── rollback.sh
+│   ├── payload/
+│   └── system/
+└── 1.1.0/
     ├── manifest.json
     ├── preflight.sh
     ├── apply.sh
@@ -42,67 +49,7 @@ releases/
     └── system/
 ```
 
-`releases/1.0.0/payload` содержит полный снимок приложения, а `releases/1.0.0/system` — системные helper/unit-файлы. Это устраняет зависимость от последовательного применения старых релизов.
-
-Production-сервер читает **только `main`**. Ветка `server-state` предназначена только для публикации фактического состояния SRV.
-
-## Автоматическое обновление для 0.8.0 и новее
-
-Для уже установленного SRV Control Center версии **0.8.0 или новее** используется:
-
-```bash
-curl -fL -o /tmp/srvcc-configure-auto-updates.sh \
-  https://raw.githubusercontent.com/filosoff31/srv-deployment/main/bootstrap/configure-auto-updates.sh
-
-sudo bash /tmp/srvcc-configure-auto-updates.sh \
-  --mode automatic \
-  --interval-minutes 5 \
-  --check-now
-```
-
-Ручной режим:
-
-```bash
-sudo /usr/local/sbin/srvcc-configure-auto-updates \
-  --mode manual \
-  --no-check-now
-
-sudo systemctl start srvcc-github-agent.service
-```
-
-Изменить период проверки:
-
-```bash
-sudo /usr/local/sbin/srvcc-configure-auto-updates \
-  --mode automatic \
-  --interval-minutes 15
-```
-
-Допустимый интервал: **1–1440 минут**.
-
-### Как работает новый updater
-
-Старый updater считал любой новый commit в `main` новым product-релизом. Поэтому изменение README или deployment helper могло повторно применить уже установленный релиз.
-
-Начиная с 1.0.0 updater разделяет:
-
-- последний увиденный commit репозитория;
-- commit последнего реально применённого product-релиза;
-- fingerprint активного релиза.
-
-Fingerprint строится из `deployment.json`, `release_id`, `release_version` и Git tree активного каталога релиза. Если изменился только README, документация или deployment-инфраструктура, но активный release tree не изменился, приложение **не переустанавливается и не перезапускается**.
-
-Для установок 0.8.0–0.10.x предусмотрена миграция: если установленный релиз и active release tree в GitHub совпадают, новый updater принимает текущее состояние без повторного apply.
-
-Состояние updater хранится в:
-
-```text
-/var/lib/srvcc-agent/last-deployed-sha
-/var/lib/srvcc-agent/last-seen-sha
-/var/lib/srvcc-agent/last-release-fingerprint
-/var/lib/srv-control/github-update-config.json
-/var/lib/srv-control/github-update-status.json
-```
+`main` является единственным production update channel. `server-state` публикует фактическое состояние SRV. Ветки `release/*` используются только для подготовки и проверки нового product-релиза и production updater их не читает.
 
 ## Чистая установка
 
@@ -113,22 +60,43 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-После clean install bootstrap дополнительно устанавливает актуальный release-fingerprint updater.
+`installer/install.sh` читает текущий `deployment.json` и устанавливает полный payload активного релиза. Для 1.1.0 clean install дополнительно устанавливает PAM/NSS authentication, Kerberos/SPNEGO integration, RBAC migration, backup worker и системные update timers.
 
-## Правила для следующих релизов
+## GitHub updater
 
-Начиная с 1.0.0:
+Настройка выполняется через:
 
-1. новый product-релиз получает самостоятельный каталог `releases/<version>`;
-2. каталог должен содержать полный payload, необходимый для установки текущей версии;
-3. `deployment.json` меняется только при активации нового product-релиза;
-4. документационные и инфраструктурные commit'ы не должны приводить к повторному apply неизменившегося product-релиза;
-5. все product-релизы проходят `preflight → apply → acceptance`, а при ошибке — rollback;
-6. production update не считается успешным, пока healthcheck не подтверждён.
+```text
+/usr/local/sbin/srvcc-configure-auto-updates
+```
 
-## Дополнительная документация
+Updater хранит отдельно последний просмотренный commit, последний успешно применённый product commit и fingerprint активного релиза. Поэтому документационный commit не приводит к повторному apply неизменившегося product release.
+
+В 1.1.0 операции разделены:
+
+```bash
+sudo /usr/local/sbin/srvcc-github-agent check
+sudo /usr/local/sbin/srvcc-github-agent apply
+```
+
+`check` только обновляет сведения о доступном product-релизе. `apply` выполняет product deployment; если включено резервное копирование перед обновлением, отсутствие успешного backup блокирует apply.
+
+Полное описание: `docs/AUTO-UPDATES.md`.
+
+## Безопасность deployment
+
+Product release проходит:
+
+```text
+preflight → backup → apply → acceptance → healthcheck
+```
+
+При ошибке orchestrator выполняет rollback. Кодовые обновления используют graceful worker rotation, когда это совместимо. Секреты, пользовательские пароли и содержимое резервных копий не публикуются в Git.
+
+## Документация
 
 - `docs/INSTALL.md` — установка на чистую машину;
-- `docs/DEPLOYMENT-RELIABILITY.md` — защита deployment-канала;
+- `docs/AUTO-UPDATES.md` — GitHub updater;
+- `docs/DEPLOYMENT-RELIABILITY.md` — надёжность deployment-канала;
 - `docs/SYSTEM-ADMIN.md` — системные административные функции;
-- `docs/AUTO-UPDATES.md` — updater для 0.8.0 и новее.
+- `docs/RELEASE-1.1.0-SCOPE.md` — обязательный scope и acceptance 1.1.0.

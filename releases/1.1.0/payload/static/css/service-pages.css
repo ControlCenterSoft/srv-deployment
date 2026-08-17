@@ -1,0 +1,42 @@
+.service-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+}
+.service-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 18px;
+}
+.service-card-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+.service-card-title span {
+    font-size: 12px;
+    color: #64748b;
+}
+.service-card p { color: #64748b; margin: 12px 0 18px; }
+.service-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.service-actions button,
+.action-button,
+.danger-button,
+.secondary-button {
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 13px;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+.action-button { background: #0f172a; color: #fff; }
+.secondary-button { background: #e2e8f0; color: #0f172a; }
+.danger-button { background: #fee2e2; color: #991b1b; }
+.action-message { margin-top: 12px; font-size: 13px; }
+.action-message.error { color: #991b1b; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 12px; }
+.status-item { padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; }
+.status-item span { display: block; color: #64748b; font-size: 11px; margin-bottom: 5px; }
