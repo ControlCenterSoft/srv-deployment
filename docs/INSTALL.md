@@ -1,109 +1,68 @@
-# Установка SRV Control Center на чистую машину
+# Установка SRV Control Center 1.0.0
 
-## Назначение
+## Чистая машина
 
-`install.sh` предназначен для новой Debian/Ubuntu-машины с systemd, на которой **ещё нет** `/opt/srv-control`.
-
-Инсталлятор:
-
-1. устанавливает системные зависимости;
-2. разворачивает актуальный snapshot SRV Control Center из этого GitHub-репозитория;
-3. создаёт системного пользователя `srv-control`;
-4. создаёт Python virtualenv и устанавливает `requirements.lock`;
-5. подготавливает PostgreSQL role/database и применяет Alembic migrations;
-6. устанавливает и запускает `srv-control.service`;
-7. настраивает Nginx reverse proxy;
-8. записывает release/deployment metadata;
-9. устанавливает `srvcc-github-agent.timer`, который примерно каждые 2 минуты проверяет `main` и применяет новые релизы;
-10. выполняет финальный health/acceptance test.
-
-## Требования
-
-- Debian или Ubuntu с `apt-get`;
-- systemd;
-- доступ в Интернет к GitHub и APT-репозиториям;
-- root/sudo;
-- машина не должна содержать существующий `/opt/srv-control`.
-
-## Рекомендуемый запуск
+Поддерживается Debian/Ubuntu с `apt-get` и systemd. Инсталлятор предназначен для машины, где `/opt/srv-control` ещё не содержит установленный Control Center.
 
 ```bash
 curl -fL -o install.sh \
   https://raw.githubusercontent.com/filosoff31/srv-deployment/main/install.sh
-
-chmod +x install.sh
-
-sudo ./install.sh
-```
-
-Альтернативно:
-
-```bash
-wget -O install.sh \
-  https://raw.githubusercontent.com/filosoff31/srv-deployment/main/install.sh
-
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-В конце успешной установки будет выведено:
+Bootstrap скачивает только актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому приложение устанавливается непосредственно из полного payload активного релиза `releases/<version>/payload`; отдельной копии исходников в `installer/payload` больше нет.
 
-```text
-SRV CONTROL CENTER: INSTALLED
-release=...
-git_sha=...
-url=http://...
-updater=srvcc-github-agent.timer
-install_log=/var/log/srv-control-install.log
-```
+Инсталлятор устанавливает зависимости, PostgreSQL, Python virtualenv, migrations, `srv-control.service`, Nginx, системные helper/unit-файлы из активного релиза и release-fingerprint updater.
 
-Если TCP/80 уже занят, инсталлятор автоматически попробует 8080, затем 8880.
+Если TCP/80 уже занят, reverse proxy пробует 8080, затем 8880.
 
 ## Основные пути
 
 ```text
-/opt/srv-control                     приложение
-/etc/srv-control/control.toml        конфигурация
-/var/lib/srv-control                 runtime metadata/state
-/var/log/srv-control                 журналы приложения
-/var/cache/srv-control               cache
-/var/lib/srv-deployment              deployment state/backups
-/var/lib/srvcc-agent/deploy-repo     checkout GitHub main
-/var/log/srvcc-agent.log             updater log
+/opt/srv-control                         приложение
+/etc/srv-control/control.toml            конфигурация
+/var/lib/srv-control                     состояние Control Center
+/var/lib/srv-deployment                  deployment state и rollback backups
+/var/lib/srvcc-agent/deploy-repo         checkout GitHub main
+/var/lib/srvcc-agent/last-deployed-sha   последний product deployment
+/var/lib/srvcc-agent/last-seen-sha       последний проверенный main
+/var/lib/srvcc-agent/last-release-fingerprint
+/var/log/srvcc-agent.log                 журнал updater
 ```
 
-## Проверка после установки
+## Автоматические обновления
+
+По умолчанию после чистой установки включается проверка GitHub каждые 5 минут. Updater не переустанавливает приложение только из-за нового commit: он сравнивает fingerprint активного product-релиза.
+
+Проверка:
 
 ```bash
 systemctl status srv-control.service --no-pager -l
 systemctl status srvcc-github-agent.timer --no-pager -l
 curl -fsS http://127.0.0.1:8876/api/v1/health
+cat /var/lib/srv-control/github-update-config.json
+cat /var/lib/srv-control/github-update-status.json
 tail -n 100 /var/log/srvcc-agent.log
 ```
 
-## Автоматические обновления
+## Обновление существующей версии 0.8.0+
 
-`main` является authoritative deployment branch. Timer получает новый commit, запускает:
-
-```text
-deploy/deploy.sh
-  → deploy/orchestrator.sh
-    → preflight
-    → apply
-    → acceptance
-    → deploy/healthcheck.sh
+```bash
+curl -fL -o /tmp/srvcc-configure-auto-updates.sh \
+  https://raw.githubusercontent.com/filosoff31/srv-deployment/main/bootstrap/configure-auto-updates.sh
+sudo bash /tmp/srvcc-configure-auto-updates.sh \
+  --mode automatic \
+  --interval-minutes 5 \
+  --check-now
 ```
 
-`last-deployed-sha` обновляется только после успешного release acceptance и общего healthcheck.
+Полное описание режимов updater: `docs/AUTO-UPDATES.md`.
 
-Начиная с 0.4.0 code-only обновления должны использовать graceful worker rotation (`deploy/reload-srv-control.sh`), чтобы не останавливать listener Uvicorn во время обновления.
+## Повторный запуск clean installer
 
-## Ветка server-state
+Clean installer намеренно завершается с ошибкой, если `/opt/srv-control` уже содержит файлы. Для действующего сервера используется updater, а не повторная чистая установка.
 
-Чистая установка может **читать public `main` без GitHub credentials**, поэтому установка и автоматические обновления работают сразу.
+## server-state
 
-Публикация обратно в `server-state` требует write-credential GitHub (PAT/deploy key/GitHub App credential). Секрет намеренно не встроен в публичный installer и репозиторий. На основном SRV уже используется отдельный state publisher; для новой машины его write-доступ настраивается отдельно.
-
-## Повторный запуск
-
-Инсталлятор намеренно остановится, если `/opt/srv-control` уже содержит файлы. Это защита от случайной перезаписи рабочей установки. Для действующего сервера используются обычные releases через `main`.
+`main` доступен для чтения без встроенного GitHub-секрета. Публикация фактического состояния в `server-state` требует отдельного write credential и не встраивается в публичный installer.
