@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 PROJECT="${1:-/opt/srv-control}"
+RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail(){ echo "ACCEPTANCE FAIL: $*" >&2; exit 1; }
+
 health="$(curl -fsS --max-time 10 http://127.0.0.1:8876/api/v1/health)" || fail "health endpoint unavailable"
 python3 - "$health" <<'PY' || exit 1
 import json,sys
 p=json.loads(sys.argv[1]); assert p.get('ok') is True,p; assert (p.get('data') or {}).get('release',{}).get('version')=='1.4.0',p
 PY
+
+python3 "$RELEASE_DIR/tests/pxe_contract.py" || fail "PXE firmware/safety contract failed"
+python3 -m py_compile /usr/local/libexec/srv-control-release14-agent || fail "installed release14 root agent syntax invalid"
 runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 "$PROJECT/venv/bin/python" - <<'PY' || fail "release14 imports failed"
 import app.main
 from app.core import release14
 from app.routers import release14 as router
 print('import-ok')
 PY
+
 REV="$(runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 "$PROJECT/venv/bin/alembic" -c "$PROJECT/alembic.ini" current)"
 grep -q '14f0a1400001' <<<"$REV" || fail "migration head missing: $REV"
 for table in dhcp_configs dhcp_options dhcp_reservations pxe_configuration_profiles pxe_profile_configuration_profiles folder_redirect_profiles folder_redirect_assignments; do
@@ -21,7 +27,37 @@ done
 systemctl is-enabled --quiet srv-control-release14-agent.path || fail "release14 action path disabled"
 systemctl is-active --quiet srv-control-release14-agent.path || fail "release14 action path inactive"
 systemctl is-enabled --quiet srv-control-backup-retention.path || fail "backup retention path disabled"
-boot="$(curl -fsS --max-time 10 'http://127.0.0.1:8876/pxe/boot.ipxe?mac=02:00:00:00:00:01')" || fail "public PXE authorization endpoint unavailable"
-grep -q 'not authorized' <<<"$boot" || fail "unknown PXE device was not denied"
-! grep -qiE 'kernel|initrd.*boot.wim|autoinstall' <<<"$boot" || fail "unknown PXE device received installation payload"
-echo "ACCEPTANCE PASS: release=1.4.0 migration=14f0a1400001 deny-by-default=ok"
+
+# Deny-by-default must hold for every firmware class without exposing a boot payload.
+for query in \
+  'mac=02:00:00:00:00:01&platform=pcbios&buildarch=i386' \
+  'mac=02:00:00:00:00:02&platform=efi&buildarch=i386' \
+  'mac=02:00:00:00:00:03&platform=efi&buildarch=x86_64' \
+  'mac=02:00:00:00:00:04&platform=efi&buildarch=arm32' \
+  'mac=02:00:00:00:00:05&platform=efi&buildarch=arm64'; do
+  boot="$(curl -fsS --max-time 10 "http://127.0.0.1:8876/pxe/boot.ipxe?$query")" || fail "public PXE authorization endpoint unavailable for $query"
+  grep -q 'not authorized' <<<"$boot" || fail "unknown PXE device was not denied: $query"
+  ! grep -qiE '(^|[[:space:]])(kernel|initrd|shim|imgfetch).*|autoinstall|preseed/url|/pxe/consume/' <<<"$boot" || fail "unknown PXE device received installation payload: $query"
+done
+
+# Private profile files must never be reachable through the public static media mount.
+sentinel="/srv/pxe/profiles/.srvcc-acceptance-private-$$"
+install -d -m 0750 -o root -g srv-control /srv/pxe/profiles
+printf 'private\n' > "$sentinel"
+chmod 0640 "$sentinel"
+cleanup(){ rm -f -- "$sentinel"; }
+trap cleanup EXIT
+code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:8876/pxe/files/profiles/$(basename "$sentinel")")" || true
+[[ "$code" == 404 ]] || fail "private PXE profile leaked through static media root: HTTP $code"
+code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 'http://127.0.0.1:8876/pxe/profile/999999/not-a-token/boot.ipxe')" || true
+[[ "$code" == 404 ]] || fail "invalid PXE profile token did not return 404: HTTP $code"
+
+# If the hardened PXE runtime has already been installed/repaired, validate every
+# firmware artifact and dnsmasq option-93 mapping on the live host.
+if [[ -f /srv/tftp/x86_64-sb/snponly-shim.efi || -f /srv/tftp/arm64-sb/snponly-shim.efi ]]; then
+  /usr/local/libexec/srv-control-release14-agent --validate-pxe >/tmp/srvcc-pxe-validation.txt || fail "live PXE runtime validation failed"
+  grep -q 'PXE runtime validation passed' /tmp/srvcc-pxe-validation.txt || fail "live PXE validation did not report success"
+  rm -f /tmp/srvcc-pxe-validation.txt
+fi
+
+echo "ACCEPTANCE PASS: release=1.4.0 migration=14f0a1400001 deny-by-default=ok firmware-contract=ok private-profiles=ok"
