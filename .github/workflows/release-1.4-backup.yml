@@ -1,0 +1,29 @@
+name: SRV Control Center 1.4.0 backup safety
+
+on:
+  push:
+    branches: [release/1.4.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PXE-aware backup packaging
+        run: |
+          set -Eeuo pipefail
+          bash -n releases/1.4.0/apply.sh
+          bash -n releases/1.4.0/rollback.sh
+          python3 -m py_compile releases/1.4.0/system/srv-control-backup
+          python3 releases/1.4.0/tests/pxe_backup_contract.py
+          grep -Fq '/usr/local/libexec/srv-control-backup' releases/1.4.0/apply.sh
+          grep -Fq '/usr/local/libexec/srv-control-backup' releases/1.4.0/rollback.sh
+          grep -Fq 'invalidate_restored_pxe_authorizations' releases/1.4.0/system/srv-control-backup
+          grep -Fq 'pxe/smb-credential.json' releases/1.4.0/system/srv-control-backup
+          grep -Fq "config = COALESCE(config, '{}'::jsonb) - 'boot_token' - 'report_token'" releases/1.4.0/system/srv-control-backup
