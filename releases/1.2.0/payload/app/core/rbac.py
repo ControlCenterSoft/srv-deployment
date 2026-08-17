@@ -17,8 +17,11 @@ MODULES = {
     "downloads": "Торренты",
 }
 ACCESS_LEVELS = {"read", "write"}
+GRANT_ACCESS_LEVELS = {"read", "write", "admin"}
 SOURCES = {"local", "domain", "any"}
 SUBJECT_TYPES = {"group", "user"}
+FULL_ADMIN_MODULE = "*"
+FULL_ADMIN_PERMISSION_KEY = "__admin__"
 
 
 @dataclass(frozen=True)
@@ -58,13 +61,11 @@ def _source_for_identity(identity: Identity) -> str:
     return "domain" if identity.auth_source in {"domain", "sso"} else "local"
 
 
-def permissions_for(identity: Identity) -> dict[str, str]:
-    if identity.is_admin:
-        return {module: "write" for module in MODULES}
-
+def _matching_grants(identity: Identity) -> list[dict]:
     group_keys = _group_keys(identity)
     user_keys = _user_keys(identity)
     source = _source_for_identity(identity)
+    matches: list[dict] = []
 
     with engine.connect() as connection:
         rows = connection.execute(
@@ -78,8 +79,6 @@ def permissions_for(identity: Identity) -> dict[str, str]:
             ),
             {"source": source},
         ).mappings()
-
-        result: dict[str, str] = {}
         for row in rows:
             subject_type = str(row.get("subject_type") or "group")
             subject_keys = _name_keys(str(row["group_name"]))
@@ -89,17 +88,49 @@ def permissions_for(identity: Identity) -> dict[str, str]:
                 applies = bool(subject_keys & user_keys)
             else:
                 applies = False
-            if not applies:
-                continue
+            if applies:
+                matches.append(dict(row))
+    return matches
 
-            module = str(row["module"])
-            access = str(row["access"])
-            if module not in MODULES or access not in ACCESS_LEVELS:
-                continue
-            if result.get(module) == "write":
-                continue
-            result[module] = access
-        return result
+
+def is_full_admin(identity: Identity) -> bool:
+    if identity.is_admin:
+        return True
+    return any(
+        str(row.get("module")) == FULL_ADMIN_MODULE
+        and str(row.get("access")) == "admin"
+        for row in _matching_grants(identity)
+    )
+
+
+def permissions_for(identity: Identity) -> dict[str, str]:
+    if identity.is_admin:
+        return {
+            **{module: "write" for module in MODULES},
+            FULL_ADMIN_PERMISSION_KEY: "admin",
+        }
+
+    rows = _matching_grants(identity)
+    if any(
+        str(row.get("module")) == FULL_ADMIN_MODULE
+        and str(row.get("access")) == "admin"
+        for row in rows
+    ):
+        return {
+            **{module: "write" for module in MODULES},
+            FULL_ADMIN_PERMISSION_KEY: "admin",
+        }
+
+    result: dict[str, str] = {}
+    for row in rows:
+        module = str(row.get("module") or "")
+        access = str(row.get("access") or "")
+        if module not in MODULES or access not in ACCESS_LEVELS:
+            continue
+        if result.get(module) == "write":
+            continue
+        result[module] = access
+    return result
 
 
 def has_permission(identity: Identity, module: str, access: str = "read") -> bool:
@@ -107,7 +138,10 @@ def has_permission(identity: Identity, module: str, access: str = "read") -> boo
         return False
     if identity.is_admin:
         return True
-    current = permissions_for(identity).get(module)
+    permissions = permissions_for(identity)
+    if permissions.get(FULL_ADMIN_PERMISSION_KEY) == "admin":
+        return True
+    current = permissions.get(module)
     if current == "write":
         return True
     return current == "read" and access == "read"
@@ -123,17 +157,15 @@ def require_permission(identity: Identity, module: str, access: str = "read") ->
 def list_grants() -> list[dict]:
     with engine.connect() as connection:
         return [
-            {
-                **dict(row),
-                "subject_name": row["group_name"],
-            }
+            {**dict(row), "subject_name": row["group_name"]}
             for row in connection.execute(
                 text(
                     """
                     SELECT id, group_name, subject_type, source, module, access, enabled,
                            updated_by, updated_at
                     FROM rbac_group_permissions
-                    ORDER BY subject_type, source, group_name, module
+                    ORDER BY CASE WHEN access = 'admin' THEN 0 ELSE 1 END,
+                             subject_type, source, group_name, module
                     """
                 )
             ).mappings()
@@ -162,10 +194,12 @@ def upsert_grant(
         raise ValueError("subject_name is required")
     if source not in SOURCES:
         raise ValueError("invalid source")
-    if module not in MODULES:
-        raise ValueError("invalid module")
-    if access not in ACCESS_LEVELS:
+    if access not in GRANT_ACCESS_LEVELS:
         raise ValueError("invalid access")
+    if access == "admin":
+        module = FULL_ADMIN_MODULE
+    elif module not in MODULES:
+        raise ValueError("invalid module")
 
     with engine.begin() as connection:
         row = connection.execute(
