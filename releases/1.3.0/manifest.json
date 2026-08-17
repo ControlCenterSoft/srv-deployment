@@ -15,7 +15,7 @@
     },
     "acceptance": {
       "path": "acceptance-real-server.sh",
-      "sha256": "ebb6f1d25ad97a8635eeaf0c708e0ade563612a4f47587377c7748dfc266be76"
+      "sha256": "e83679edf5dd2d96e30b695c944ef55ff5fc6951a56dbcee455b42cb4396421a"
     },
     "rollback": {
       "path": "rollback.sh",
