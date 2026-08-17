@@ -17,6 +17,7 @@ OS_UPDATE_STATUS = Path("/var/lib/srv-control/os-update-status.json")
 BACKUP_CONFIG = Path("/var/lib/srv-control/backup-config.json")
 BACKUP_DIR = Path("/var/lib/srv-control/backups")
 ADGUARD_STATUS = Path("/var/lib/srv-control/adguard-vpn-status.json")
+SAMBA_STATUS = Path("/var/lib/srv-control/samba-domain-status.json")
 
 ALLOWED_ACTIONS = {
     "reboot",
@@ -38,6 +39,25 @@ ALLOWED_ACTIONS = {
     "service-configure-adguard-vpn",
     "service-install-pxe",
     "service-remove-pxe",
+    "service-install-samba-dc",
+    "service-remove-samba-dc",
+    "samba-password-policy",
+    "samba-user-create",
+    "samba-user-update",
+    "samba-user-password",
+    "samba-user-enable",
+    "samba-user-disable",
+    "samba-user-unlock",
+    "samba-user-delete",
+    "samba-group-create",
+    "samba-group-update",
+    "samba-group-members",
+    "samba-group-delete",
+    "samba-backup-create",
+    "samba-backup-restore",
+    "samba-share-create",
+    "samba-share-update",
+    "samba-share-delete",
     "minecraft-configure",
     "minecraft-start",
     "minecraft-stop",
@@ -103,6 +123,23 @@ def _adguard_binary() -> str | None:
     return str(path) if path.exists() else None
 
 
+def _samba_unit_state() -> tuple[str | None, str]:
+    for unit in ("samba-ad-dc.service", "samba.service"):
+        try:
+            result = subprocess.run(
+                ["systemctl", "show", unit, "-p", "LoadState", "--value"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip() not in {"", "not-found"}:
+                return unit, _unit_state(unit)
+        except Exception:
+            continue
+    return None, "not-installed"
+
+
 def service_catalog(*, include_detail: bool = False) -> list[dict]:
     binary = _adguard_binary()
     monitor = _read_json(ADGUARD_STATUS) or {}
@@ -119,6 +156,11 @@ def service_catalog(*, include_detail: bool = False) -> list[dict]:
         adguard_status["detail"] = monitor.get("detail")
 
     pxe_installed = _package_installed("tftpd-hpa") or shutil.which("in.tftpd") is not None
+    samba_monitor = _read_json(SAMBA_STATUS) or {}
+    samba_installed = bool(shutil.which("samba-tool") and shutil.which("samba"))
+    samba_unit, samba_state = _samba_unit_state()
+    samba_domain = samba_monitor.get("domain") if isinstance(samba_monitor.get("domain"), dict) else {}
+
     return [
         {
             "id": "adguard-vpn",
@@ -137,6 +179,22 @@ def service_catalog(*, include_detail: bool = False) -> list[dict]:
             "status": {
                 "state": _unit_state("tftpd-hpa.service") if pxe_installed else "not-installed",
                 "tftp_root": "/srv/tftp" if Path("/srv/tftp").exists() else None,
+            },
+        },
+        {
+            "id": "samba-ad-dc",
+            "name": "Samba AD DC",
+            "installed": samba_installed,
+            "description": "Active Directory domain controller and SMB file services",
+            "permission_module": "samba",
+            "status": {
+                "state": samba_state if samba_installed else "not-installed",
+                "service": samba_unit,
+                "version": samba_monitor.get("version"),
+                "realm": samba_domain.get("realm"),
+                "domain": samba_domain.get("netbios_domain"),
+                "sid": samba_domain.get("sid") if include_detail else None,
+                "checked_at": samba_monitor.get("checked_at"),
             },
         },
     ]
@@ -268,7 +326,7 @@ def enqueue(
     ACTION_DIR.mkdir(parents=True, exist_ok=True)
     request_id = uuid.uuid4().hex
     body = {
-        "schema_version": 2,
+        "schema_version": 3,
         "request_id": request_id,
         "action": action,
         "actor": actor,
