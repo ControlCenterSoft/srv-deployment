@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0006-network-diagnostics",
-  "release_id": "0006-network-diagnostics",
-  "release_path": "releases/0006-network-diagnostics",
-  "manifest": "releases/0006-network-diagnostics/manifest.json",
-  "preflight": "releases/0006-network-diagnostics/preflight.sh",
-  "apply": "releases/0006-network-diagnostics/apply.sh",
-  "acceptance": "releases/0006-network-diagnostics/acceptance.sh",
-  "rollback": "releases/0006-network-diagnostics/rollback.sh",
-  "description": "Add read-only route, DNS and GitHub HTTPS diagnostics to Internet/VPN."
+  "release": "0007-network-planner",
+  "release_id": "0007-network-planner",
+  "release_path": "releases/0007-network-planner",
+  "manifest": "releases/0007-network-planner/manifest.json",
+  "preflight": "releases/0007-network-planner/preflight.sh",
+  "apply": "releases/0007-network-planner/apply.sh",
+  "acceptance": "releases/0007-network-planner/acceptance.sh",
+  "rollback": "releases/0007-network-planner/rollback.sh",
+  "description": "Add safe dry-run WAN/LAN planning while preserving read-only network diagnostics."
 }
