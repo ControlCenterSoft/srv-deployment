@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "0001-channel-acceptance",
-  "release_id": "0001-channel-acceptance",
-  "release_path": "releases/0001-channel-acceptance",
-  "manifest": "releases/0001-channel-acceptance/manifest.json",
-  "preflight": "releases/0001-channel-acceptance/preflight.sh",
-  "apply": "releases/0001-channel-acceptance/apply.sh",
-  "acceptance": "releases/0001-channel-acceptance/acceptance.sh",
-  "rollback": "releases/0001-channel-acceptance/rollback.sh",
-  "description": "Safe deployment-channel acceptance release; no /opt/srv-control mutation."
+  "release": "0002-ui-release-metadata",
+  "release_id": "0002-ui-release-metadata",
+  "release_path": "releases/0002-ui-release-metadata",
+  "manifest": "releases/0002-ui-release-metadata/manifest.json",
+  "preflight": "releases/0002-ui-release-metadata/preflight.sh",
+  "apply": "releases/0002-ui-release-metadata/apply.sh",
+  "acceptance": "releases/0002-ui-release-metadata/acceptance.sh",
+  "rollback": "releases/0002-ui-release-metadata/rollback.sh",
+  "description": "Show release version and last successful GitHub synchronization in the SRV Control Center navigation footer."
 }

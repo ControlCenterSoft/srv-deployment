@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "release_id": "0002-ui-release-metadata",
+  "release_version": "0.2.0",
+  "description": "Display release version and last successful GitHub synchronization next to Backend status.",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "c1de8b0a8caba8930ac121ad032ecceac0f75610dd5b9f5dc4411825f63ac671"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "a260ab9000bffa86135e8a73a46d27f08318bbebf8f74ed9455c6e3ac9c7f909"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "45016018005c808494b1998755d31b79b722c64e1fb40cabc5b7e637c9012239"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "9ee9b9fbd9ae8a3449800e757f3f2a2f5ca290658a4ae757ac7fd85f4051cec4"
+    }
+  }
+}

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+    <title>SRV Control Center</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/css/shell.css"
+    >
+</head>
+
+<body>
+
+<div class="app-shell">
+
+    <main class="frame-area">
+
+        <iframe
+            id="moduleFrame"
+            name="moduleFrame"
+            src="/ui/dashboard"
+            title="SRV Control Center"
+        ></iframe>
+
+    </main>
+
+
+    <aside class="main-nav">
+
+        <div class="brand">
+
+            <div class="brand-mark">
+                SRV
+            </div>
+
+            <div class="brand-text">
+
+                <strong>
+                    Control Center
+                </strong>
+
+                <span>
+                    hm.dm
+                </span>
+
+            </div>
+
+        </div>
+
+
+        <nav id="mainMenu">
+
+            <a
+                class="nav-item active"
+                href="/ui/dashboard"
+                target="moduleFrame"
+                data-route="/ui/dashboard"
+            >
+                <span class="nav-icon">⌂</span>
+                <span>Главная</span>
+            </a>
+
+
+            <a
+                class="nav-item"
+                href="/ui/module/samba"
+                target="moduleFrame"
+                data-route="/ui/module/samba"
+            >
+                <span class="nav-icon">◆</span>
+                <span>Домен / Samba</span>
+            </a>
+
+
+            <a
+                class="nav-item"
+                href="/ui/module/pxe"
+                target="moduleFrame"
+                data-route="/ui/module/pxe"
+            >
+                <span class="nav-icon">⇩</span>
+                <span>PXE / Установка ОС</span>
+            </a>
+
+
+            <a
+                class="nav-item"
+                href="/ui/module/minecraft"
+                target="moduleFrame"
+                data-route="/ui/module/minecraft"
+            >
+                <span class="nav-icon">▦</span>
+                <span>Minecraft</span>
+            </a>
+
+
+            <a
+                class="nav-item"
+                href="/ui/module/downloads"
+                target="moduleFrame"
+                data-route="/ui/module/downloads"
+            >
+                <span class="nav-icon">↓</span>
+                <span>Загрузки</span>
+            </a>
+
+
+            <a
+                class="nav-item"
+                href="/ui/module/docker"
+                target="moduleFrame"
+                data-route="/ui/module/docker"
+            >
+                <span class="nav-icon">▣</span>
+                <span>Docker</span>
+            </a>
+
+
+            <a
+                class="nav-item"
+                href="/ui/module/internet"
+                target="moduleFrame"
+                data-route="/ui/module/internet"
+            >
+                <span class="nav-icon">◎</span>
+                <span>Интернет / VPN</span>
+            </a>
+
+
+            <a
+                class="nav-item"
+                href="/ui/module/system"
+                target="moduleFrame"
+                data-route="/ui/module/system"
+            >
+                <span class="nav-icon">⚙</span>
+                <span>Система</span>
+            </a>
+
+        </nav>
+
+
+        <div class="nav-footer">
+
+            <div
+                class="health-dot"
+                id="backendHealthDot"
+            ></div>
+
+            <div class="backend-state">
+
+                <strong id="backendHealth">
+                    Проверка...
+                </strong>
+
+                <span>
+                    Backend
+                </span>
+
+            </div>
+
+            <div class="release-meta">
+
+                <strong id="releaseVersion">
+                    Релиз —
+                </strong>
+
+                <span id="githubSync">
+                    GitHub: —
+                </span>
+
+            </div>
+
+        </div>
+
+    </aside>
+
+</div>
+
+<script src="/static/js/shell.js"></script>
+
+</body>
+</html>
