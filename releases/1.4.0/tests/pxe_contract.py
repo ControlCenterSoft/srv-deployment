@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,21 +47,17 @@ def main() -> int:
     agent = source(ROOT / 'system/srv-control-release14-agent.parts')
     main_py = (ROOT / 'payload/app/main.py').read_text(encoding='utf-8')
 
-    # Public/private separation: per-device profiles must never be a static tree.
     require(main_py, "StaticFiles(directory='/srv/pxe/media'", "PUBLIC_PREFIXES = ('/static/', '/pxe/')")
     if "StaticFiles(directory='/srv/pxe'," in main_py:
         fail('private /srv/pxe/profiles would be exposed through StaticFiles')
     require(router, '/pxe/profile/{profile_id}/{token}/{artifact:path}', 'profile_boot_token_valid', '/pxe/consume/{profile_id}/{token}')
 
-    # Authorization must be peek -> stage payload -> consume, not consume on first boot.ipxe GET.
     require(core, 'def peek_boot_profile(', 'def consume_boot_profile(', 'install_authorized=false', "status='installing'")
     boot_route = router[router.index("@router.get('/pxe/boot.ipxe'"):router.index("@router.post('/pxe/report/")]
     require(boot_route, 'peek_boot_profile(mac)', 'boot_file.is_file()', 'Authorization retained')
     if re.search(r'(?<!peek_)boot_profile\(mac\)', boot_route):
         fail('boot.ipxe still consumes authorization before payload validation')
 
-    # DHCP option 93 matrix and iPXE loop breaking. Validate the final definition
-    # because the release agent intentionally overrides older 1.4 prototypes.
     dhcp = effective_function(agent, 'def apply_dhcp() -> str:')
     require(
         dhcp,
@@ -74,20 +69,35 @@ def main() -> int:
         'option:client-arch,9',
         'option:client-arch,10',
         'option:client-arch,11',
+        'tag-if=set:pxe-noarch',
         'undionly.kpxe',
-        'i386-efi/snponly.efi',
+        'i386/snponly.efi',
         'x86_64-sb/snponly-shim.efi',
-        'arm32-efi/snponly.efi',
+        'arm32/snponly.efi',
         'arm64-sb/snponly-shim.efi',
         "server = _interface_ipv4(str(c['interface']))",
     )
     if "{c['gateway']}" in '\n'.join(line for line in dhcp.splitlines() if 'dhcp-boot=' in line):
         fail('effective PXE next-server is still derived from gateway instead of interface address')
 
-    require(agent, "IPXE_VERSION = 'v2.0.0'", 'ipxeboot.tar.gz', "WIMBOOT_X64_URL", "WIMBOOT_I386_URL", "WIMBOOT_ARM64_URL")
-    require(agent, 'platform=${platform}', 'buildarch=${buildarch}', 'isset ${net0/ip} || dhcp', 'route\\n', 'shell\\n')
+    require(
+        agent,
+        "IPXE_VERSION = 'v2.0.0'",
+        'ipxeboot.tar.gz',
+        "TFTP_ROOT / 'i386/snponly.efi'",
+        "TFTP_ROOT / 'x86_64/snponly.efi'",
+        "TFTP_ROOT / 'arm32/snponly.efi'",
+        "TFTP_ROOT / 'arm64/snponly.efi'",
+        "WIMBOOT_X64_URL",
+        "WIMBOOT_I386_URL",
+        "WIMBOOT_ARM64_URL",
+        'platform=${platform}',
+        'buildarch=${buildarch}',
+        'isset ${net0/ip} || dhcp',
+        'route\\n',
+        'shell\\n',
+    )
 
-    # Windows: one x64 profile must be able to install in both real firmware modes.
     windows = effective_function(agent, 'def publish_windows(')
     require(
         windows,
@@ -109,17 +119,14 @@ def main() -> int:
     if windows.index('imgfetch --name srv-consume') > windows.index('boot || goto denied'):
         fail('Windows authorization consume happens after boot')
 
-    # Linux: unattended Ubuntu/Debian plus signed distro shim when present.
     linux = effective_function(agent, 'def publish_linux(')
     require(linux, 'ds=nocloud-net;s=', 'preseed/url=', 'secure_boot_shims', 'shim {base}/images/', 'imgfetch --name srv-consume')
 
-    # Samba AD DC is a supported production role; never expose the private profiles share.
     samba = effective_function(agent, 'def ensure_pxe_samba_share(')
     require(samba, 'active directory domain controller', "['samba-tool', 'user', 'create'", 'PXE_MEDIA', 'valid users = srv-pxe')
     if "path = {PXE_ROOT}" in samba:
         fail('effective PXE Samba share still includes the private profiles directory')
 
-    # Exactly one executable entry point after all compatibility overrides.
     entries = agent.count("if __name__ == '__main__'") + agent.count("if __name__=='__main__'")
     if entries != 1:
         fail(f'release14 agent must contain exactly one __main__ entry point, found {entries}')
