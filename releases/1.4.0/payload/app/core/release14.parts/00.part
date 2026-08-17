@@ -20,6 +20,7 @@ ACTION_DIR = Path('/var/lib/srv-control/release14-actions')
 RESULT_DIR = Path('/var/lib/srv-control/release14-results')
 PXE_UPLOAD_DIR = Path('/var/lib/srv-control/pxe/uploads')
 PXE_ROOT = Path('/srv/pxe')
+PXE_ENTRY = Path('/srv/pxe/media/boot/entry.ipxe')
 DHCP_LEASE_FILE = Path('/var/lib/misc/dnsmasq.leases')
 BACKUP_CONFIG = Path('/var/lib/srv-control/backup-config.json')
 NETWORK_CONFIG = Path('/var/lib/srv-control/network-config.json')
@@ -96,6 +97,7 @@ def unit_state(name: str) -> str:
 def services_snapshot() -> list[dict]:
     dhcp_installed = package_installed('dnsmasq') or shutil.which('dnsmasq') is not None
     pxe_installed = package_installed('tftpd-hpa') or shutil.which('in.tftpd') is not None
+    pxe_managed = bool(pxe_installed and PXE_ENTRY.is_file())
     return [
         {
             'id': 'dhcp-server',
@@ -112,10 +114,13 @@ def services_snapshot() -> list[dict]:
             'id': 'pxe-server',
             'name': 'PXE Server',
             'installed': pxe_installed,
-            'description': 'TFTP + iPXE + HTTP boot для Windows и Linux',
+            'needs_upgrade': bool(pxe_installed and not pxe_managed),
+            'description': 'TFTP + iPXE + HTTP/UEFI HTTP Boot для Windows и Linux',
             'permission_module': 'pxe',
             'status': {
                 'state': unit_state('tftpd-hpa.service') if pxe_installed else 'not-installed',
+                'version': '1.4.0' if pxe_managed else ('legacy/unmanaged' if pxe_installed else None),
+                'runtime_managed': pxe_managed,
                 'tftp_root': '/srv/tftp' if Path('/srv/tftp').exists() else None,
                 'pxe_root': str(PXE_ROOT) if PXE_ROOT.exists() else None,
             },
@@ -137,3 +142,11 @@ def enqueue(action: str, actor: str, client_ip: str | None, payload: dict | None
         'schema_version': 1,
         'request_id': request_id,
         'action': action,
+        'actor': actor,
+        'client_ip': client_ip,
+        'payload': payload if isinstance(payload, dict) else {},
+        'created_at': now(),
+    }
+    target = ACTION_DIR / f'{request_id}.json'
+    write_json_atomic(target, body)
+    return {'request_id': request_id, 'action': action, 'queued': True}
