@@ -17,7 +17,22 @@ SECRET_DIR = Path("/var/lib/srv-control/action-secrets")
 IMPORT_DIR = Path("/var/lib/srv-control/domain-imports")
 WORKER = Path("/usr/local/libexec/srv-control-samba-admin")
 SAMBA_AD_PACKAGES = (
+    "samba",
+    "samba-common-bin",
+    "samba-ad-dc",
     "samba-ad-provision",
+    "samba-dsdb-modules",
+    "samba-vfs-modules",
+    "smbclient",
+    "winbind",
+    "libnss-winbind",
+    "libpam-winbind",
+    "krb5-user",
+    "acl",
+    "attr",
+    "quota",
+    "xfsprogs",
+    "btrfs-progs",
     "ldb-tools",
 )
 
@@ -100,7 +115,7 @@ def ensure_samba_ad_dependencies() -> None:
         env={**os.environ, "DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"},
     )
     if install.returncode != 0:
-        raise RuntimeError((install.stdout or "")[-6000:] or "failed to install Samba AD provision dependencies")
+        raise RuntimeError((install.stdout or "")[-6000:] or "failed to install Samba AD dependencies")
 
 
 def invoke(request: dict[str, Any]) -> tuple[bool, str]:
