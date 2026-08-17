@@ -4,15 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Права пользователей — SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/module.css">
-    <link rel="stylesheet" href="/static/css/access.css">
+    <link rel="stylesheet" href="/static/css/module.css?v=1.1.0-ui7">
+    <link rel="stylesheet" href="/static/css/access.css?v=1.1.0-ui7">
 </head>
 <body>
 <div class="page">
     <header class="page-header">
         <div>
             <h1>Права пользователей</h1>
-            <p>Локальные и доменные учётные записи сервера. Права Control Center назначаются группам.</p>
+            <p>Назначение доступа Control Center локальным и доменным группам и пользователям.</p>
         </div>
         <div class="identity-badge" id="identityBadge">—</div>
     </header>
@@ -32,63 +32,100 @@
         </div>
     </section>
 
+    <section class="subject-grid">
+        <article class="panel subject-panel">
+            <div class="subject-panel-head">
+                <div>
+                    <div class="panel-title">Группы</div>
+                    <p>Назначьте права выбранной локальной или доменной группе.</p>
+                </div>
+                <span class="subject-count" id="groupSubjectCount">0</span>
+            </div>
+            <form id="groupGrantForm" class="subject-form" data-subject-type="group">
+                <label>
+                    <span>Источник</span>
+                    <select id="groupGrantSource" required>
+                        <option value="local">Локальные</option>
+                        <option value="domain">Доменные</option>
+                        <option value="any">Все источники</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Группа</span>
+                    <select id="groupGrantSubject" required></select>
+                </label>
+                <div class="rights-row">
+                    <label>
+                        <span>Модуль</span>
+                        <select id="groupGrantModule" required></select>
+                    </label>
+                    <label>
+                        <span>Уровень</span>
+                        <select id="groupGrantAccess" required>
+                            <option value="read">Чтение</option>
+                            <option value="write">Запись</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="submit">Сохранить права группе</button>
+            </form>
+        </article>
+
+        <article class="panel subject-panel">
+            <div class="subject-panel-head">
+                <div>
+                    <div class="panel-title">Пользователи</div>
+                    <p>Назначьте персональные права без вывода полного списка учётных записей на страницу.</p>
+                </div>
+                <span class="subject-count" id="userSubjectCount">0</span>
+            </div>
+            <form id="userGrantForm" class="subject-form" data-subject-type="user">
+                <label>
+                    <span>Источник</span>
+                    <select id="userGrantSource" required>
+                        <option value="local">Локальные</option>
+                        <option value="domain">Доменные</option>
+                        <option value="any">Все источники</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Пользователь</span>
+                    <select id="userGrantSubject" required></select>
+                </label>
+                <div class="rights-row">
+                    <label>
+                        <span>Модуль</span>
+                        <select id="userGrantModule" required></select>
+                    </label>
+                    <label>
+                        <span>Уровень</span>
+                        <select id="userGrantAccess" required>
+                            <option value="read">Чтение</option>
+                            <option value="write">Запись</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="submit">Сохранить права пользователю</button>
+            </form>
+        </article>
+    </section>
+
+    <div class="action-message" id="grantMessage"></div>
+
     <section class="panel">
-        <div class="panel-title">Пользователи сервера</div>
-        <div class="grant-table-wrap">
-            <table class="grant-table">
-                <thead>
-                    <tr>
-                        <th>Пользователь</th>
-                        <th>Источник</th>
-                        <th>UID</th>
-                        <th>Права администратора</th>
-                    </tr>
-                </thead>
-                <tbody id="userRows"></tbody>
-            </table>
+        <div class="panel-title-row access-title-row">
+            <div>
+                <div class="panel-title">Назначенные права</div>
+                <p>Прямые пользовательские правила и групповые правила действуют совместно; уровень «Запись» имеет приоритет над «Чтением».</p>
+            </div>
         </div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-title">Назначить права группе</div>
-        <form id="grantForm" class="grant-form">
-            <label>
-                <span>Источник</span>
-                <select id="grantSource" required>
-                    <option value="local">Локальная группа</option>
-                    <option value="domain">Доменная группа</option>
-                    <option value="any">Любой источник</option>
-                </select>
-            </label>
-            <label>
-                <span>Группа</span>
-                <input id="grantGroup" list="availableGroups" required autocomplete="off">
-                <datalist id="availableGroups"></datalist>
-            </label>
-            <label>
-                <span>Модуль</span>
-                <select id="grantModule" required></select>
-            </label>
-            <label>
-                <span>Уровень</span>
-                <select id="grantAccess" required>
-                    <option value="read">Чтение</option>
-                    <option value="write">Запись</option>
-                </select>
-            </label>
-            <button type="submit">Сохранить</button>
-        </form>
-        <div class="action-message" id="grantMessage"></div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-title">Назначенные роли</div>
         <div class="grant-table-wrap">
             <table class="grant-table">
                 <thead>
                     <tr>
+                        <th>Тип</th>
                         <th>Источник</th>
-                        <th>Группа</th>
+                        <th>Группа / пользователь</th>
                         <th>Модуль</th>
                         <th>Права</th>
                         <th>Изменил</th>
@@ -100,6 +137,6 @@
         </div>
     </section>
 </div>
-<script src="/static/js/access.js"></script>
+<script src="/static/js/access.js?v=1.1.0-ui7"></script>
 </body>
 </html>
