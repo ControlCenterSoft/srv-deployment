@@ -46,19 +46,35 @@ manager_pid() {
 worker_pids() {
     local parent="$1"
 
-    ps -eo pid=,ppid=,args= \
+    ps -eo pid=,ppid=,stat=,args= \
         | awk -v parent="$parent" '
-            $2 == parent && index($0, "--multiprocessing-fork") { print $1 }
+            $2 == parent && $3 !~ /^Z/ && index($0, "--multiprocessing-fork") { print $1 }
         '
 }
 
 remaining_pids() {
-    local pid
+    local pid parent row ppid stat args
+    parent="$(manager_pid)"
 
     for pid in "$@"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            printf '%s\n' "$pid"
-        fi
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+
+        row="$(ps -o ppid=,stat=,args= -p "$pid" 2>/dev/null || true)"
+        [[ -n "$row" ]] || continue
+
+        ppid="$(awk '{print $1}' <<< "$row")"
+        stat="$(awk '{print $2}' <<< "$row")"
+        args="$(cut -d' ' -f3- <<< "$(sed -E 's/^[[:space:]]+//' <<< "$row")")"
+
+        # A zombie has already exited; it only awaits reaping by its parent and
+        # must not make a successful worker rotation look like a failure.
+        [[ "$stat" == Z* ]] && continue
+
+        # PID reuse must not be mistaken for a stale Uvicorn worker.
+        [[ "$ppid" == "$parent" ]] || continue
+        [[ "$args" == *"--multiprocessing-fork"* ]] || continue
+
+        printf '%s\n' "$pid"
     done
 }
 
