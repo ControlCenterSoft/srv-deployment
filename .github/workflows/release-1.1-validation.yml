@@ -49,6 +49,11 @@ jobs:
           bash -n releases/1.1.0/rollback.sh
           bash -n releases/1.1.0/system/install-auth.sh
           bash -n releases/1.1.0/system/srvcc-configure-auto-updates
+          node --check releases/1.1.0/payload/static/js/system.js
+          node --check releases/1.1.0/payload/static/js/access.js
+          node --check releases/1.1.0/payload/static/js/services.js
+          node --check releases/1.1.0/payload/static/js/adguard.js
+          node --check releases/1.1.0/payload/static/js/torrents.js
           python3 -m compileall -q releases/1.1.0/payload/app
           python3 -m py_compile \
             releases/1.1.0/system/srv-control-system-agent \
@@ -67,6 +72,9 @@ jobs:
           grep -Fq 'Сервисы' releases/1.1.0/payload/templates/shell.html
           grep -Fq 'data-subject-type="group"' releases/1.1.0/payload/templates/access.html
           grep -Fq 'data-subject-type="user"' releases/1.1.0/payload/templates/access.html
+          grep -Fq 'source_real=' releases/1.1.0/system/srvcc-configure-auto-updates
+          grep -Fq 'flock -w 180' releases/1.1.0/system/srvcc-configure-auto-updates
+          grep -Fq 'update-module-grid' releases/1.1.0/payload/templates/system.html
 
   database-migration-validation:
     runs-on: ubuntu-latest
