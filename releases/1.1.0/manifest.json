@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "release_id": "1.1.0",
+  "release_version": "1.1.0",
+  "description": "System and domain authentication, group RBAC, GitHub and OS update controls, backups, Torrents rename, dedicated AdGuard VPN and Services administration.",
+  "upgrade_from": ">=1.0.0,<1.1.0",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "5cd2c59efb8fb43768d7632a11ba519402ca62aeb82569ace669854060e976cb"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "0df521d72cf61c1d330c0d70493a774ac804d9fc00b1d87af7051a951ee75717"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "d4e434109508603ad982559d56bdb5b2b55d51af34c81ac4b8f7b98e2e9d3593"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "edd5eb285553e1a360d85e763f92d70664a024ded59657b981fa044a40d4d9d4"
+    }
+  }
+}
