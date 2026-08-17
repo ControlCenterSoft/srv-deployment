@@ -16,26 +16,30 @@ if [[ -f "$META" ]]; then cp -a "$META" "$BACKUP_DIR/state/release.json"; else :
 log "Creating pre-release 1.4.0 backup"
 /usr/local/libexec/srv-control-backup create --actor system --reason pre-release-1.4.0 > "$BACKUP_DIR/state/pre-release-backup.json"
 log "Installing incremental 1.4.0 application files"
-# Large 1.4 modules are stored as deterministic source parts in the release
-# package and assembled atomically during deployment. This keeps each source
-# artifact reviewable while the installed application receives normal files.
 for p in "${changed[@]}"; do
     case "$p" in
         app/core/release14.py)
-            tmp="$(mktemp)"; cat "$RELEASE_DIR"/payload/app/core/release14.parts/*.part > "$tmp"
-            install -D -m 0640 -o root -g "$APP_GROUP" "$tmp" "$PROJECT/$p"; rm -f "$tmp" ;;
+            tmp="$(mktemp)"
+            cat "$RELEASE_DIR"/payload/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > "$tmp"
+            install -D -m 0640 -o root -g "$APP_GROUP" "$tmp" "$PROJECT/$p"
+            rm -f "$tmp" ;;
         app/routers/release14.py)
-            tmp="$(mktemp)"; cat "$RELEASE_DIR"/payload/app/routers/release14.parts/*.part > "$tmp"
-            install -D -m 0640 -o root -g "$APP_GROUP" "$tmp" "$PROJECT/$p"; rm -f "$tmp" ;;
+            tmp="$(mktemp)"
+            cat "$RELEASE_DIR"/payload/app/routers/release14.parts/{00,01,02,03}.part > "$tmp"
+            install -D -m 0640 -o root -g "$APP_GROUP" "$tmp" "$PROJECT/$p"
+            rm -f "$tmp" ;;
         *) install -D -m 0640 -o root -g "$APP_GROUP" "$RELEASE_DIR/payload/$p" "$PROJECT/$p" ;;
     esac
 done
-tmp_agent="$(mktemp)"; cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/*.part > "$tmp_agent"
+tmp_agent="$(mktemp)"
+cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > "$tmp_agent"
+python3 -m py_compile "$tmp_agent"
 install -m 0755 -o root -g root "$tmp_agent" /usr/local/libexec/srv-control-release14-agent
 rm -f "$tmp_agent"
 for u in srv-control-release14-agent.service srv-control-release14-agent.path srv-control-backup-retention.service srv-control-backup-retention.path; do install -m 0644 -o root -g root "$RELEASE_DIR/system/$u" "/etc/systemd/system/$u"; done
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$STATE_DIR/release14-actions" "$STATE_DIR/pxe" "$STATE_DIR/pxe/uploads"
-install -d -m 0755 -o root -g "$APP_GROUP" "$STATE_DIR/release14-results" /srv/pxe /srv/pxe/boot /srv/pxe/images /srv/pxe/profiles /srv/pxe/isos /srv/pxe/software /srv/tftp
+install -d -m 0755 -o root -g "$APP_GROUP" "$STATE_DIR/release14-results" /srv/pxe /srv/pxe/media /srv/pxe/media/boot /srv/pxe/media/images /srv/pxe/media/isos /srv/pxe/media/software /srv/tftp
+install -d -m 0750 -o root -g "$APP_GROUP" /srv/pxe/profiles
 log "Applying database migration 14f0a1400001"
 runuser -u "$APP_USER" -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 "$PROJECT/venv/bin/alembic" -c "$PROJECT/alembic.ini" upgrade head
 systemctl daemon-reload
