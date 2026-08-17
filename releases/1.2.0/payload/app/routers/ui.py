@@ -59,6 +59,11 @@ def adguard_module(request: Request):
     return render(request, "adguard.html")
 
 
+@router.get("/ui/module/minecraft", response_class=HTMLResponse)
+def minecraft_module(request: Request):
+    return render(request, "minecraft.html")
+
+
 @router.get("/ui/module/torrents", response_class=HTMLResponse)
 def torrents_module(request: Request):
     return render(request, "torrents.html")
