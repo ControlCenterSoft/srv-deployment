@@ -1,4 +1,116 @@
 
+def _samba_role() -> str:
+    return run(['testparm', '-s', '--parameter-name=server role'], timeout=20, check=False).strip().lower()
+
+
+def _samba_workgroup() -> str:
+    value = run(['testparm', '-s', '--parameter-name=workgroup'], timeout=20, check=False).strip()
+    return value or 'WORKGROUP'
+
+
+def _secret_subprocess(cmd: list[str], *, timeout: int = 60) -> str:
+    completed = subprocess.run(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+        env={**os.environ, 'DEBIAN_FRONTEND': 'noninteractive', 'HOME': '/root'},
+    )
+    if completed.returncode != 0:
+        raise RuntimeError('Samba PXE service-account operation failed: ' + (completed.stdout or '')[-2000:])
+    return completed.stdout or ''
+
+
+def _write_samba_config_safely(new_text: str) -> bool:
+    current = SMB_CONF.read_text(encoding='utf-8', errors='replace') if SMB_CONF.exists() else ''
+    if current == new_text:
+        return False
+    fd, name = tempfile.mkstemp(prefix='srvcc-smb.', suffix='.conf', dir=str(SMB_CONF.parent))
+    candidate = Path(name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle_fd:
+            handle_fd.write(new_text)
+            handle_fd.flush()
+            os.fsync(handle_fd.fileno())
+        os.chmod(candidate, 0o600)
+        run(['testparm', '-s', str(candidate)], timeout=30)
+        os.replace(candidate, SMB_CONF)
+        os.chmod(SMB_CONF, 0o644)
+        return True
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
+def ensure_pxe_samba_share() -> dict:
+    if not shutil.which('testparm') or not SMB_CONF.exists():
+        apt_install('samba', 'samba-common-bin')
+    cred = read_json(PXE_CRED, {})
+    password = str(cred.get('password') or '')
+    if not password:
+        password = secrets.token_urlsafe(24)
+
+    role = _samba_role()
+    if 'active directory domain controller' in role:
+        exists = subprocess.run(
+            ['samba-tool', 'user', 'show', 'srv-pxe'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode == 0
+        if exists:
+            _secret_subprocess(['samba-tool', 'user', 'setpassword', 'srv-pxe', f'--newpassword={password}'])
+        else:
+            _secret_subprocess(['samba-tool', 'user', 'create', 'srv-pxe', password, '--description=SRV PXE read-only media account'])
+        _secret_subprocess(['samba-tool', 'user', 'enable', 'srv-pxe'])
+        _secret_subprocess(['samba-tool', 'user', 'setexpiry', 'srv-pxe', '--noexpiry'])
+        login = _samba_workgroup() + '\\srv-pxe'
+    else:
+        try:
+            run(['id', 'srv-pxe'], timeout=10)
+        except Exception:
+            run(['useradd', '--system', '--no-create-home', '--shell', '/usr/sbin/nologin', 'srv-pxe'], timeout=30)
+        run(['smbpasswd', '-s', '-a', 'srv-pxe'], input_text=password + '\n' + password + '\n', timeout=30)
+        login = 'srv-pxe'
+
+    write_json(PXE_CRED, {'username': login, 'password': password, 'samba_role': role}, 0o600)
+    text_value = SMB_CONF.read_text(encoding='utf-8', errors='replace') if SMB_CONF.exists() else '[global]\nworkgroup = WORKGROUP\n'
+    pattern = re.compile(re.escape(SMB_BEGIN) + r'.*?' + re.escape(SMB_END) + r'\n?', re.S)
+    text_value = pattern.sub('', text_value).rstrip()
+    share = (
+        f'\n\n{SMB_BEGIN}\n[PXE$]\n'
+        f'    path = {PXE_MEDIA}\n'
+        '    browseable = no\n'
+        '    read only = yes\n'
+        '    guest ok = no\n'
+        '    valid users = srv-pxe\n'
+        f'{SMB_END}\n'
+    )
+    changed = _write_samba_config_safely(text_value + share)
+    if changed:
+        for unit in ('samba-ad-dc.service', 'smbd.service', 'samba.service'):
+            if subprocess.run(['systemctl', 'is-active', '--quiet', unit], check=False).returncode == 0:
+                run(['systemctl', 'restart', unit], timeout=60)
+                break
+    return {'username': login, 'password': password}
+
+
+def remove_pxe_samba_share() -> None:
+    if SMB_CONF.exists():
+        text_value = SMB_CONF.read_text(encoding='utf-8', errors='replace')
+        cleaned = re.sub(re.escape(SMB_BEGIN) + r'.*?' + re.escape(SMB_END) + r'\n?', '', text_value, flags=re.S)
+        changed = _write_samba_config_safely(cleaned)
+        if changed:
+            for unit in ('samba-ad-dc.service', 'smbd.service', 'samba.service'):
+                if subprocess.run(['systemctl', 'is-active', '--quiet', unit], check=False).returncode == 0:
+                    run(['systemctl', 'restart', unit], timeout=60)
+                    break
+    if 'active directory domain controller' in _samba_role():
+        subprocess.run(['samba-tool', 'user', 'disable', 'srv-pxe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    else:
+        subprocess.run(['smbpasswd', '-x', 'srv-pxe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
