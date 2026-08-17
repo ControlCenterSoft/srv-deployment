@@ -31,7 +31,7 @@ if '    mkdir -p -- "$restored/cache"\n' not in text:
 sid="""    restored_sid="$(ldbsearch -H "$restored_sam" -b '' -s base objectSid 2>/dev/null | awk '/^objectSid: /{print $2; exit}')"\n    [[ "$restored_sid" == "$live_sid" ]] || fail "restored domain SID mismatch"\n"""
 sidr="""    restored_base_dn="$(ldbsearch -H "$restored_sam" -b '' -s base defaultNamingContext 2>/dev/null | awk -F': ' '/^defaultNamingContext: /{print $2; exit}')"\n    [[ -n "$restored_base_dn" ]] || fail "restored domain naming context missing"\n    restored_sid="$(ldbsearch -H "$restored_sam" -b "$restored_base_dn" -s base objectSid 2>/dev/null | awk '/^objectSid: /{print $2; exit}')"\n    [[ -n "$restored_sid" ]] || fail "restored domain SID missing"\n    [[ "$restored_sid" == "$live_sid" ]] || fail "restored domain SID mismatch"\n"""
 if 'restored_base_dn=' not in text:
-    if sid not in text: raise SystemExit('acceptance SID hotfix anchor missing')
+    if sid not in text: raise SystemExit('acceptance SID hotfix anchor not found; refusing unsafe patch')
     text=text.replace(sid,sidr,1)
 dst.write_text(text,encoding='utf-8')
 PY
