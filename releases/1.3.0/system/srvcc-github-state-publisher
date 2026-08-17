@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 027
+
+REPO_URL="${SRVCC_REPO_URL:-https://github.com/filosoff31/srv-deployment.git}"
+STATE_BRANCH="${SRVCC_STATE_BRANCH:-server-state}"
+PROJECT="${SRVCC_PROJECT:-/opt/srv-control}"
+AGENT_ROOT="${SRVCC_AGENT_ROOT:-/var/lib/srvcc-agent}"
+STATE_REPO="${SRVCC_STATE_REPO:-${AGENT_ROOT}/state-repo}"
+RELEASE_META="${SRVCC_RELEASE_META:-/var/lib/srv-control/release.json}"
+LOG="${SRVCC_LOG:-/var/log/srvcc-agent.log}"
+LOCK="${AGENT_ROOT}/state-publish.lock"
+
+log() { printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG"; }
+fail() { log "STATE ERROR: $*"; printf 'STATE ERROR: %s\n' "$*" >&2; exit 1; }
+
+repo_label() {
+    local value="${REPO_URL%.git}"
+    value="${value#https://github.com/}"
+    value="${value#http://github.com/}"
+    value="${value#git@github.com:}"
+    printf '%s' "$value"
+}
+
+is_github_remote() {
+    [[ "$REPO_URL" == https://github.com/* || "$REPO_URL" == http://github.com/* || "$REPO_URL" == git@github.com:* ]]
+}
+
+require_tools_and_auth() {
+    local command
+    for command in git rsync sed grep find flock; do
+        command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
+    done
+    if is_github_remote; then
+        command -v gh >/dev/null 2>&1 || fail "GitHub CLI is required for server-state publishing"
+        gh auth status --hostname github.com >/dev/null 2>&1 \
+            || fail "GitHub write authentication is unavailable"
+        gh auth setup-git >/dev/null 2>&1 || true
+    fi
+}
+
+git_identity() {
+    git -C "$STATE_REPO" config user.name "SRV Control Center Agent"
+    git -C "$STATE_REPO" config user.email "srvcc-agent@localhost"
+}
+
+remote_state_exists() {
+    git ls-remote --exit-code --heads "$REPO_URL" "$STATE_BRANCH" >/dev/null 2>&1
+}
+
+ensure_state_repo() {
+    install -d -m 0750 "$AGENT_ROOT"
+
+    if [[ ! -d "$STATE_REPO/.git" ]]; then
+        if [[ -e "$STATE_REPO" ]]; then
+            mv "$STATE_REPO" "${STATE_REPO}.broken.$(date +%Y%m%dT%H%M%S)"
+        fi
+        if remote_state_exists; then
+            git clone --no-tags --single-branch --branch "$STATE_BRANCH" "$REPO_URL" "$STATE_REPO" >/dev/null 2>&1 \
+                || fail "failed to recreate state repository from origin/$STATE_BRANCH"
+        else
+            git clone --no-tags --single-branch --branch main "$REPO_URL" "$STATE_REPO" >/dev/null 2>&1 \
+                || fail "failed to clone repository while creating state branch"
+            git -C "$STATE_REPO" checkout -B "$STATE_BRANCH" >/dev/null 2>&1
+            git_identity
+            git -C "$STATE_REPO" push -u origin "$STATE_BRANCH" >/dev/null 2>&1 \
+                || fail "failed to create remote state branch $STATE_BRANCH"
+        fi
+    fi
+
+    git -C "$STATE_REPO" remote set-url origin "$REPO_URL" >/dev/null 2>&1 \
+        || fail "failed to repair state repository origin"
+    git_identity
+
+    if remote_state_exists; then
+        git -C "$STATE_REPO" fetch --prune origin "+refs/heads/${STATE_BRANCH}:refs/remotes/origin/${STATE_BRANCH}" >/dev/null 2>&1 \
+            || fail "failed to fetch origin/$STATE_BRANCH"
+        git -C "$STATE_REPO" checkout -B "$STATE_BRANCH" "origin/$STATE_BRANCH" >/dev/null 2>&1 \
+            || fail "failed to checkout $STATE_BRANCH"
+        git -C "$STATE_REPO" reset --hard "origin/$STATE_BRANCH" >/dev/null
+    else
+        git -C "$STATE_REPO" checkout -B "$STATE_BRANCH" >/dev/null 2>&1 \
+            || fail "failed to create local state branch $STATE_BRANCH"
+        git -C "$STATE_REPO" push -u origin "$STATE_BRANCH" >/dev/null 2>&1 \
+            || fail "failed to create remote state branch $STATE_BRANCH"
+    fi
+    git -C "$STATE_REPO" clean -fd >/dev/null 2>&1 || true
+}
+
+copy_source() {
+    local src="$1" dst="$2"
+    mkdir -p "$dst"
+    rsync -a --delete \
+        --exclude='.git/' \
+        --exclude='.env' \
+        --exclude='.env.*' \
+        --exclude='secrets/' \
+        --exclude='secret/' \
+        --exclude='credentials/' \
+        --exclude='credential/' \
+        --exclude='*.pem' \
+        --exclude='*.key' \
+        --exclude='*.p12' \
+        --exclude='*.pfx' \
+        --exclude='*.jks' \
+        --exclude='id_rsa*' \
+        --exclude='id_ed25519*' \
+        --exclude='*.db' \
+        --exclude='*.sqlite' \
+        --exclude='*.sqlite3' \
+        --exclude='*.log' \
+        --exclude='logs/' \
+        --exclude='log/' \
+        --exclude='run/' \
+        --exclude='runtime/' \
+        --exclude='data/' \
+        --exclude='uploads/' \
+        --exclude='media/' \
+        --exclude='backup/' \
+        --exclude='backups/' \
+        --exclude='.venv/' \
+        --exclude='venv/' \
+        --exclude='env/' \
+        --exclude='node_modules/' \
+        --exclude='__pycache__/' \
+        --exclude='.cache/' \
+        --exclude='cache/' \
+        --exclude='tmp/' \
+        --exclude='temp/' \
+        "${src}/" "${dst}/"
+}
+
+redact_stream() {
+    sed -E \
+        -e 's#(Authorization:[[:space:]]*Bearer[[:space:]]+)[^[:space:];]+#\1***REDACTED***#Ig' \
+        -e 's#((password|passwd|secret|token|api[_-]?key|client[_-]?secret)[[:space:]]*[:=][[:space:]]*)[^[:space:]";]+#\1***REDACTED***#Ig' \
+        -e 's#(Environment="?[^" ]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|CLIENT_SECRET)=)[^"[:space:]]+#\1***REDACTED***#Ig'
+}
+
+release_value() {
+    python3 - "$RELEASE_META" "$1" <<'PY'
+import json,pathlib,sys
+try:
+    data=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+except Exception:
+    data={}
+value=data.get(sys.argv[2])
+print(value if isinstance(value,str) else '')
+PY
+}
+
+collect_inventory() {
+    local root="$1"
+    rm -rf "$root/server-state" "$root/source"
+    mkdir -p "$root/server-state/systemd" "$root/server-state/nginx" "$root/source"
+    copy_source "$PROJECT" "$root/source"
+
+    {
+        echo "schema_version=2"
+        echo "collected_at=$(date -Is)"
+        echo "hostname=$(hostname -f 2>/dev/null || hostname)"
+        echo "project_path=$PROJECT"
+        echo "release_version=$(release_value version)"
+        echo "release_id=$(release_value release_id)"
+        echo "release_git_sha=$(release_value git_sha)"
+        echo "kernel=$(uname -r)"
+        echo "architecture=$(dpkg --print-architecture 2>/dev/null || uname -m)"
+        echo "os_pretty_name=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+        echo "state_branch=$STATE_BRANCH"
+    } > "$root/server-state/summary.env"
+
+    {
+        echo '=== relevant systemd unit files ==='
+        systemctl list-unit-files --type=service --no-pager 2>/dev/null | grep -Ei 'srv|control|nginx|uvicorn|gunicorn' || true
+        echo
+        echo '=== listening sockets ==='
+        ss -lntup 2>/dev/null || true
+    } | redact_stream > "$root/server-state/runtime.txt"
+
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] || continue
+        {
+            echo "# unit: $unit"
+            systemctl cat "$unit" 2>/dev/null || true
+            echo
+            systemctl status "$unit" --no-pager 2>/dev/null || true
+        } | redact_stream > "$root/server-state/systemd/${unit}.txt"
+    done < <(
+        systemctl list-unit-files --type=service --no-legend 2>/dev/null \
+            | awk '{print $1}' \
+            | grep -Ei 'srv.*control|control.*center|srv-control|nginx' || true
+    )
+
+    if [[ -d /etc/nginx ]]; then
+        while IFS= read -r file; do
+            local rel="${file#/etc/nginx/}"
+            mkdir -p "$root/server-state/nginx/$(dirname "$rel")"
+            redact_stream < "$file" > "$root/server-state/nginx/$rel" || true
+        done < <(find /etc/nginx -type f \( -name '*.conf' -o -path '*/sites-enabled/*' -o -path '*/sites-available/*' \) 2>/dev/null || true)
+    fi
+
+    if command -v dpkg-query >/dev/null 2>&1; then
+        dpkg-query -W -f='${binary:Package}\t${Version}\n' 2>/dev/null > "$root/server-state/dpkg-packages.txt" || true
+    fi
+}
+
+security_scan() {
+    local report
+    report="$(mktemp)"
+    grep -RInaE \
+        --binary-files=without-match \
+        --exclude-dir='.git' \
+        --exclude='SECURITY_SCAN.txt' \
+        '(-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})' \
+        "$STATE_REPO/source" "$STATE_REPO/server-state" > "$report" 2>/dev/null || true
+    if [[ -s "$report" ]]; then
+        cp "$report" "$AGENT_ROOT/SECURITY_SCAN_BLOCKED.txt"
+        rm -f "$report"
+        fail "potential secret detected; nothing was pushed (see $AGENT_ROOT/SECURITY_SCAN_BLOCKED.txt)"
+    fi
+    rm -f "$report" "$AGENT_ROOT/SECURITY_SCAN_BLOCKED.txt"
+}
+
+publish() {
+    [[ -d "$PROJECT" ]] || fail "Control Center project not found: $PROJECT"
+    touch "$LOG"
+    chmod 0640 "$LOG" 2>/dev/null || true
+    require_tools_and_auth
+
+    exec 8>"$LOCK"
+    flock -n 8 || { log 'STATE PASS: publisher skipped because another state publish is active.'; return 0; }
+
+    ensure_state_repo
+    collect_inventory "$STATE_REPO"
+    security_scan
+
+    git -C "$STATE_REPO" add -A -- source server-state
+    if git -C "$STATE_REPO" diff --cached --quiet; then
+        log "STATE PASS: server-state unchanged branch=$STATE_BRANCH."
+        return 0
+    fi
+
+    git -C "$STATE_REPO" commit -m "server-state: $(date -Is)" >/dev/null \
+        || fail "failed to commit server state"
+    git -C "$STATE_REPO" push origin "HEAD:${STATE_BRANCH}" >/dev/null 2>&1 \
+        || fail "failed to push server state to origin/$STATE_BRANCH"
+
+    local sha
+    sha="$(git -C "$STATE_REPO" rev-parse HEAD)"
+    log "STATE PASS: Server state pushed to $(repo_label) branch=$STATE_BRANCH sha=$sha."
+}
+
+publish "$@"
