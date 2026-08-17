@@ -50,7 +50,7 @@ def main() -> int:
     require(core, 'def peek_boot_profile(', 'def consume_boot_profile(', 'install_authorized=false', "status='installing'")
     boot_route = router[router.index("@router.get('/pxe/boot.ipxe'"):router.index("@router.post('/pxe/report/")]
     require(boot_route, 'peek_boot_profile(mac)', 'boot_file.is_file()', 'Authorization retained')
-    if 'boot_profile(mac)' in boot_route:
+    if re.search(r'(?<!peek_)boot_profile\(mac\)', boot_route):
         fail('boot.ipxe still consumes authorization before payload validation')
 
     # DHCP option 93 matrix and iPXE loop breaking.
