@@ -1,0 +1,80 @@
+
+
+def peek_boot_profile(mac_value: str) -> dict | None:
+    """Return an authorized PXE profile without consuming one-time authorization.
+
+    The boot authorization is deliberately consumed only after iPXE has fetched
+    every boot-critical profile artifact.  This prevents a transient HTTP/TFTP
+    or publication failure from burning the one-time install permission.
+    """
+    mac = normalize_mac(mac_value)
+    with engine.begin() as connection:
+        row = connection.execute(text(
+            '''SELECT p.id,p.status,p.install_authorized,p.one_time,p.config,
+                      i.kind,i.id AS image_id,i.architecture,i.metadata,d.mac
+               FROM pxe_profiles p
+               JOIN devices d ON d.id=p.device_id
+               JOIN os_images i ON i.id=p.os_image_id
+               WHERE d.mac=:mac FOR UPDATE'''), {'mac': mac}).mappings().first()
+        if not row or not row['install_authorized'] or row['status'] != 'authorized':
+            return None
+        config = row.get('config') or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except Exception:
+                config = {}
+        boot_token = str(config.get('boot_token') or '')
+        if not boot_token:
+            boot_token = secrets.token_urlsafe(32)
+            config = {**config, 'boot_token': boot_token}
+            connection.execute(
+                text('UPDATE pxe_profiles SET config=CAST(:config AS jsonb),last_boot_at=now(),updated_at=now() WHERE id=:id'),
+                {'config': json.dumps(config, ensure_ascii=False), 'id': int(row['id'])},
+            )
+        else:
+            connection.execute(text('UPDATE pxe_profiles SET last_boot_at=now(),updated_at=now() WHERE id=:id'), {'id': int(row['id'])})
+        result = dict(row)
+        result['config'] = config
+        return result
+
+
+def profile_boot_token_valid(profile_id: int, token: str) -> bool:
+    row = _one('SELECT id,status,config FROM pxe_profiles WHERE id=:id', {'id': profile_id})
+    if not row or str(row.get('status') or '') not in {'authorized', 'installing'}:
+        return False
+    config = row.get('config') or {}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            config = {}
+    expected = str(config.get('boot_token') or '')
+    return bool(expected) and secrets.compare_digest(expected, str(token or ''))
+
+
+def consume_boot_profile(profile_id: int, mac_value: str, token: str) -> bool:
+    """Atomically consume an authorized profile after boot payload staging."""
+    mac = normalize_mac(mac_value)
+    with engine.begin() as connection:
+        row = connection.execute(text(
+            '''SELECT p.id,p.status,p.install_authorized,p.config,d.mac
+               FROM pxe_profiles p JOIN devices d ON d.id=p.device_id
+               WHERE p.id=:id AND d.mac=:mac FOR UPDATE'''),
+            {'id': profile_id, 'mac': mac},
+        ).mappings().first()
+        if not row or not row['install_authorized'] or row['status'] != 'authorized':
+            return False
+        config = row.get('config') or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except Exception:
+                config = {}
+        expected = str(config.get('boot_token') or '')
+        if not expected or not secrets.compare_digest(expected, str(token or '')):
+            return False
+        connection.execute(text(
+            "UPDATE pxe_profiles SET install_authorized=false,status='installing',consumed_at=now(),last_boot_at=now(),updated_at=now() WHERE id=:id"
+        ), {'id': profile_id})
+        return True
