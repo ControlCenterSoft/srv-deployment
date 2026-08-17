@@ -126,6 +126,12 @@ def validate_pxe_runtime() -> str:
         PXE_MEDIA / 'boot/wimboot',
         PXE_MEDIA / 'boot/wimboot.i386',
         PXE_MEDIA / 'boot/wimboot.arm64',
+        PXE_MEDIA / 'boot/entry.ipxe',
+        PXE_MEDIA / 'httpboot/i386/snponly.efi',
+        PXE_MEDIA / 'httpboot/x86_64-sb/snponly-shim.efi',
+        PXE_MEDIA / 'httpboot/arm32/snponly.efi',
+        PXE_MEDIA / 'httpboot/arm64-sb/snponly-shim.efi',
+        PXE_MEDIA / 'httpboot/bios/undionly.kpxe',
     ]
     for directory in ('', 'i386', 'x86_64', 'x86_64-sb', 'arm32', 'arm64', 'arm64-sb'):
         required.append((TFTP_ROOT / directory / 'autoexec.ipxe') if directory else TFTP_ROOT / 'autoexec.ipxe')
@@ -137,7 +143,7 @@ def validate_pxe_runtime() -> str:
     if DHCP_CONF.is_file() and shutil.which('dnsmasq'):
         run(['dnsmasq', '--test'], timeout=30)
         text_value = DHCP_CONF.read_text(encoding='utf-8', errors='replace')
-        for arch in ('0', '6', '7', '9', '10', '11'):
+        for arch in ('0', '6', '7', '9', '10', '11', '15', '16', '17', '18', '19', '20'):
             if f'option:client-arch,{arch}' not in text_value:
                 raise RuntimeError(f'DHCP PXE architecture option 93 value {arch} is missing')
         required_boot_rules = (
@@ -147,12 +153,17 @@ def validate_pxe_runtime() -> str:
             'tag:pxe-arm32,arm32/snponly.efi',
             'tag:pxe-arm64,arm64-sb/snponly-shim.efi',
             'tag:pxe-noarch,undionly.kpxe',
-            'tag:ipxe,autoexec.ipxe',
+            'tag:ipxe,http://',
+            'tag:pxe-http-efi32,http://',
+            'tag:pxe-http-efi64,http://',
+            'tag:pxe-http-arm32,http://',
+            'tag:pxe-http-arm64,http://',
+            'tag:pxe-http-bios,http://',
         )
         for rule in required_boot_rules:
             if rule not in text_value:
                 raise RuntimeError(f'DHCP PXE boot rule is missing: {rule}')
-    return 'PXE runtime validation passed for BIOS + UEFI IA32/x64/ARM32/ARM64 and x64/ARM64 Secure Boot assets'
+    return 'PXE runtime validation passed for TFTP PXE + UEFI HTTP Boot, BIOS/UEFI IA32/x64/ARM32/ARM64 and x64/ARM64 Secure Boot assets'
 
 
 # Official GitHub Release digests. Runtime installation refuses any asset
@@ -225,6 +236,18 @@ def _pxe_runtime_active() -> bool:
     ).returncode == 0
 
 
+def _http_boot_assets_ready() -> bool:
+    required = (
+        PXE_MEDIA / 'boot/entry.ipxe',
+        PXE_MEDIA / 'httpboot/i386/snponly.efi',
+        PXE_MEDIA / 'httpboot/x86_64-sb/snponly-shim.efi',
+        PXE_MEDIA / 'httpboot/arm32/snponly.efi',
+        PXE_MEDIA / 'httpboot/arm64-sb/snponly-shim.efi',
+        PXE_MEDIA / 'httpboot/bios/undionly.kpxe',
+    )
+    return all(path.is_file() and path.stat().st_size > 0 for path in required)
+
+
 def apply_dhcp() -> str:
     rows = psql_json('SELECT * FROM dhcp_configs WHERE id=1') or []
     if not rows:
@@ -260,11 +283,9 @@ def apply_dhcp() -> str:
         lines.append(f"dhcp-host={item['mac']},{item['ip_address']}{host}")
 
     if _pxe_runtime_active():
-        # DHCP option 93 may legally contain an architecture list. Raw matches
-        # can therefore set several tags at once. Derive one priority tag so a
-        # client can never receive contradictory bootfile names.
         lines += [
             'dhcp-vendorclass=set:pxeclient,PXEClient',
+            'dhcp-vendorclass=set:httpclient,HTTPClient',
             'dhcp-match=set:ipxe,175',
             'dhcp-userclass=set:ipxe,iPXE',
             'dhcp-match=set:bios,option:client-arch,0',
@@ -273,20 +294,40 @@ def apply_dhcp() -> str:
             'dhcp-match=set:efi64,option:client-arch,9',
             'dhcp-match=set:arm32,option:client-arch,10',
             'dhcp-match=set:arm64,option:client-arch,11',
-            'tag-if=set:pxe-arm64,tag:arm64,tag:!ipxe',
-            'tag-if=set:pxe-arm32,tag:arm32,tag:!arm64,tag:!ipxe',
-            'tag-if=set:pxe-efi64,tag:efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
-            'tag-if=set:pxe-efi32,tag:efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
-            'tag-if=set:pxe-bios,tag:bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
-            'tag-if=set:pxe-noarch,tag:pxeclient,tag:!bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+            'dhcp-match=set:http-efi32,option:client-arch,15',
+            'dhcp-match=set:http-efi64,option:client-arch,16',
+            'dhcp-match=set:http-ebc,option:client-arch,17',
+            'dhcp-match=set:http-arm32,option:client-arch,18',
+            'dhcp-match=set:http-arm64,option:client-arch,19',
+            'dhcp-match=set:http-bios,option:client-arch,20',
+            'tag-if=set:pxe-arm64,tag:arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-arm32,tag:arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-efi64,tag:efi64,tag:!arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-efi32,tag:efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-bios,tag:bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-noarch,tag:pxeclient,tag:!bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!http-efi32,tag:!http-efi64,tag:!http-ebc,tag:!http-arm32,tag:!http-arm64,tag:!http-bios,tag:!ipxe',
             f'dhcp-boot=tag:pxe-bios,undionly.kpxe,,{server}',
             f'dhcp-boot=tag:pxe-efi32,i386/snponly.efi,,{server}',
             f'dhcp-boot=tag:pxe-efi64,x86_64-sb/snponly-shim.efi,,{server}',
             f'dhcp-boot=tag:pxe-arm32,arm32/snponly.efi,,{server}',
             f'dhcp-boot=tag:pxe-arm64,arm64-sb/snponly-shim.efi,,{server}',
             f'dhcp-boot=tag:pxe-noarch,undionly.kpxe,,{server}',
-            f'dhcp-boot=tag:ipxe,autoexec.ipxe,,{server}',
+            f'dhcp-boot=tag:ipxe,http://{server}/pxe/files/boot/entry.ipxe,,{server}',
         ]
+        if _http_boot_assets_ready():
+            http_rules = (
+                ('pxe-http-efi32', 'http-efi32', 'httpboot/i386/snponly.efi'),
+                ('pxe-http-efi64', 'http-efi64', 'httpboot/x86_64-sb/snponly-shim.efi'),
+                ('pxe-http-arm32', 'http-arm32', 'httpboot/arm32/snponly.efi'),
+                ('pxe-http-arm64', 'http-arm64', 'httpboot/arm64-sb/snponly-shim.efi'),
+                ('pxe-http-bios', 'http-bios', 'httpboot/bios/undionly.kpxe'),
+            )
+            for selected, raw, path in http_rules:
+                lines.append(f'tag-if=set:{selected},tag:httpclient,tag:{raw},tag:!ipxe')
+                lines.append(f'dhcp-option=tag:{selected},60,HTTPClient')
+                lines.append(f'dhcp-boot=tag:{selected},http://{server}/pxe/files/{path},,{server}')
+            # HTTP EBC (architecture 17) intentionally has no boot rule because
+            # the official iPXE server bundle has no architecture-safe EBC NBP.
 
     DHCP_CONF.parent.mkdir(parents=True, exist_ok=True)
     DHCP_CONF.write_text('\n'.join(lines) + '\n', encoding='utf-8')
@@ -295,9 +336,10 @@ def apply_dhcp() -> str:
     run(['systemctl', 'enable', '--now', 'dnsmasq.service'], timeout=30)
     run(['systemctl', 'restart', 'dnsmasq.service'], timeout=30)
     pxe_state = 'enabled' if _pxe_runtime_active() else 'disabled'
+    http_state = 'enabled' if _pxe_runtime_active() and _http_boot_assets_ready() else 'disabled'
     return (
         f"DHCP active on {c['interface']} range {c['range_start']}..{c['range_end']} "
-        f"PXE={pxe_state} next-server={server}"
+        f"PXE={pxe_state} HTTPBoot={http_state} next-server={server}"
     )
 
 
@@ -311,12 +353,49 @@ def _server_ip() -> str:
     raise RuntimeError('DHCP/LAN interface must be configured before publishing a PXE profile')
 
 
+_install_pxe_v14 = install_pxe
+
+
+def _publish_http_boot_assets() -> None:
+    mapping = {
+        'bios/undionly.kpxe': TFTP_ROOT / 'undionly.kpxe',
+        'i386/snponly.efi': TFTP_ROOT / 'i386/snponly.efi',
+        'x86_64-sb/snponly-shim.efi': TFTP_ROOT / 'x86_64-sb/snponly-shim.efi',
+        'arm32/snponly.efi': TFTP_ROOT / 'arm32/snponly.efi',
+        'arm64-sb/snponly-shim.efi': TFTP_ROOT / 'arm64-sb/snponly-shim.efi',
+    }
+    root = PXE_MEDIA / 'httpboot'
+    for relative, source in mapping.items():
+        if not source.is_file():
+            raise RuntimeError(f'cannot publish HTTP Boot asset; source missing: {source}')
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        os.chmod(target, 0o644)
+        # autoexec is a compatibility path; if a platform does not auto-load it,
+        # the iPXE DHCP user-class rule returns the HTTP entry script instead.
+        autoexec = target.parent / 'autoexec.ipxe'
+        autoexec.write_text(_pxe_autoexec(), encoding='utf-8')
+        os.chmod(autoexec, 0o644)
+
+    entry = PXE_MEDIA / 'boot/entry.ipxe'
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text(_pxe_autoexec(), encoding='utf-8')
+    os.chmod(entry, 0o644)
+
+
+def install_pxe() -> str:
+    result = _install_pxe_v14()
+    _publish_http_boot_assets()
+    if shutil.which('dnsmasq') and DHCP_CONF.exists():
+        apply_dhcp()
+    return result + '; native UEFI HTTP Boot assets published'
+
+
 def remove_pxe() -> str:
     subprocess.run(['systemctl', 'disable', '--now', 'tftpd-hpa.service'], check=False)
     remove_pxe_samba_share()
     run(['apt-get', 'remove', '-y', 'tftpd-hpa'], timeout=900)
-    # Firmware binaries and images are preserved intentionally, but DHCP must
-    # immediately stop advertising those now-dead TFTP boot files.
     if shutil.which('dnsmasq') and DHCP_CONF.exists():
         apply_dhcp()
     return 'PXE service removed; DHCP boot advertisement disabled; images/profiles preserved'
@@ -347,8 +426,6 @@ def publish_windows(profile: dict, config: dict, target: Path, server: str, cred
 
     safe_profile = dict(profile)
     safe_meta = dict(meta)
-    # The legacy generator uses substring matching; put the already exact-
-    # validated edition first so its generated index is deterministic.
     safe_meta['editions'] = [selected] + [item for item in editions if item is not selected]
     safe_profile['metadata'] = safe_meta
     safe_profile['windows_edition'] = str(selected.get('name') or requested)
@@ -381,7 +458,6 @@ _publish_linux_v14 = publish_linux
 def publish_linux(profile: dict, config: dict, target: Path, server: str) -> None:
     _publish_linux_v14(profile, config, target, server)
 
-    # Debian must not pause to request an unspecified root password.
     preseed_path = target / 'preseed.cfg'
     if preseed_path.is_file():
         value = preseed_path.read_text(encoding='utf-8')
@@ -390,9 +466,6 @@ def publish_linux(profile: dict, config: dict, target: Path, server: str) -> Non
             value = root_rule + value
             preseed_path.write_text(value, encoding='utf-8')
 
-    # iPXE's shim command skips the download when Secure Boot is not needed.
-    # Therefore every Linux profile gets a shim guard. If the ISO did not
-    # provide a signed shim, Secure Boot fails here BEFORE one-time consume.
     boot_path = target / 'boot.ipxe'
     value = boot_path.read_text(encoding='utf-8')
     if '\nshim ' not in value:
