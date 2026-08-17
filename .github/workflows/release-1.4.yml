@@ -30,7 +30,8 @@ jobs:
             /tmp/release14-core.py \
             /tmp/release14-router.py \
             releases/1.4.0/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py \
-            /tmp/release14-agent.py
+            /tmp/release14-agent.py \
+            releases/1.4.0/system/srv-control-pxe-probe
           for f in releases/1.4.0/payload/static/js/*.js; do node --check "$f"; done
 
       - name: Verify pinned upstream PXE boot assets
@@ -90,6 +91,15 @@ jobs:
           acceptance=Path('releases/1.4.0/acceptance.sh').read_text()
           assert 'unknown PXE device received installation payload' in acceptance
           assert 'private PXE profile leaked through static media root' in acceptance
+          assert 'srv-control-pxe-probe --json' in acceptance
           apply=Path('releases/1.4.0/apply.sh').read_text()
           assert "{00,01,02,03,04,05,06,07,08,09,10,11,12}.part" in apply
+          assert 'srv-control-pxe-probe' in apply
+          rollback=Path('releases/1.4.0/rollback.sh').read_text()
+          assert 'srv-control-pxe-probe' in rollback
+          probe=Path('releases/1.4.0/system/srv-control-pxe-probe').read_text()
+          assert "socket.SOCK_DGRAM" in probe
+          assert "(server, 69)" in probe
+          assert "/pxe/files/boot/entry.ipxe" in probe
+          assert "02:00:00:FE:ED:01" in probe
           PY
