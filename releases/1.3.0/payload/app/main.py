@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.system_auth import parse_session
 from app.routers.admin import router as admin_router
 from app.routers.api import router as api_router
+from app.routers.share_directory import router as share_directory_router
 from app.routers.ui import router as ui_router
 
 
@@ -26,6 +27,7 @@ app.mount(
 
 app.include_router(api_router)
 app.include_router(admin_router)
+app.include_router(share_directory_router)
 app.include_router(ui_router)
 
 PUBLIC_EXACT = {
