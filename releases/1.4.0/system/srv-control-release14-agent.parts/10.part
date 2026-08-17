@@ -7,18 +7,40 @@ def _software_commands(profile_id: int, server: str, cred: dict) -> list[str]:
       WHERE pg.pxe_profile_id={profile_id} AND s.enabled=true ORDER BY s.name""") or []
     commands = []
     for row in rows:
+        name = str(row.get('name') or 'software').replace('\r', ' ').replace('\n', ' ')[:120]
         path = str(row.get('package_path') or '')
+        package = Path(path)
         try:
-            rel = Path(path).resolve().relative_to(PXE_MEDIA.resolve())
-        except Exception:
-            continue
+            rel = package.resolve().relative_to(PXE_MEDIA.resolve())
+        except Exception as exc:
+            raise RuntimeError(f'PXE software package is outside managed media root: {name}') from exc
+        if not package.is_file():
+            raise RuntimeError(f'PXE software package is missing: {name} ({package})')
         unc = 'Z:\\' + str(rel).replace('/', '\\')
-        args = str(row.get('install_args') or '')
+        args = str(row.get('install_args') or '').replace('\r', ' ').replace('\n', ' ')
         low = path.lower()
+        commands.append(f'echo Installing {name}')
         if low.endswith('.msi'):
-            commands.append(f'msiexec /i "{unc}" /qn /norestart {args}'.strip())
-        elif low.endswith(('.exe', '.cmd', '.bat')):
-            commands.append(f'"{unc}" {args}'.strip())
+            commands += [
+                f'msiexec /i "{unc}" /qn /norestart {args}'.strip(),
+                'set "SRV_RC=%ERRORLEVEL%"',
+                'if "%SRV_RC%"=="3010" set "SRV_REBOOT=1"',
+                'if not "%SRV_RC%"=="0" if not "%SRV_RC%"=="3010" goto setup_failed',
+            ]
+        elif low.endswith('.exe'):
+            commands += [
+                f'"{unc}" {args}'.strip(),
+                'set "SRV_RC=%ERRORLEVEL%"',
+                'if "%SRV_RC%"=="3010" set "SRV_REBOOT=1"',
+                'if not "%SRV_RC%"=="0" if not "%SRV_RC%"=="3010" goto setup_failed',
+            ]
+        elif low.endswith(('.cmd', '.bat')):
+            commands += [
+                f'call "{unc}" {args}'.strip(),
+                'if errorlevel 1 goto setup_failed',
+            ]
+        else:
+            raise RuntimeError(f'unsupported PXE software package type: {name} ({package.suffix})')
     return commands
 
 
@@ -75,26 +97,36 @@ def publish_windows(profile: dict, config: dict, target: Path, server: str, cred
 
     setup = [
         '@echo off',
+        'setlocal',
+        'set "SRV_REBOOT=0"',
         f'net use Z: \\\\{server}\\PXE$ /user:{cred["username"]} {cred["password"]}',
-        'if errorlevel 1 exit /b 31',
+        'if errorlevel 1 goto setup_failed',
     ]
     setup += _software_commands(int(profile['id']), server, cred)
     if profile.get('domain_join') and config.get('domain_user') and config.get('domain_password') and profile.get('domain_name'):
         du = str(config['domain_user']).replace("'", "''")
         dp = str(config['domain_password']).replace("'", "''")
         domain = str(profile['domain_name']).replace("'", "''")
-        setup.append(
-            f'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=ConvertTo-SecureString \'{dp}\' -AsPlainText -Force;$c=New-Object System.Management.Automation.PSCredential(\'{du}\',$p);Add-Computer -DomainName \'{domain}\' -Credential $c -Force"'
-        )
+        setup += [
+            f'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=ConvertTo-SecureString \'{dp}\' -AsPlainText -Force;$c=New-Object System.Management.Automation.PSCredential(\'{du}\',$p);Add-Computer -DomainName \'{domain}\' -Credential $c -Force"',
+            'if errorlevel 1 goto setup_failed',
+            'set "SRV_REBOOT=1"',
+        ]
     setup += [
-        f'curl.exe -fsS -X POST http://{server}/pxe/report/{profile["id"]}/{report_token}/success >NUL 2>NUL',
+        f'curl.exe -fsS --retry 5 --retry-delay 2 -X POST http://{server}/pxe/report/{profile["id"]}/{report_token}/success >NUL 2>NUL',
         'net use Z: /delete /y >NUL 2>NUL',
         'del /f /q "%~f0" >NUL 2>NUL',
+        'if "%SRV_REBOOT%"=="1" shutdown.exe /r /t 5 /c "SRV Control Center post-install completed"',
         'exit /b 0',
+        ':setup_failed',
+        f'curl.exe -fsS --retry 5 --retry-delay 2 -X POST http://{server}/pxe/report/{profile["id"]}/{report_token}/failed >NUL 2>NUL',
+        'net use Z: /delete /y >NUL 2>NUL',
+        'del /f /q "%~f0" >NUL 2>NUL',
+        'exit /b 1',
     ]
     (target / 'SetupComplete.cmd').write_text('\r\n'.join(setup) + '\r\n', encoding='utf-8')
 
-    start = f'''@echo off\r\nsetlocal\r\nwpeinit\r\nwpeutil WaitForNetwork\r\nwpeutil UpdateBootInfo\r\nset Firmware=\r\nfor /f "tokens=3" %%A in ('reg query HKLM\\System\\CurrentControlSet\\Control /v PEFirmwareType ^| find "PEFirmwareType"') do set Firmware=%%A\r\nif /I "%Firmware%"=="0x1" goto bios\r\nif /I "%Firmware%"=="0x2" goto uefi\r\ngoto firmware_failed\r\n\r\n:bios\r\nif /I "{arch}"=="arm64" goto unsupported\r\nset DiskScript=X:\\Windows\\System32\\diskpart-bios.txt\r\nset BootMode=BIOS\r\ngoto network\r\n\r\n:uefi\r\nset DiskScript=X:\\Windows\\System32\\diskpart-uefi.txt\r\nset BootMode=UEFI\r\ngoto network\r\n\r\n:network\r\nnet use Z: \\\\{server}\\PXE$ /user:{cred['username']} {cred['password']}\r\nif errorlevel 1 goto failed\r\nif not exist Z:\\images\\{image_id}\\{install_name} goto failed\r\ndiskpart /s %DiskScript%\r\nif errorlevel 1 goto failed\r\ndism /Apply-Image /ImageFile:Z:\\images\\{image_id}\\{install_name} /Index:{index} /ApplyDir:W:\\\r\nif errorlevel 1 goto failed\r\nmkdir W:\\Windows\\Panther 2>NUL\r\ncopy /y X:\\Windows\\System32\\unattend.xml W:\\Windows\\Panther\\Unattend.xml\r\nmkdir W:\\Windows\\Setup\\Scripts 2>NUL\r\ncopy /y X:\\Windows\\System32\\SetupComplete.cmd W:\\Windows\\Setup\\Scripts\\SetupComplete.cmd\r\nbcdboot W:\\Windows /s S: /f %BootMode%\r\nif errorlevel 1 goto failed\r\nnet use Z: /delete /y >NUL 2>NUL\r\nwpeutil reboot\r\n\r\n:unsupported\r\necho Windows ARM64 cannot be installed in Legacy BIOS mode.\r\ngoto failed\r\n\r\n:firmware_failed\r\necho Cannot determine WinPE firmware mode. Installation stopped before disk erase.\r\ngoto failed_noreport\r\n\r\n:failed\r\ncurl.exe -fsS -X POST http://{server}/pxe/report/{profile['id']}/{report_token}/failed >NUL 2>NUL\r\n:failed_noreport\r\necho Installation failed.\r\npause\r\n'''
+    start = f'''@echo off\r\nsetlocal\r\nwpeinit\r\nwpeutil WaitForNetwork\r\nwpeutil UpdateBootInfo\r\nset Firmware=\r\nfor /f "tokens=3" %%A in ('reg query HKLM\\System\\CurrentControlSet\\Control /v PEFirmwareType ^| find "PEFirmwareType"') do set Firmware=%%A\r\nif /I "%Firmware%"=="0x1" goto bios\r\nif /I "%Firmware%"=="0x2" goto uefi\r\ngoto firmware_failed\r\n\r\n:bios\r\nif /I "{arch}"=="arm64" goto unsupported\r\nset DiskScript=X:\\Windows\\System32\\diskpart-bios.txt\r\nset BootMode=BIOS\r\ngoto network\r\n\r\n:uefi\r\nset DiskScript=X:\\Windows\\System32\\diskpart-uefi.txt\r\nset BootMode=UEFI\r\ngoto network\r\n\r\n:network\r\nnet use Z: \\\\{server}\\PXE$ /user:{cred['username']} {cred['password']}\r\nif errorlevel 1 goto failed\r\nif not exist Z:\\images\\{image_id}\\{install_name} goto failed\r\ndiskpart /s %DiskScript%\r\nif errorlevel 1 goto failed\r\ndism /Apply-Image /ImageFile:Z:\\images\\{image_id}\\{install_name} /Index:{index} /ApplyDir:W:\\\r\nif errorlevel 1 goto failed\r\nmkdir W:\\Windows\\Panther 2>NUL\r\ncopy /y X:\\Windows\\System32\\unattend.xml W:\\Windows\\Panther\\Unattend.xml\r\nmkdir W:\\Windows\\Setup\\Scripts 2>NUL\r\ncopy /y X:\\Windows\\System32\\SetupComplete.cmd W:\\Windows\\Setup\\Scripts\\SetupComplete.cmd\r\nbcdboot W:\\Windows /s S: /f %BootMode%\r\nif errorlevel 1 goto failed\r\nnet use Z: /delete /y >NUL 2>NUL\r\nwpeutil reboot\r\n\r\n:unsupported\r\necho Windows ARM64 cannot be installed in Legacy BIOS mode.\r\ngoto failed\r\n\r\n:firmware_failed\r\necho Cannot determine WinPE firmware mode. Installation stopped before disk erase.\r\ngoto failed_noreport\r\n\r\n:failed\r\ncurl.exe -fsS --retry 5 --retry-delay 2 -X POST http://{server}/pxe/report/{profile['id']}/{report_token}/failed >NUL 2>NUL\r\n:failed_noreport\r\necho Installation failed.\r\npause\r\n'''
     (target / 'startnet.cmd').write_text(start, encoding='utf-8')
     (target / 'winpeshl.ini').write_text('[LaunchApp]\r\nAppPath = %SYSTEMROOT%\\System32\\startnet.cmd\r\n', encoding='utf-8')
 
