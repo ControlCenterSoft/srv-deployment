@@ -58,6 +58,14 @@ def main() -> int:
     if re.search(r'(?<!peek_)boot_profile\(mac\)', boot_route):
         fail('boot.ipxe still consumes authorization before payload validation')
 
+    # Structured network/PXE fields own these DHCP options.  A raw duplicate
+    # must be rejected so option 67 cannot silently override managed PXE.
+    require(core, 'MANAGED_DHCP_OPTION_CODES = {3, 6, 66, 67, 93, 175}', 'def _validate_extra_dhcp_option(')
+    add_option = effective_function(core, 'def add_dhcp_option(')
+    update_option = effective_function(core, 'def update_dhcp_option(')
+    require(add_option, '_validate_extra_dhcp_option')
+    require(update_option, '_validate_extra_dhcp_option')
+
     dhcp = effective_function(agent, 'def apply_dhcp() -> str:')
     require(
         dhcp,
@@ -96,6 +104,11 @@ def main() -> int:
         'isset ${net0/ip} || dhcp',
         'route\\n',
         'shell\\n',
+        "IPXE_ARCHIVE_URL: '01a526d4cc791fc30362259c609d6c506cc64a7bdff51b9a5eb788354e17eee1'",
+        "WIMBOOT_X64_URL: '5f067ccdc4d084d5bf77b6c853bd0f8402dfc2b4cd1b103d358993ae97fae8e3'",
+        "WIMBOOT_I386_URL: 'b770ad4fa6111d688c062478de3849806b9c3e94a6b770453ef56c94fec254d9'",
+        "WIMBOOT_ARM64_URL: 'b1440c6386981fb447b2f341294ec7a59546d496dff0f075b0f698c853f1c949'",
+        "run(['sha256sum', str(target)]",
     )
 
     windows = effective_function(agent, 'def publish_windows(')
@@ -121,6 +134,11 @@ def main() -> int:
 
     linux = effective_function(agent, 'def publish_linux(')
     require(linux, 'ds=nocloud-net;s=', 'preseed/url=', 'secure_boot_shims', 'shim {base}/images/', 'imgfetch --name srv-consume')
+    shim_copy = effective_function(agent, 'def _copy_linux_shims(')
+    require(shim_copy, 'shimx64.efi', 'shimaa64.efi', 'BOOTX64.EFI', 'BOOTAA64.EFI')
+    if 'BOOTIA32.EFI' in shim_copy:
+        fail('Linux IA32 must not be advertised as managed Secure Boot capable')
+    require(agent, "'secure_boot_capable': architecture in {'amd64', 'arm64'} and architecture in shims")
 
     samba = effective_function(agent, 'def ensure_pxe_samba_share(')
     require(samba, 'active directory domain controller', "['samba-tool', 'user', 'create'", 'PXE_MEDIA', 'valid users = srv-pxe')
@@ -131,7 +149,7 @@ def main() -> int:
     if entries != 1:
         fail(f'release14 agent must contain exactly one __main__ entry point, found {entries}')
 
-    print('PXE CONTRACT PASS: BIOS + UEFI IA32/x64/ARM32/ARM64, x64/ARM64 Secure Boot, Windows BIOS/UEFI, Linux unattended, deny-by-default')
+    print('PXE CONTRACT PASS: BIOS + UEFI IA32/x64/ARM32/ARM64, x64/ARM64 Secure Boot, Windows BIOS/UEFI, Linux unattended, deny-by-default, pinned-assets')
     return 0
 
 
