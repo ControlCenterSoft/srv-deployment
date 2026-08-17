@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core.config import settings
@@ -21,6 +21,7 @@ from app.core.release14 import (
     authorize_pxe_profile,
     backup_retention,
     boot_profile,
+    consume_boot_profile,
     create_image,
     create_pxe_profile,
     delete_dhcp_option,
@@ -35,6 +36,8 @@ from app.core.release14 import (
     folder_redirect_snapshot,
     network_snapshot,
     normalize_mac,
+    peek_boot_profile,
+    profile_boot_token_valid,
     pxe_snapshot,
     report_pxe,
     revoke_pxe_profile,
