@@ -1,0 +1,253 @@
+name: SRV Control Center 1.3.0 validation
+
+on:
+  push:
+    branches: [release/1.3.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-release-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release descriptor and print script hashes
+        run: |
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          cfg=json.loads(Path('deployment.json').read_text())
+          assert cfg['release_id']=='1.3.0', cfg
+          assert cfg['release_path']=='releases/1.3.0', cfg
+          assert cfg['channel'] in {'release-candidate','production'}, cfg
+          root=Path('releases/1.3.0')
+          for name in ('preflight.sh','apply.sh','acceptance.sh','rollback.sh'):
+              print(f'HASH {name}={hashlib.sha256((root/name).read_bytes()).hexdigest()}')
+          PY
+
+      - name: Shell Python and JavaScript validation
+        run: |
+          set -e
+          bash -n releases/1.3.0/preflight.sh
+          bash -n releases/1.3.0/apply.sh
+          bash -n releases/1.3.0/acceptance.sh
+          bash -n releases/1.3.0/rollback.sh
+          bash -n releases/1.3.0/system/install-auth.sh
+          bash -n releases/1.3.0/system/srvcc-configure-auto-updates
+          python3 -m compileall -q releases/1.3.0/payload/app
+          for file in \
+            releases/1.3.0/system/srv-control-system-agent \
+            releases/1.3.0/system/srv-control-backup \
+            releases/1.3.0/system/srv-control-os-auto-update \
+            releases/1.3.0/system/srv-control-samba-admin \
+            releases/1.3.0/system/srv-control-samba-agent \
+            releases/1.3.0/system/srv-control-samba-ldif-editor \
+            releases/1.3.0/system/srv-control-samba-monitor \
+            releases/1.3.0/system/srv-control-samba-shares-monitor \
+            releases/1.3.0/system/srv-control-minecraft-admin \
+            releases/1.3.0/system/srv-control-minecraft-admin-core \
+            releases/1.3.0/system/srv-control-minecraft-agent \
+            releases/1.3.0/system/srv-control-minecraft-auto-update \
+            releases/1.3.0/system/srv-control-minecraft-firewall \
+            releases/1.3.0/system/srv-control-minecraft-monitor \
+            releases/1.3.0/system/srv-control-minecraft-player-admin \
+            releases/1.3.0/system/srv-control-minecraft-runner \
+            releases/1.3.0/system/srv-control-minecraft-update
+          do python3 -m py_compile "$file"; done
+          for file in \
+            releases/1.3.0/payload/static/js/access.js \
+            releases/1.3.0/payload/static/js/dashboard.js \
+            releases/1.3.0/payload/static/js/samba.js \
+            releases/1.3.0/payload/static/js/shares.js \
+            releases/1.3.0/payload/static/js/minecraft.js \
+            releases/1.3.0/payload/static/js/services.js \
+            releases/1.3.0/payload/static/js/shell.js \
+            releases/1.3.0/payload/static/js/system.js
+          do node --check "$file"; done
+
+      - name: Validate UI and security contract
+        run: |
+          set -e
+          grep -Fq 'Домен Samba' releases/1.3.0/payload/templates/shell.html
+          grep -Fq 'Общий' releases/1.3.0/payload/templates/shell.html
+          grep -Fq 'samba-backup' releases/1.3.0/payload/static/js/samba.js
+          grep -Fq 'browseable' releases/1.3.0/payload/static/js/shares.js
+          grep -Fq 'minecraft-update' releases/1.3.0/payload/app/core/system_admin.py
+          grep -Fq 'minecraft-player-kick' releases/1.3.0/payload/app/core/system_admin.py
+          grep -Fq '13f0a1300001' releases/1.3.0/payload/migrations/versions/13f0a1300001_shares_rbac.py
+          ! grep -R -n -i -E 'пока не работает|будет реализовано|future release only|будет включено' \
+            releases/1.3.0/payload/templates releases/1.3.0/payload/static
+          ! grep -R -n -E '"password"[[:space:]]*:[[:space:]]*payload|payload\[["'"']password' releases/1.3.0/payload/app/core/system_admin.py
+
+  database-rbac-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m venv /tmp/srvcc-venv
+          /tmp/srvcc-venv/bin/pip install --disable-pip-version-check -r releases/1.3.0/payload/requirements.lock
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends postgresql postgresql-client
+          sudo systemctl start postgresql
+      - name: Create database and apply migrations
+        run: |
+          sudo groupadd --system srv-control || true
+          sudo useradd --system --gid srv-control --home-dir /var/lib/srv-control --shell /usr/sbin/nologin srv-control || true
+          sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='srv-control'" | grep -q 1 || sudo -u postgres createuser --login srv-control
+          sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='srv_control'" | grep -q 1 || sudo -u postgres createdb --owner=srv-control srv_control
+          sudo install -d -m 0750 -o root -g srv-control /opt/srv-control
+          sudo cp -a releases/1.3.0/payload/. /opt/srv-control/
+          sudo chown -R root:srv-control /opt/srv-control
+          sudo -u srv-control env PYTHONPATH=/opt/srv-control PYTHONDONTWRITEBYTECODE=1 \
+            /tmp/srvcc-venv/bin/alembic -c /opt/srv-control/alembic.ini upgrade head
+          test "$(sudo -u srv-control psql -d srv_control -Atc 'SELECT version_num FROM alembic_version LIMIT 1;')" = "13f0a1300001"
+      - name: Validate Samba shares and Full Administrator RBAC
+        run: |
+          sudo -u srv-control env PYTHONPATH=/opt/srv-control PYTHONDONTWRITEBYTECODE=1 /tmp/srvcc-venv/bin/python - <<'PY'
+          from app.core.rbac import MODULES, delete_grant, has_permission, is_full_admin, upsert_grant
+          from app.core.system_auth import Identity
+          identity=Identity(username='ci13',uid=65000,gid=65000,groups=('ci13group',),auth_source='local',is_admin=False)
+          ids=[]
+          try:
+              for module in ('samba','shares'):
+                  grant=upsert_grant(subject_type='user',subject_name='ci13',source='local',module=module,access='write',actor='ci')
+                  ids.append(int(grant['id']))
+                  assert has_permission(identity,module,'write') is True
+              assert has_permission(identity,'minecraft','write') is False
+              admin=upsert_grant(subject_type='user',subject_name='ci13',source='local',module='samba',access='admin',actor='ci')
+              ids.append(int(admin['id']))
+              assert is_full_admin(identity) is True
+              for module in MODULES:
+                  assert has_permission(identity,module,'write') is True
+          finally:
+              for grant_id in reversed(ids): delete_grant(grant_id)
+          PY
+
+  samba-domain-lab-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Samba lab dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends samba samba-common-bin smbclient winbind acl attr ldb-tools
+          sudo groupadd --system srv-control || true
+          sudo install -d -m 0750 -o root -g srv-control /var/lib/srv-control /var/lib/srv-control/domain-backups
+          sudo install -d -m 0700 -o root -g root /var/lib/srv-control/action-secrets /var/lib/srv-control/domain-imports
+          sudo install -d -m 0750 -o root -g srv-control /srv/shares
+          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-admin /usr/local/libexec/srv-control-samba-admin
+          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-ldif-editor /usr/local/libexec/srv-control-samba-ldif-editor
+          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-monitor /usr/local/libexec/srv-control-samba-monitor
+          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-shares-monitor /usr/local/libexec/srv-control-samba-shares-monitor
+      - name: Provision isolated test domain
+        run: |
+          sudo systemctl stop smbd nmbd winbind samba-ad-dc 2>/dev/null || true
+          sudo rm -f /etc/samba/smb.conf
+          sudo samba-tool domain provision \
+            --realm=CI.TEST --domain=CI --server-role=dc --dns-backend=SAMBA_INTERNAL \
+            --host-name=SRVCCCI --adminpass='Ci-Only-Strong-Passw0rd!' --use-rfc2307
+          sudo testparm -s --suppress-prompt >/dev/null
+          sudo samba-tool dbcheck --cross-ncs >/dev/null
+      - name: Validate policy users groups and shares
+        run: |
+          sudo python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          helper=['/usr/local/libexec/srv-control-samba-admin']
+          def action(name,payload):
+              request=json.dumps({'action':name,'actor':'ci','payload':payload})+'\n'
+              result=subprocess.run(helper,input=request,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,check=False)
+              print(result.stdout)
+              assert result.returncode==0,(name,result.stdout)
+              parsed=json.loads(result.stdout); assert parsed['ok'] is True,parsed
+              return parsed
+          action('samba-password-policy',{'min_length':8,'history_length':3})
+          token='ciSecretReference1234567890'
+          path=Path('/var/lib/srv-control/action-secrets')/token
+          path.write_text('Ci-User-Strong-Passw0rd!',encoding='utf-8'); os.chmod(path,0o600)
+          action('samba-user-create',{'username':'ciuser','secret_ref':token})
+          action('samba-group-create',{'name':'CITestGroup','description':'CI test group','members':['ciuser']})
+          action('samba-user-update',{
+              'username':'ciuser','display_name':'CI User','email':'ciuser@ci.test','phone':'+10000000000',
+              'home_drive':'H:','home_directory':'\\\\SRVCCCI\\home\\ciuser',
+              'profile_path':'\\\\SRVCCCI\\profiles\\ciuser','script_path':'login.cmd','groups':['CITestGroup'],
+          })
+          action('samba-share-create',{
+              'name':'CIShare','comment':'Тестовая шара','browseable':False,
+              'subjects':[{'type':'everyone','access':'read'}],'quota':{'limit_gib':None},
+          })
+          text=Path('/etc/samba/srv-control-shares.conf').read_text(encoding='utf-8')
+          assert '[CIShare]' in text and 'browseable = no' in text and 'valid users = Everyone' in text
+          PY
+          sudo testparm -s --suppress-prompt >/dev/null
+          sudo samba-tool user show ciuser | grep -F 'displayName: CI User'
+          sudo samba-tool user getgroups ciuser | grep -F 'CITestGroup'
+      - name: Validate portable domain backup and isolated restore
+        run: |
+          sudo python3 - <<'PY' > /tmp/backup-meta.json
+          import json,subprocess
+          request=json.dumps({'action':'samba-backup-create','actor':'ci','payload':{'mode':'domain-config'}})+'\n'
+          result=subprocess.run(['/usr/local/libexec/srv-control-samba-admin'],input=request,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,check=False)
+          assert result.returncode==0,result.stdout
+          outer=json.loads(result.stdout); assert outer['ok'] is True,outer
+          print(outer['detail'])
+          PY
+          BACKUP_ID="$(python3 -c 'import json;print(json.load(open("/tmp/backup-meta.json"))["id"])')"
+          ARCHIVE="$(python3 -c 'import json;print(json.load(open("/tmp/backup-meta.json"))["archive"])')"
+          EXPECTED="$(python3 -c 'import json;print(json.load(open("/tmp/backup-meta.json"))["sha256"])')"
+          test "$(sha256sum "/var/lib/srv-control/domain-backups/$ARCHIVE" | awk '{print $1}')" = "$EXPECTED"
+          mkdir -p /tmp/domain-smoke
+          sudo tar -xf "/var/lib/srv-control/domain-backups/$ARCHIVE" -C /tmp/domain-smoke manifest.json domain control
+          OFFICIAL="$(find /tmp/domain-smoke/domain -maxdepth 1 -type f -print -quit)"
+          test -s "$OFFICIAL"
+          sudo samba-tool domain backup restore --backup-file="$OFFICIAL" --newservername=SRVCCRT --targetdir=/tmp/domain-smoke/restored >/dev/null
+          RESTORED_CONF="$(find /tmp/domain-smoke/restored -type f -name smb.conf -print -quit)"
+          RESTORED_SAM="$(find /tmp/domain-smoke/restored -type f -name sam.ldb -print -quit)"
+          test -s "$RESTORED_CONF" && test -s "$RESTORED_SAM"
+          sudo testparm -s --suppress-prompt "$RESTORED_CONF" >/dev/null
+          SID_EXPECTED="$(python3 - <<'PY'
+          import json,tarfile
+          meta=json.load(open('/tmp/backup-meta.json'))
+          with tarfile.open('/var/lib/srv-control/domain-backups/'+meta['archive'],'r:*') as tar:
+              print(json.load(tar.extractfile('manifest.json'))['domain']['sid'])
+          PY
+          )"
+          SID_RESTORED="$(sudo ldbsearch -H "$RESTORED_SAM" -b 'DC=ci,DC=test' -s base objectSid 2>/dev/null | awk '/^objectSid: /{print $2;exit}')"
+          test -n "$SID_EXPECTED" && test "$SID_EXPECTED" = "$SID_RESTORED"
+
+  minecraft-contract-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Minecraft instance and player safety helpers
+        run: |
+          python3 - <<'PY'
+          from importlib.machinery import SourceFileLoader
+          from pathlib import Path
+          import tempfile
+          mc=SourceFileLoader('mc','releases/1.3.0/system/srv-control-minecraft-admin-core').load_module()
+          player=SourceFileLoader('player','releases/1.3.0/system/srv-control-minecraft-player-admin').load_module()
+          assert mc.instance_id('srv_01')=='srv_01'
+          try: mc.instance_id('../bad')
+          except RuntimeError: pass
+          else: raise AssertionError('unsafe instance id accepted')
+          with tempfile.TemporaryDirectory() as td:
+              p=Path(td)/'one'; p.mkdir(); (p/'server.properties').write_text('server-port=19132\nserver-portv6=19133\n')
+              registry={'instances':[{'id':'one','working_directory':str(p),'server_port':19132,'server_portv6':19133}]}
+              try: mc.validate_ports(registry,'two',19132,19134)
+              except RuntimeError: pass
+              else: raise AssertionError('port collision not detected')
+          assert 'minecraft-player-kick' in player.PLAYER_ACTIONS
+          assert 'minecraft-player-permission' in player.PLAYER_ACTIONS
+          PY
+          grep -Fq 'Automatic' releases/1.3.0/payload/static/js/minecraft.js || grep -Fq 'automatic' releases/1.3.0/payload/static/js/minecraft.js
+          grep -Fq 'published' releases/1.3.0/payload/static/js/minecraft.js
