@@ -6,6 +6,18 @@
     let canWrite = false;
     let refreshTimer = null;
 
+    const state = {
+        githubDirty: false,
+        osDirty: false,
+        backupDirty: false,
+        githubConfigRequest: null,
+        githubOperationRequest: null,
+        osConfigRequest: null,
+        osOperationRequest: null,
+        backupConfigRequest: null,
+        githubUpdateAvailable: false,
+    };
+
     const ui = {
         liveDot: byId("systemLiveDot"),
         liveText: byId("systemLiveText"),
@@ -30,12 +42,14 @@
         githubUpdate: byId("githubUpdateButton"),
         githubAvailability: byId("githubAvailability"),
         githubLastCheck: byId("githubLastCheck"),
+        githubTimerState: byId("githubTimerState"),
         githubMessage: byId("githubMessage"),
         osForm: byId("osForm"),
         osMode: byId("osMode"),
         osInterval: byId("osInterval"),
         osIntervalField: byId("osIntervalField"),
         osUpdate: byId("osUpdateButton"),
+        osTimerState: byId("osTimerState"),
         osState: byId("osUpdateState"),
         osMessage: byId("osMessage"),
         backupForm: byId("backupForm"),
@@ -47,6 +61,10 @@
         backupRows: byId("backupRows"),
         backupMessage: byId("backupMessage"),
     };
+
+    const githubSave = ui.githubForm.querySelector('button[type="submit"]');
+    const osSave = ui.osForm.querySelector('button[type="submit"]');
+    const backupSave = ui.backupForm.querySelector('button[type="submit"]');
 
     function formatBytes(value) {
         const bytes = Number(value || 0);
@@ -114,9 +132,7 @@
         csrfToken = payload.data.csrf_token || "";
         canWrite = Boolean(payload.data.identity && payload.data.identity.is_admin);
         ui.reboot.hidden = !canWrite;
-        for (const control of document.querySelectorAll(".admin-control")) {
-            control.disabled = !canWrite;
-        }
+        syncModeFields();
     }
 
     async function post(url, body = null) {
@@ -136,20 +152,95 @@
         });
     }
 
+    function requestId(payload) {
+        return payload && payload.data && payload.data.request_id
+            ? String(payload.data.request_id)
+            : null;
+    }
+
+    function actionResult(data, id) {
+        if (!id) return null;
+        const actions = data.actions || {};
+        return (actions.history || []).find((item) => String(item.request_id || "") === id) || null;
+    }
+
+    function anyPendingRequest() {
+        return Boolean(
+            state.githubConfigRequest ||
+            state.githubOperationRequest ||
+            state.osConfigRequest ||
+            state.osOperationRequest ||
+            state.backupConfigRequest
+        );
+    }
+
+    function githubDesiredConfig() {
+        return {
+            source: ui.githubSource.value.trim(),
+            mode: ui.githubMode.value,
+            interval_minutes: Number(ui.githubInterval.value || 5),
+        };
+    }
+
+    function osDesiredConfig() {
+        return {
+            mode: ui.osMode.value,
+            interval_hours: Number(ui.osInterval.value || 24),
+        };
+    }
+
+    function githubConfigMatches(config, desired) {
+        return Boolean(
+            config && desired &&
+            String(config.source || "") === String(desired.source || "") &&
+            String(config.mode || "") === String(desired.mode || "") &&
+            Number(config.interval_minutes || 0) === Number(desired.interval_minutes || 0)
+        );
+    }
+
+    function osConfigMatches(config, desired) {
+        return Boolean(
+            config && desired &&
+            String(config.mode || "") === String(desired.mode || "") &&
+            Number(config.interval_hours || 0) === Number(desired.interval_hours || 0)
+        );
+    }
+
     function syncModeFields() {
         const githubAutomatic = ui.githubMode.value === "automatic";
+        const githubConfigBusy = Boolean(state.githubConfigRequest);
+        const githubOperationBusy = Boolean(state.githubOperationRequest);
+        const githubUnsaved = state.githubDirty || githubConfigBusy;
+
         ui.githubIntervalField.hidden = !githubAutomatic;
-        ui.githubInterval.disabled = !githubAutomatic || !canWrite;
+        ui.githubInterval.disabled = !githubAutomatic || !canWrite || githubConfigBusy;
         ui.githubCheck.hidden = githubAutomatic;
+        ui.githubCheck.disabled = !canWrite || githubUnsaved || githubOperationBusy;
+        ui.githubUpdate.disabled = !canWrite || !state.githubUpdateAvailable || githubUnsaved || githubOperationBusy;
+        githubSave.disabled = !canWrite || githubConfigBusy;
+        ui.githubSource.disabled = !canWrite || githubConfigBusy;
+        ui.githubMode.disabled = !canWrite || githubConfigBusy;
 
         const osAutomatic = ui.osMode.value === "automatic";
+        const osConfigBusy = Boolean(state.osConfigRequest);
+        const osOperationBusy = Boolean(state.osOperationRequest);
+        const osUnsaved = state.osDirty || osConfigBusy;
+
         ui.osIntervalField.hidden = !osAutomatic;
-        ui.osInterval.disabled = !osAutomatic || !canWrite;
+        ui.osInterval.disabled = !osAutomatic || !canWrite || osConfigBusy;
         ui.osUpdate.hidden = osAutomatic;
+        ui.osUpdate.disabled = !canWrite || osUnsaved || osOperationBusy;
+        osSave.disabled = !canWrite || osConfigBusy;
+        ui.osMode.disabled = !canWrite || osConfigBusy;
 
         const scheduled = ui.backupScheduled.checked;
+        const backupBusy = Boolean(state.backupConfigRequest);
         ui.backupTimeField.hidden = !scheduled;
-        ui.backupTime.disabled = !scheduled || !canWrite;
+        ui.backupTime.disabled = !scheduled || !canWrite || backupBusy;
+        ui.backupScheduled.disabled = !canWrite || backupBusy;
+        ui.backupBeforeUpdate.disabled = !canWrite || backupBusy;
+        backupSave.disabled = !canWrite || backupBusy;
+        ui.backupCreate.disabled = !canWrite;
     }
 
     function renderStorage(items) {
@@ -203,38 +294,136 @@
         const section = data.github_updates || {};
         const config = section.config || {};
         const status = section.status || {};
-        ui.githubSource.value = config.source || "https://github.com/filosoff31/srv-deployment.git";
-        ui.githubMode.value = config.mode === "manual" ? "manual" : "automatic";
-        ui.githubInterval.value = Number(config.interval_minutes || 5);
-        ui.githubLastCheck.textContent = status.checked_at ? `Последняя проверка: ${formatDate(status.checked_at)}` : "Проверка ещё не выполнялась";
-        const available = Boolean(status.update_available);
-        ui.githubAvailability.textContent = available
+
+        if (state.githubConfigRequest) {
+            const action = actionResult(data, state.githubConfigRequest.id);
+            if (action && action.result === "failed") {
+                setMessage(ui.githubMessage, action.detail || "Не удалось сохранить настройки GitHub.", true);
+                state.githubConfigRequest = null;
+            } else if (action && action.result === "success" && githubConfigMatches(config, state.githubConfigRequest.desired)) {
+                state.githubConfigRequest = null;
+                state.githubDirty = false;
+                setMessage(ui.githubMessage, "Настройки GitHub сохранены.");
+            }
+        }
+
+        if (!state.githubDirty && !state.githubConfigRequest) {
+            ui.githubSource.value = config.source || "https://github.com/filosoff31/srv-deployment.git";
+            ui.githubMode.value = config.mode === "manual" ? "manual" : "automatic";
+            ui.githubInterval.value = Number(config.interval_minutes || 5);
+        }
+
+        ui.githubLastCheck.textContent = status.checked_at
+            ? `Последняя проверка: ${formatDate(status.checked_at)}`
+            : "Проверка ещё не выполнялась";
+
+        state.githubUpdateAvailable = Boolean(status.update_available);
+        ui.githubAvailability.textContent = state.githubUpdateAvailable
             ? `Доступен ${status.release_version || "новый релиз"}`
             : "Обновлений нет";
-        ui.githubAvailability.classList.toggle("available", available);
-        ui.githubUpdate.disabled = !canWrite || !available;
+        ui.githubAvailability.classList.toggle("available", state.githubUpdateAvailable);
+
+        const timerActive = Boolean(section.timer_enabled && section.timer_state === "active");
+        const configuredAutomatic = config.mode === "automatic";
+        if (timerActive) {
+            ui.githubTimerState.textContent = `Включено · ${Number(config.interval_minutes || 5)} мин`;
+        } else if (configuredAutomatic) {
+            ui.githubTimerState.textContent = "Отключено — требуется сохранить настройки";
+        } else {
+            ui.githubTimerState.textContent = "Отключено";
+        }
+
+        if (state.githubOperationRequest) {
+            const action = actionResult(data, state.githubOperationRequest.id);
+            if (action && action.result === "failed") {
+                setMessage(ui.githubMessage, action.detail || "Операция GitHub завершилась ошибкой.", true);
+                state.githubOperationRequest = null;
+            } else if (action && action.result === "success") {
+                setMessage(
+                    ui.githubMessage,
+                    state.githubOperationRequest.kind === "update"
+                        ? "Ручное обновление Control Center завершено."
+                        : "Проверка обновлений завершена."
+                );
+                state.githubOperationRequest = null;
+            }
+        }
     }
 
     function renderOs(data) {
         const section = data.os_updates || {};
         const config = section.config || {};
         const status = section.status || {};
-        ui.osMode.value = config.mode === "automatic" ? "automatic" : "manual";
-        ui.osInterval.value = Math.max(1, Math.min(24, Number(config.interval_hours || 24)));
+
+        if (state.osConfigRequest) {
+            const action = actionResult(data, state.osConfigRequest.id);
+            if (action && action.result === "failed") {
+                setMessage(ui.osMessage, action.detail || "Не удалось сохранить настройки обновления ОС.", true);
+                state.osConfigRequest = null;
+            } else if (action && action.result === "success" && osConfigMatches(config, state.osConfigRequest.desired)) {
+                state.osConfigRequest = null;
+                state.osDirty = false;
+                setMessage(ui.osMessage, "Настройки обновления ОС сохранены.");
+            }
+        }
+
+        if (!state.osDirty && !state.osConfigRequest) {
+            ui.osMode.value = config.mode === "automatic" ? "automatic" : "manual";
+            ui.osInterval.value = Math.max(1, Math.min(24, Number(config.interval_hours || 24)));
+        }
+
+        const timerActive = Boolean(section.timer_enabled && section.timer_state === "active");
+        ui.osTimerState.textContent = timerActive
+            ? `Автоматически · ${Number(config.interval_hours || 24)} ч`
+            : "Ручной режим";
+        ui.osTimerState.classList.toggle("active", timerActive);
+        ui.osTimerState.classList.toggle("inactive", !timerActive);
+
         if (status.started_at || status.finished_at) {
-            const state = status.result === "success" ? "Успешно" : status.result === "failed" ? "Ошибка" : "Выполняется";
-            ui.osState.textContent = `${state}${status.finished_at ? ` · ${formatDate(status.finished_at)}` : ""}`;
+            const resultText = status.result === "success"
+                ? "Успешно"
+                : status.result === "failed"
+                    ? "Ошибка"
+                    : "Выполняется";
+            ui.osState.textContent = `${resultText}${status.finished_at ? ` · ${formatDate(status.finished_at)}` : ""}`;
         } else {
             ui.osState.textContent = "Обновление ещё не запускалось";
+        }
+
+        if (state.osOperationRequest) {
+            const action = actionResult(data, state.osOperationRequest.id);
+            if (action && action.result === "failed") {
+                setMessage(ui.osMessage, action.detail || "Обновление ОС завершилось ошибкой.", true);
+                state.osOperationRequest = null;
+            } else if (action && action.result === "success") {
+                setMessage(ui.osMessage, "Обновление ОС запущено.");
+                state.osOperationRequest = null;
+            }
         }
     }
 
     function renderBackups(data) {
         const section = data.backup || {};
         const config = section.config || {};
-        ui.backupScheduled.checked = Boolean(config.scheduled);
-        ui.backupTime.value = config.daily_time || "03:00";
-        ui.backupBeforeUpdate.checked = config.backup_before_update !== false;
+
+        if (state.backupConfigRequest) {
+            const action = actionResult(data, state.backupConfigRequest.id);
+            if (action && action.result === "failed") {
+                setMessage(ui.backupMessage, action.detail || "Не удалось сохранить настройки резервного копирования.", true);
+                state.backupConfigRequest = null;
+            } else if (action && action.result === "success") {
+                state.backupConfigRequest = null;
+                state.backupDirty = false;
+                setMessage(ui.backupMessage, "Настройки резервного копирования сохранены.");
+            }
+        }
+
+        if (!state.backupDirty && !state.backupConfigRequest) {
+            ui.backupScheduled.checked = Boolean(config.scheduled);
+            ui.backupTime.value = config.daily_time || "03:00";
+            ui.backupBeforeUpdate.checked = config.backup_before_update !== false;
+        }
+
         ui.backupRows.textContent = "";
         for (const item of section.items || []) {
             const tr = document.createElement("tr");
@@ -293,29 +482,47 @@
         const data = payload.data || {};
         canWrite = Boolean(data.can_write);
         ui.reboot.hidden = !canWrite;
-        for (const control of document.querySelectorAll(".admin-control")) {
-            if (control !== ui.githubUpdate) control.disabled = !canWrite;
-        }
         renderGithub(data);
         renderOs(data);
         renderBackups(data);
         syncModeFields();
     }
 
-    function scheduleRefresh() {
+    function scheduleRefresh(delay = 700) {
         if (refreshTimer) window.clearTimeout(refreshTimer);
         refreshTimer = window.setTimeout(async () => {
+            refreshTimer = null;
             try {
                 await loadConfiguration();
             } finally {
-                refreshTimer = null;
+                if (anyPendingRequest()) scheduleRefresh(700);
             }
-        }, 1500);
+        }, delay);
     }
 
-    ui.githubMode.addEventListener("change", syncModeFields);
-    ui.osMode.addEventListener("change", syncModeFields);
-    ui.backupScheduled.addEventListener("change", syncModeFields);
+    function markGithubDirty() {
+        state.githubDirty = true;
+        syncModeFields();
+    }
+
+    function markOsDirty() {
+        state.osDirty = true;
+        syncModeFields();
+    }
+
+    function markBackupDirty() {
+        state.backupDirty = true;
+        syncModeFields();
+    }
+
+    ui.githubSource.addEventListener("input", markGithubDirty);
+    ui.githubMode.addEventListener("change", markGithubDirty);
+    ui.githubInterval.addEventListener("input", markGithubDirty);
+    ui.osMode.addEventListener("change", markOsDirty);
+    ui.osInterval.addEventListener("input", markOsDirty);
+    ui.backupScheduled.addEventListener("change", markBackupDirty);
+    ui.backupTime.addEventListener("input", markBackupDirty);
+    ui.backupBeforeUpdate.addEventListener("change", markBackupDirty);
 
     ui.reboot.addEventListener("click", async () => {
         if (!window.confirm("Перезагрузить сервер SRV?")) return;
@@ -329,24 +536,26 @@
 
     ui.githubForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        setMessage(ui.githubMessage, "");
+        const desired = githubDesiredConfig();
+        setMessage(ui.githubMessage, "Сохранение настроек...");
         try {
-            await post("/api/v1/system/github/config", {
-                source: ui.githubSource.value.trim(),
-                mode: ui.githubMode.value,
-                interval_minutes: Number(ui.githubInterval.value || 5),
-            });
-            scheduleRefresh();
+            const queued = await post("/api/v1/system/github/config", desired);
+            state.githubConfigRequest = {id: requestId(queued), desired};
+            state.githubDirty = true;
+            syncModeFields();
+            scheduleRefresh(350);
         } catch (error) {
             setMessage(ui.githubMessage, error.message, true);
         }
     });
 
     ui.githubCheck.addEventListener("click", async () => {
-        setMessage(ui.githubMessage, "");
+        setMessage(ui.githubMessage, "Проверка обновлений...");
         try {
-            await post("/api/v1/system/github/check");
-            scheduleRefresh();
+            const queued = await post("/api/v1/system/github/check");
+            state.githubOperationRequest = {id: requestId(queued), kind: "check"};
+            syncModeFields();
+            scheduleRefresh(350);
         } catch (error) {
             setMessage(ui.githubMessage, error.message, true);
         }
@@ -354,10 +563,12 @@
 
     ui.githubUpdate.addEventListener("click", async () => {
         if (!window.confirm("Установить доступное обновление Control Center?")) return;
-        setMessage(ui.githubMessage, "");
+        setMessage(ui.githubMessage, "Ручное обновление поставлено в очередь...");
         try {
-            await post("/api/v1/system/github/update");
-            scheduleRefresh();
+            const queued = await post("/api/v1/system/github/update");
+            state.githubOperationRequest = {id: requestId(queued), kind: "update"};
+            syncModeFields();
+            scheduleRefresh(350);
         } catch (error) {
             setMessage(ui.githubMessage, error.message, true);
         }
@@ -365,23 +576,26 @@
 
     ui.osForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        setMessage(ui.osMessage, "");
+        const desired = osDesiredConfig();
+        setMessage(ui.osMessage, "Сохранение настроек...");
         try {
-            await post("/api/v1/system/os/config", {
-                mode: ui.osMode.value,
-                interval_hours: Number(ui.osInterval.value || 24),
-            });
-            scheduleRefresh();
+            const queued = await post("/api/v1/system/os/config", desired);
+            state.osConfigRequest = {id: requestId(queued), desired};
+            state.osDirty = true;
+            syncModeFields();
+            scheduleRefresh(350);
         } catch (error) {
             setMessage(ui.osMessage, error.message, true);
         }
     });
 
     ui.osUpdate.addEventListener("click", async () => {
-        setMessage(ui.osMessage, "");
+        setMessage(ui.osMessage, "Запуск обновления ОС...");
         try {
-            await post("/api/v1/system/os/update");
-            scheduleRefresh();
+            const queued = await post("/api/v1/system/os/update");
+            state.osOperationRequest = {id: requestId(queued), kind: "update"};
+            syncModeFields();
+            scheduleRefresh(350);
         } catch (error) {
             setMessage(ui.osMessage, error.message, true);
         }
@@ -389,21 +603,24 @@
 
     ui.backupForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        setMessage(ui.backupMessage, "");
+        setMessage(ui.backupMessage, "Сохранение настроек...");
         try {
-            await post("/api/v1/system/backups/config", {
+            const queued = await post("/api/v1/system/backups/config", {
                 scheduled: ui.backupScheduled.checked,
                 daily_time: ui.backupTime.value || "03:00",
                 backup_before_update: ui.backupBeforeUpdate.checked,
             });
-            scheduleRefresh();
+            state.backupConfigRequest = {id: requestId(queued)};
+            state.backupDirty = true;
+            syncModeFields();
+            scheduleRefresh(350);
         } catch (error) {
             setMessage(ui.backupMessage, error.message, true);
         }
     });
 
     ui.backupCreate.addEventListener("click", async () => {
-        setMessage(ui.backupMessage, "");
+        setMessage(ui.backupMessage, "Создание резервной копии запущено...");
         try {
             await post("/api/v1/system/backups");
             scheduleRefresh();
