@@ -10,6 +10,8 @@ SESSION_KEY="/var/lib/srv-control/session.key"
 SESSION_TMP=""
 CONFIG="/var/lib/srv-control/github-update-config.json"
 CONFIGURATOR="/usr/local/sbin/srvcc-configure-auto-updates"
+PRESTATE="/var/lib/srv-deployment/prestate/${REMOTE_SHA}-1.3.3"
+BACKUP_STATE="/var/lib/srv-deployment/backups/${REMOTE_SHA}-1.3.3/state"
 
 restore_session_key() {
     if [[ ! -s "$SESSION_KEY" && -n "$SESSION_TMP" && -s "$SESSION_TMP" ]]; then
@@ -23,12 +25,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Persist rollback-critical state before the base apply changes any units.
+install -d -m 0750 "$PRESTATE"
+for unit in minecraft-update.timer srv-control-minecraft-auto-update.timer srvcc-github-agent.timer; do
+    systemctl is-enabled "$unit" > "$PRESTATE/${unit}.enabled" 2>/dev/null || true
+    systemctl is-active "$unit" > "$PRESTATE/${unit}.active" 2>/dev/null || true
+done
+
 # Keep an independent copy outside the deployment backup tree. This survives a
 # failed apply/acceptance path and prevents authentication from disappearing
 # while rollback is running.
 if [[ -s "$SESSION_KEY" ]]; then
     SESSION_TMP="$(mktemp /var/lib/srv-control/.session-key.1.3.3.XXXXXX)"
     cp -a -- "$SESSION_KEY" "$SESSION_TMP"
+    cp -a -- "$SESSION_KEY" "$PRESTATE/session.key"
 fi
 
 python3 - "$SOURCE" "$TMP" <<'PY'
@@ -43,6 +53,12 @@ PY
 chmod 0700 "$TMP"
 bash "$TMP" "$@"
 restore_session_key
+
+# Keep the pre-state together with the normal release backup for acceptance
+# rollback, while retaining PRESTATE until the transaction is fully accepted.
+if [[ -d "$BACKUP_STATE" ]]; then
+    cp -a "$PRESTATE/." "$BACKUP_STATE/"
+fi
 
 # Return the existing primary Bedrock server to the proven single-server path.
 # The 1.3 multi-instance updater currently sees zero automatic instances on the
