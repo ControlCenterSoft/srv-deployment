@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import base64
+from datetime import datetime, timezone
+import grp
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+from typing import Any
+
+
+OUTPUT = Path("/var/lib/srv-control/samba-domain-status.json")
+APP_GROUP = "srv-control"
+PROTECTED_USERS = {"administrator", "guest", "krbtgt"}
+PROTECTED_GROUPS = {
+    "administrators",
+    "domain admins",
+    "domain computers",
+    "domain controllers",
+    "domain guests",
+    "domain users",
+    "enterprise admins",
+    "group policy creator owners",
+    "schema admins",
+}
+USER_ATTRIBUTES = (
+    "distinguishedName",
+    "sAMAccountName",
+    "givenName",
+    "sn",
+    "displayName",
+    "mail",
+    "telephoneNumber",
+    "homeDrive",
+    "homeDirectory",
+    "profilePath",
+    "scriptPath",
+    "description",
+    "userAccountControl",
+    "accountExpires",
+    "primaryGroupID",
+    "whenCreated",
+    "lastLogonTimestamp",
+    "lockoutTime",
+)
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def run(command: list[str], timeout: int = 20) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+            env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"},
+        )
+    except Exception as exc:
+        return 1, str(exc)
+    return completed.returncode, (completed.stdout or "").strip()
+
+
+def scalar(command: list[str], default: str | None = None) -> str | None:
+    code, output = run(command)
+    if code != 0 or not output:
+        return default
+    return output.splitlines()[-1].strip() or default
+
+
+def systemd_state() -> tuple[str | None, str]:
+    for unit in ("samba-ad-dc.service", "samba.service"):
+        code, loaded = run(["systemctl", "show", unit, "-p", "LoadState", "--value"], 5)
+        if code == 0 and loaded and loaded != "not-found":
+            _, state = run(["systemctl", "is-active", unit], 5)
+            return unit, state or "inactive"
+    return None, "not-installed"
+
+
+def testparm_value(name: str) -> str | None:
+    value = scalar(["testparm", "-s", "--parameter-name", name], None)
+    if value is None:
+        return None
+    return value.strip()
+
+
+def parse_domain_sid() -> str | None:
+    code, output = run(["net", "getdomainsid"], 10)
+    if code != 0:
+        return None
+    matches = re.findall(r"S-1-(?:\d+-)+\d+", output)
+    return matches[0] if matches else None
+
+
+def parse_domain_levels() -> dict[str, str | None]:
+    code, output = run(["samba-tool", "domain", "level", "show"], 20)
+    result: dict[str, str | None] = {
+        "forest": None,
+        "domain": None,
+        "dc": None,
+    }
+    if code != 0:
+        return result
+    for line in output.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        normalized = key.strip().casefold()
+        value = value.strip()
+        if normalized.startswith("forest function"):
+            result["forest"] = value
+        elif normalized.startswith("domain function"):
+            result["domain"] = value
+        elif normalized.startswith("lowest function") or normalized.startswith("dc function"):
+            result["dc"] = value
+    return result
+
+
+def parse_password_policy() -> dict[str, Any]:
+    code, output = run(["samba-tool", "domain", "passwordsettings", "show"], 20)
+    if code != 0:
+        return {"error": output[-1200:] or "unable to read password policy"}
+    mapping = {
+        "password complexity": "complexity",
+        "store plaintext passwords": "store_plaintext",
+        "password history length": "history_length",
+        "minimum password length": "min_length",
+        "minimum password age (days)": "min_age_days",
+        "maximum password age (days)": "max_age_days",
+        "account lockout duration (mins)": "lockout_duration_minutes",
+        "account lockout threshold (attempts)": "lockout_threshold",
+        "reset account lockout after (mins)": "lockout_reset_minutes",
+    }
+    result: dict[str, Any] = {}
+    for line in output.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        target = mapping.get(key.strip().casefold())
+        if not target:
+            continue
+        raw = value.strip()
+        if raw.casefold() in {"on", "off"}:
+            result[target] = raw.casefold() == "on"
+            continue
+        try:
+            result[target] = int(raw)
+        except ValueError:
+            result[target] = raw
+    return result
+
+
+def _unfold_ldif(text: str) -> list[str]:
+    result: list[str] = []
+    for raw in text.splitlines():
+        if raw.startswith(" ") and result:
+            result[-1] += raw[1:]
+        else:
+            result.append(raw)
+    return result
+
+
+def parse_ldif(text: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for line in _unfold_ldif(text):
+        if not line or line.startswith("#"):
+            continue
+        if ":: " in line:
+            key, raw = line.split(":: ", 1)
+            try:
+                value = base64.b64decode(raw).decode("utf-8", errors="replace")
+            except Exception:
+                value = ""
+        elif ": " in line:
+            key, value = line.split(": ", 1)
+        elif line.endswith(":"):
+            key, value = line[:-1], ""
+        else:
+            continue
+        key = key.strip()
+        if key in result:
+            existing = result[key]
+            if isinstance(existing, list):
+                existing.append(value)
+            else:
+                result[key] = [existing, value]
+        else:
+            result[key] = value
+    return result
+
+
+def user_record(username: str) -> dict[str, Any]:
+    code, output = run(
+        [
+            "samba-tool",
+            "user",
+            "show",
+            username,
+            "--attributes=" + ",".join(USER_ATTRIBUTES),
+        ],
+        15,
+    )
+    record = parse_ldif(output) if code == 0 else {"sAMAccountName": username}
+    sam = str(record.get("sAMAccountName") or username)
+    try:
+        uac = int(str(record.get("userAccountControl") or "0"))
+    except ValueError:
+        uac = 0
+    try:
+        lockout = int(str(record.get("lockoutTime") or "0"))
+    except ValueError:
+        lockout = 0
+    groups_code, groups_output = run(["samba-tool", "user", "getgroups", sam], 15)
+    groups = [line.strip() for line in groups_output.splitlines() if line.strip()] if groups_code == 0 else []
+    return {
+        "username": sam,
+        "dn": record.get("distinguishedName"),
+        "given_name": record.get("givenName"),
+        "surname": record.get("sn"),
+        "display_name": record.get("displayName"),
+        "email": record.get("mail"),
+        "phone": record.get("telephoneNumber"),
+        "home_drive": record.get("homeDrive"),
+        "home_directory": record.get("homeDirectory"),
+        "profile_path": record.get("profilePath"),
+        "script_path": record.get("scriptPath"),
+        "description": record.get("description"),
+        "account_expires": record.get("accountExpires"),
+        "primary_group_id": record.get("primaryGroupID"),
+        "created_at": record.get("whenCreated"),
+        "last_logon_timestamp": record.get("lastLogonTimestamp"),
+        "enabled": not bool(uac & 0x2),
+        "locked": lockout > 0,
+        "groups": groups,
+        "protected": sam.casefold() in PROTECTED_USERS,
+    }
+
+
+def users_snapshot() -> list[dict[str, Any]]:
+    code, output = run(["samba-tool", "user", "list"], 20)
+    if code != 0:
+        return []
+    users = sorted({line.strip() for line in output.splitlines() if line.strip()}, key=str.casefold)
+    return [user_record(username) for username in users]
+
+
+def groups_snapshot() -> list[dict[str, Any]]:
+    code, output = run(["samba-tool", "group", "list"], 20)
+    if code != 0:
+        return []
+    groups = sorted({line.strip() for line in output.splitlines() if line.strip()}, key=str.casefold)
+    result: list[dict[str, Any]] = []
+    for group_name in groups:
+        member_code, member_output = run(["samba-tool", "group", "listmembers", group_name], 15)
+        members = [line.strip() for line in member_output.splitlines() if line.strip()] if member_code == 0 else []
+        result.append(
+            {
+                "name": group_name,
+                "members": members,
+                "protected": group_name.casefold() in PROTECTED_GROUPS,
+            }
+        )
+    return result
+
+
+def replication_snapshot() -> dict[str, Any]:
+    code, output = run(["samba-tool", "drs", "showrepl", "--summary"], 25)
+    if code != 0:
+        return {"available": False, "healthy": None, "summary": output[-2000:] or None}
+    lower = output.casefold()
+    unhealthy = any(token in lower for token in ("fail", "error", "unavailable"))
+    return {"available": True, "healthy": not unhealthy, "summary": output[-4000:]}
+
+
+def write_json(payload: dict[str, Any]) -> None:
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=OUTPUT.parent,
+        prefix=OUTPUT.name + ".tmp.",
+        delete=False,
+    )
+    try:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o640)
+        tmp = Path(handle.name)
+    finally:
+        handle.close()
+    try:
+        gid = grp.getgrnam(APP_GROUP).gr_gid
+        os.chown(tmp, 0, gid)
+    except Exception:
+        pass
+    os.replace(tmp, OUTPUT)
+
+
+def main() -> int:
+    samba_tool = shutil.which("samba-tool")
+    samba_binary = shutil.which("samba")
+    unit, state = systemd_state()
+    installed = bool(samba_tool and samba_binary)
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "installed": installed,
+        "state": state,
+        "checked_at": now(),
+        "service": unit,
+        "version": scalar(["samba", "--version"], None) if samba_binary else None,
+        "domain": {},
+        "password_policy": {},
+        "users": [],
+        "groups": [],
+        "replication": {},
+        "error": None,
+    }
+    if installed:
+        payload["domain"] = {
+            "realm": testparm_value("realm"),
+            "netbios_domain": testparm_value("workgroup"),
+            "dc_name": testparm_value("netbios name"),
+            "server_role": testparm_value("server role"),
+            "sid": parse_domain_sid(),
+            "functional_levels": parse_domain_levels(),
+        }
+        payload["password_policy"] = parse_password_policy()
+        payload["users"] = users_snapshot()
+        payload["groups"] = groups_snapshot()
+        payload["replication"] = replication_snapshot()
+    write_json(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
