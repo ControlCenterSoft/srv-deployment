@@ -67,14 +67,16 @@ def _install_ipxe_bundle() -> None:
         TFTP_ROOT.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, TFTP_ROOT, dirs_exist_ok=True)
 
+        # util/gensrvimg names directories by CPU architecture, not by build
+        # directory: i386/, x86_64/, arm32/, arm64/ and *-sb for Secure Boot.
         required = [
             TFTP_ROOT / 'undionly.kpxe',
-            TFTP_ROOT / 'i386-efi/snponly.efi',
-            TFTP_ROOT / 'x86_64-efi/snponly.efi',
+            TFTP_ROOT / 'i386/snponly.efi',
+            TFTP_ROOT / 'x86_64/snponly.efi',
             TFTP_ROOT / 'x86_64-sb/snponly-shim.efi',
             TFTP_ROOT / 'x86_64-sb/snponly.efi',
-            TFTP_ROOT / 'arm32-efi/snponly.efi',
-            TFTP_ROOT / 'arm64-efi/snponly.efi',
+            TFTP_ROOT / 'arm32/snponly.efi',
+            TFTP_ROOT / 'arm64/snponly.efi',
             TFTP_ROOT / 'arm64-sb/snponly-shim.efi',
             TFTP_ROOT / 'arm64-sb/snponly.efi',
         ]
@@ -85,11 +87,11 @@ def _install_ipxe_bundle() -> None:
         script = _pxe_autoexec()
         locations = [
             TFTP_ROOT,
-            TFTP_ROOT / 'i386-efi',
-            TFTP_ROOT / 'x86_64-efi',
+            TFTP_ROOT / 'i386',
+            TFTP_ROOT / 'x86_64',
             TFTP_ROOT / 'x86_64-sb',
-            TFTP_ROOT / 'arm32-efi',
-            TFTP_ROOT / 'arm64-efi',
+            TFTP_ROOT / 'arm32',
+            TFTP_ROOT / 'arm64',
             TFTP_ROOT / 'arm64-sb',
         ]
         for directory in locations:
@@ -135,8 +137,10 @@ def apply_dhcp() -> str:
         lines.append(f"dhcp-host={item['mac']},{item['ip_address']}{host}")
 
     if (TFTP_ROOT / 'undionly.kpxe').is_file():
-        # Option 93 architecture matrix.  The generic PXEClient line supports
-        # old BIOS ROMs which omit option 93; more specific matches below win.
+        # DHCP option 93 architecture matrix.  Each first-stage request gets
+        # exactly one architecture-specific boot file.  An old PXE ROM which
+        # omits option 93 gets the BIOS fallback; iPXE itself is excluded from
+        # all first-stage rules and receives autoexec.ipxe instead.
         lines += [
             'dhcp-vendorclass=set:pxeclient,PXEClient',
             'dhcp-match=set:ipxe,175',
@@ -147,11 +151,13 @@ def apply_dhcp() -> str:
             'dhcp-match=set:efi64,option:client-arch,9',
             'dhcp-match=set:arm32,option:client-arch,10',
             'dhcp-match=set:arm64,option:client-arch,11',
-            f'dhcp-boot=tag:!ipxe,tag:pxeclient,undionly.kpxe,,{server}',
-            f'dhcp-boot=tag:!ipxe,tag:efi32,i386-efi/snponly.efi,,{server}',
+            'tag-if=set:pxe-noarch,tag:pxeclient,tag:!bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+            f'dhcp-boot=tag:!ipxe,tag:bios,undionly.kpxe,,{server}',
+            f'dhcp-boot=tag:!ipxe,tag:efi32,i386/snponly.efi,,{server}',
             f'dhcp-boot=tag:!ipxe,tag:efi64,x86_64-sb/snponly-shim.efi,,{server}',
-            f'dhcp-boot=tag:!ipxe,tag:arm32,arm32-efi/snponly.efi,,{server}',
+            f'dhcp-boot=tag:!ipxe,tag:arm32,arm32/snponly.efi,,{server}',
             f'dhcp-boot=tag:!ipxe,tag:arm64,arm64-sb/snponly-shim.efi,,{server}',
+            f'dhcp-boot=tag:pxe-noarch,undionly.kpxe,,{server}',
             f'dhcp-boot=tag:ipxe,autoexec.ipxe,,{server}',
         ]
 
