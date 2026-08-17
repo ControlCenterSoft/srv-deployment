@@ -1,0 +1,111 @@
+name: SRV Control Center 1.3.0 share creation paths
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - releases/1.3.0/system/srv-control-samba-admin
+      - releases/1.3.0/system/srv-control-samba-agent.service
+      - releases/1.3.0/system/srv-control-samba-shares-monitor
+      - releases/1.3.0/payload/static/js/shares.js
+      - .github/workflows/release-1.3-share-create-paths.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  share-path-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and sandbox contracts
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile \
+            releases/1.3.0/system/srv-control-samba-admin \
+            releases/1.3.0/system/srv-control-samba-shares-monitor
+          node --check releases/1.3.0/payload/static/js/shares.js
+          grep -Fq 'ProtectHome=read-only' releases/1.3.0/system/srv-control-samba-agent.service
+          grep -Fq 'data_managed' releases/1.3.0/system/srv-control-samba-shares-monitor
+          grep -Fq 'externalData' releases/1.3.0/payload/static/js/shares.js
+          grep -Fq 'внешний каталог должен существовать' releases/1.3.0/payload/static/js/shares.js
+      - name: Exercise managed and external path policy
+        run: |
+          set -Eeuo pipefail
+          sudo mkdir -p /home/srvcc-ci-existing
+          sudo chmod 0755 /home/srvcc-ci-existing
+          python3 - <<'PY'
+          from importlib.machinery import SourceFileLoader
+          from pathlib import Path
+          import subprocess
+
+          path = 'releases/1.3.0/system/srv-control-samba-admin'
+          module = SourceFileLoader('srvcc_samba_admin', path).load_module()
+          module.domain_prefix = lambda: 'HM'
+
+          managed = module.normalize_share_payload({
+              'name': 'managed-ci',
+              'path': None,
+              'subjects': [{'type': 'everyone', 'name': 'Everyone', 'access': 'write'}],
+              'quota': {'limit_gib': None},
+          })
+          assert managed['path'] == '/srv/shares/managed-ci', managed
+          assert managed['data_managed'] is True, managed
+
+          external = module.normalize_share_payload({
+              'name': 'external-ci',
+              'path': '/home/srvcc-ci-existing',
+              'subjects': [{'type': 'everyone', 'name': 'Everyone', 'access': 'write'}],
+              'quota': {'limit_gib': None},
+          })
+          assert external['data_managed'] is False, external
+          assert external['path'] == '/home/srvcc-ci-existing', external
+          quota = module.apply_quota(external, {'shares': [external]})
+          assert quota['supported'] is False and quota['reason'] == 'external-path', quota
+          assert module.share_roots({'shares': [managed, external]}) == ['srv/shares/managed-ci']
+          rendered = module.render_shares({'shares': [external]})
+          assert '[external-ci]' in rendered
+          assert 'path = /home/srvcc-ci-existing' in rendered
+          assert 'valid users = Everyone' in rendered
+
+          # ACL must be a hard no-op for an external existing directory.
+          module.run = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('run must not be called'))
+          module.apply_posix_acl(external)
+
+          try:
+              module.normalize_share_payload({
+                  'name': 'missing-ci',
+                  'path': '/home/srvcc-ci-missing',
+                  'subjects': [{'type': 'everyone', 'name': 'Everyone', 'access': 'read'}],
+              })
+          except RuntimeError as exc:
+              assert 'existing normal directory' in str(exc), exc
+          else:
+              raise AssertionError('missing external path unexpectedly accepted')
+
+          try:
+              module.normalize_share_payload({
+                  'name': 'unsafe-ci',
+                  'path': '/etc/srvcc-ci',
+                  'subjects': [{'type': 'everyone', 'name': 'Everyone', 'access': 'read'}],
+              })
+          except RuntimeError as exc:
+              assert 'below one of' in str(exc), exc
+          else:
+              raise AssertionError('/etc path unexpectedly accepted')
+
+          try:
+              module.normalize_share_payload({
+                  'name': 'quota-ci',
+                  'path': '/home/srvcc-ci-existing',
+                  'subjects': [{'type': 'everyone', 'name': 'Everyone', 'access': 'read'}],
+                  'quota': {'limit_gib': 10},
+              })
+          except RuntimeError as exc:
+              assert 'quota is not managed' in str(exc), exc
+          else:
+              raise AssertionError('external quota unexpectedly accepted')
+
+          print('share path policy: PASS')
+          PY

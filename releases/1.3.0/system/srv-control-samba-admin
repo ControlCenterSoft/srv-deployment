@@ -466,10 +466,21 @@ def registry_entry(registry: dict[str, Any], name: str) -> dict[str, Any] | None
     return None
 
 
-def domain_prefix() -> str:
-    value = run(["testparm", "-s", "--parameter-name", "workgroup"], timeout=10, check=False).strip()
-    return value or "DOMAIN"
 
+def domain_prefix() -> str:
+    completed = subprocess.run(
+        ["testparm", "-s", "--suppress-prompt", "--parameter-name", "workgroup"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+        check=False,
+        env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"},
+    )
+    if completed.returncode != 0:
+        return "DOMAIN"
+    lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+    return lines[-1] if lines else "DOMAIN"
 
 def subject_token(subject: dict[str, Any]) -> tuple[str, str]:
     kind = str(subject.get("type") or "").strip().lower()
@@ -488,7 +499,34 @@ def subject_token(subject: dict[str, Any]) -> tuple[str, str]:
     raise RuntimeError("share subject type must be user, group or everyone")
 
 
-def validate_share_path(name: str, value: object | None) -> Path:
+
+def path_is_under(path: Path, root: Path) -> bool:
+    normalized = Path(os.path.normpath(str(path)))
+    normalized_root = Path(os.path.normpath(str(root)))
+    return normalized != normalized_root and normalized_root in normalized.parents
+
+
+EXTERNAL_SHARE_ROOTS = tuple(
+    Path(value) for value in ("/home", "/srv", "/mnt", "/media", "/data", "/storage")
+)
+
+
+def share_data_managed(item: dict[str, Any]) -> bool:
+    if "data_managed" in item:
+        return bool(item.get("data_managed"))
+    raw = item.get("path")
+    if raw is None or not str(raw).strip():
+        return True
+    return path_is_under(Path(os.path.normpath(str(raw))), SHARE_ROOT)
+
+
+def validate_share_path(
+    name: str,
+    value: object | None,
+    *,
+    allow_external: bool = False,
+    require_external_existing: bool = False,
+) -> Path:
     if value is None or not str(value).strip():
         path = SHARE_ROOT / name
     else:
@@ -496,11 +534,22 @@ def validate_share_path(name: str, value: object | None) -> Path:
     if not path.is_absolute():
         raise RuntimeError("share path must be absolute")
     normalized = Path(os.path.normpath(str(path)))
-    root = Path(os.path.normpath(str(SHARE_ROOT)))
-    if normalized == root or root not in normalized.parents:
+    if path_is_under(normalized, SHARE_ROOT):
+        return normalized
+    if not allow_external:
         raise RuntimeError(f"managed share path must be under {SHARE_ROOT}")
+    root = next((candidate for candidate in EXTERNAL_SHARE_ROOTS if path_is_under(normalized, candidate)), None)
+    if root is None:
+        allowed = ", ".join(str(candidate) for candidate in EXTERNAL_SHARE_ROOTS)
+        raise RuntimeError(f"external share path must be below one of: {allowed}")
+    if require_external_existing or normalized.exists():
+        if not normalized.exists() or not normalized.is_dir() or normalized.is_symlink():
+            raise RuntimeError("external share path must be an existing normal directory")
+        resolved = normalized.resolve(strict=True)
+        resolved_root = root.resolve(strict=False)
+        if not path_is_under(resolved, resolved_root):
+            raise RuntimeError("external share path resolves outside its approved data root")
     return normalized
-
 
 def render_shares(registry: dict[str, Any]) -> str:
     blocks: list[str] = ["# Managed by SRV Control Center 1.3.0. Do not edit by hand.", ""]
@@ -508,7 +557,7 @@ def render_shares(registry: dict[str, Any]) -> str:
         if not isinstance(item, dict):
             continue
         name = share_name(item.get("name"))
-        path = validate_share_path(name, item.get("path"))
+        path = validate_share_path(name, item.get("path"), allow_external=not share_data_managed(item))
         comment = clean_text(item.get("comment") or "", maximum=1024)
         subjects_raw = item.get("subjects") if isinstance(item.get("subjects"), list) else []
         tokens = [subject_token(subject) for subject in subjects_raw if isinstance(subject, dict)]
@@ -640,6 +689,16 @@ def apply_quota(item: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any
     limit = 0 if limit_raw in {None, "", 0, "0"} else int(limit_raw)
     if limit < 0 or limit > 1024 * 1024:
         raise RuntimeError("share quota is outside supported range")
+    if not share_data_managed(item):
+        if limit:
+            raise RuntimeError("quota is not managed for an external share path")
+        return {
+            "limit_gib": None,
+            "project_id": None,
+            "backend": None,
+            "supported": False,
+            "reason": "external-path",
+        }
     path = validate_share_path(str(item["name"]), item.get("path"))
     info = filesystem_info(path)
     fstype = str(info.get("fstype") or "")
@@ -694,6 +753,8 @@ def apply_quota(item: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any
 
 
 def apply_posix_acl(item: dict[str, Any]) -> None:
+    if not share_data_managed(item):
+        return
     if not shutil.which("setfacl"):
         return
     path = validate_share_path(str(item["name"]), item.get("path"))
@@ -722,12 +783,19 @@ def apply_posix_acl(item: dict[str, Any]) -> None:
     run(["setfacl", "-m", "d:u::rwx,d:g::rwx,d:m::rwx", str(path)], timeout=30)
 
 
+
 def normalize_share_payload(payload: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
     source = dict(existing or {})
     raw_name = payload.get("name") if "name" in payload else payload.get("share_name") or source.get("name")
     name = share_name(raw_name)
     source["name"] = name
-    source["path"] = str(validate_share_path(name, payload.get("path") if "path" in payload else source.get("path")))
+    raw_path = payload.get("path") if "path" in payload else source.get("path")
+    path = validate_share_path(name, raw_path, allow_external=True, require_external_existing=True)
+    data_managed = path_is_under(path, SHARE_ROOT)
+    if existing is not None and data_managed != share_data_managed(existing):
+        raise RuntimeError("share data scope cannot be changed between managed and external paths")
+    source["path"] = str(path)
+    source["data_managed"] = data_managed
     if "comment" in payload:
         source["comment"] = clean_text(payload.get("comment") or "", maximum=1024)
     else:
@@ -755,6 +823,10 @@ def normalize_share_payload(payload: dict[str, Any], existing: dict[str, Any] | 
         source["quota"] = merged_quota
     else:
         source.setdefault("quota", {})
+    if not data_managed:
+        limit = (source.get("quota") or {}).get("limit_gib") if isinstance(source.get("quota"), dict) else None
+        if limit not in {None, "", 0, "0"}:
+            raise RuntimeError("quota is not managed for an external share path")
     return source
 
 
@@ -765,7 +837,7 @@ def share_operation(action: str, payload: dict[str, Any]) -> str:
         if registry_entry(registry, str(item["name"])) is not None:
             raise RuntimeError("managed share already exists")
         path = Path(str(item["path"]))
-        created_dir = ensure_share_directory(path)
+        created_dir = ensure_share_directory(path) if share_data_managed(item) else False
         registry["shares"].append(item)
         try:
             quota = apply_quota(item, registry)
@@ -784,7 +856,8 @@ def share_operation(action: str, payload: dict[str, Any]) -> str:
                 except Exception:
                     pass
             raise
-        return f"share created: {item['name']}"
+        scope = "managed-data" if share_data_managed(item) else "external-existing"
+        return f"share created: {item['name']}; scope={scope}"
 
     old_name = share_name(payload.get("share_name"))
     existing = registry_entry(registry, old_name)
@@ -795,7 +868,10 @@ def share_operation(action: str, payload: dict[str, Any]) -> str:
         if str(item["name"]).casefold() != old_name.casefold() and registry_entry(registry, str(item["name"])):
             raise RuntimeError("target share name already exists")
         path = Path(str(item["path"]))
-        ensure_share_directory(path)
+        if share_data_managed(item):
+            ensure_share_directory(path)
+        else:
+            validate_share_path(str(item["name"]), item.get("path"), allow_external=True, require_external_existing=True)
         index = registry["shares"].index(existing)
         registry["shares"][index] = item
         quota = apply_quota(item, registry)
@@ -805,30 +881,31 @@ def share_operation(action: str, payload: dict[str, Any]) -> str:
         save_registry(registry)
         return f"share updated: {item['name']}"
     if action == "samba-share-delete":
-        path = validate_share_path(old_name, existing.get("path"))
+        data_managed = share_data_managed(existing)
+        path = validate_share_path(old_name, existing.get("path"), allow_external=not data_managed)
+        if bool(payload.get("delete_data")) and not data_managed:
+            raise RuntimeError("refusing to delete data for an external share path")
         registry["shares"] = [item for item in registry["shares"] if item is not existing]
         apply_share_config(registry)
         save_registry(registry)
-        if bool(payload.get("delete_data")):
-            if path.exists():
-                if path.is_symlink() or SHARE_ROOT not in path.parents:
-                    raise RuntimeError("refusing to delete unsafe share data path")
-                if filesystem_info(path).get("fstype") == "btrfs" and shutil.which("btrfs"):
-                    probe = subprocess.run(
-                        ["btrfs", "subvolume", "show", str(path)],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-                    if probe.returncode == 0:
-                        run(["btrfs", "subvolume", "delete", str(path)], timeout=1800)
-                    else:
-                        shutil.rmtree(path)
+        if bool(payload.get("delete_data")) and path.exists():
+            if path.is_symlink() or SHARE_ROOT not in path.parents:
+                raise RuntimeError("refusing to delete unsafe share data path")
+            if filesystem_info(path).get("fstype") == "btrfs" and shutil.which("btrfs"):
+                probe = subprocess.run(
+                    ["btrfs", "subvolume", "show", str(path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                if probe.returncode == 0:
+                    run(["btrfs", "subvolume", "delete", str(path)], timeout=1800)
                 else:
                     shutil.rmtree(path)
+            else:
+                shutil.rmtree(path)
         return f"share removed: {old_name}; data_deleted={bool(payload.get('delete_data'))}"
     raise RuntimeError("unsupported share operation")
-
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -838,16 +915,16 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+
 def share_roots(registry: dict[str, Any]) -> list[str]:
     roots: list[str] = []
     for item in registry.get("shares", []):
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not share_data_managed(item):
             continue
         name = share_name(item.get("name"))
         path = validate_share_path(name, item.get("path"))
         roots.append(str(path).lstrip("/"))
     return sorted(set(roots))
-
 
 def create_domain_backup(payload: dict[str, Any], actor: str) -> str:
     mode = str(payload.get("mode") or "domain-config").strip().lower()
