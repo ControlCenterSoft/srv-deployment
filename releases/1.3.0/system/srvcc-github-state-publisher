@@ -49,8 +49,6 @@ remote_state_exists() {
 }
 
 ensure_state_repo() {
-    install -d -m 0750 "$AGENT_ROOT"
-
     if [[ ! -d "$STATE_REPO/.git" ]]; then
         if [[ -e "$STATE_REPO" ]]; then
             mv "$STATE_REPO" "${STATE_REPO}.broken.$(date +%Y%m%dT%H%M%S)"
@@ -226,6 +224,7 @@ publish() {
     touch "$LOG"
     chmod 0640 "$LOG" 2>/dev/null || true
     require_tools_and_auth
+    install -d -m 0750 "$AGENT_ROOT"
 
     exec 8>"$LOCK"
     flock -n 8 || { log 'STATE PASS: publisher skipped because another state publish is active.'; return 0; }
