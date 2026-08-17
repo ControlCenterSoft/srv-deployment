@@ -1,8 +1,8 @@
-name: SRV Control Center 1.3.0 validation
+name: SRV Control Center 1.3.1 validation
 
 on:
   push:
-    branches: [release/1.3.0]
+    branches: [release/1.3.1]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -22,29 +22,33 @@ jobs:
           import hashlib,json
           from pathlib import Path
           cfg=json.loads(Path('deployment.json').read_text())
-          assert cfg['release_id']=='1.3.0' and cfg['release_path']=='releases/1.3.0'
+          assert cfg['release_id']=='1.3.1' and cfg['release_path']=='releases/1.3.1'
           assert cfg['channel'] in {'release-candidate','production'}
-          root=Path('releases/1.3.0'); manifest=json.loads((root/'manifest.json').read_text())
-          assert manifest['release_id']==manifest['release_version']=='1.3.0'
+          root=Path('releases/1.3.1'); manifest=json.loads((root/'manifest.json').read_text())
+          assert manifest['release_id']==manifest['release_version']=='1.3.1'
           for name,item in manifest['scripts'].items():
               digest=hashlib.sha256((root/item['path']).read_bytes()).hexdigest()
               assert digest==item['sha256'],(name,digest,item['sha256'])
+              assert Path(cfg[name]) == root/item['path'], (name,cfg[name],item['path'])
           PY
-          bash -n releases/1.3.0/{preflight,apply,acceptance,rollback}.sh
-          bash -n releases/1.3.0/system/{install-auth.sh,srvcc-configure-auto-updates}
-          python3 -m compileall -q releases/1.3.0/payload/app
-          for file in releases/1.3.0/system/srv-control-{system-agent,backup,os-auto-update,samba-admin,samba-agent,samba-ldif-editor,samba-monitor,samba-shares-monitor,minecraft-admin,minecraft-admin-core,minecraft-agent,minecraft-auto-update,minecraft-firewall,minecraft-monitor,minecraft-player-admin,minecraft-runner,minecraft-update}; do python3 -m py_compile "$file"; done
-          for file in releases/1.3.0/payload/static/js/{access,dashboard,samba,shares,minecraft,services,shell,system}.js; do node --check "$file"; done
-          grep -Fq 'Домен Samba' releases/1.3.0/payload/templates/shell.html
-          grep -Fq '/api/v1/samba/backups' releases/1.3.0/payload/static/js/samba.js
-          grep -Fq 'browseable' releases/1.3.0/payload/static/js/shares.js
-          grep -Fq '/api/v1/minecraft/instances' releases/1.3.0/payload/static/js/minecraft.js
-          grep -Fq 'players/kick' releases/1.3.0/payload/static/js/minecraft.js
-          grep -Fq 'update/apply' releases/1.3.0/payload/static/js/minecraft.js
-          grep -Fq '13f0a1300001' releases/1.3.0/payload/migrations/versions/13f0a1300001_shares_rbac.py
-          grep -Fq 'samba-dsdb-modules' releases/1.3.0/system/srv-control-samba-agent
-          grep -Fq 'include must be the LAST directive of [global]' releases/1.3.0/system/srv-control-samba-agent
-          ! grep -R -n -i -E 'пока не работает|будет реализовано|future release only|будет включено' releases/1.3.0/payload/templates releases/1.3.0/payload/static
+          bash -n releases/1.3.1/{preflight,apply,acceptance,rollback}.sh
+          bash -n releases/1.3.1/{preflight-1.3.1,apply-1.3.1,acceptance-1.3.1,rollback-1.3.1}.sh
+          bash -n releases/1.3.1/system/{install-auth.sh,srvcc-configure-auto-updates}
+          python3 -m compileall -q releases/1.3.1/payload/app
+          for file in releases/1.3.1/system/srv-control-{system-agent,backup,os-auto-update,samba-admin,samba-agent,samba-ldif-editor,samba-monitor,samba-shares-monitor,minecraft-admin,minecraft-admin-core,minecraft-agent,minecraft-auto-update,minecraft-firewall,minecraft-monitor,minecraft-player-admin,minecraft-runner,minecraft-update}; do python3 -m py_compile "$file"; done
+          for file in releases/1.3.1/payload/static/js/{access,dashboard,github-update-timestamps,samba,shares,minecraft,services,shell,system}.js; do node --check "$file"; done
+          grep -Fq 'Домен Samba' releases/1.3.1/payload/templates/shell.html
+          grep -Fq '/api/v1/samba/backups' releases/1.3.1/payload/static/js/samba.js
+          grep -Fq 'browseable' releases/1.3.1/payload/static/js/shares.js
+          grep -Fq '/api/v1/minecraft/instances' releases/1.3.1/payload/static/js/minecraft.js
+          grep -Fq 'players/kick' releases/1.3.1/payload/static/js/minecraft.js
+          grep -Fq 'update/apply' releases/1.3.1/payload/static/js/minecraft.js
+          grep -Fq '13f0a1300001' releases/1.3.1/payload/migrations/versions/13f0a1300001_shares_rbac.py
+          grep -Fq 'samba-dsdb-modules' releases/1.3.1/system/srv-control-samba-agent
+          grep -Fq 'include must be the LAST directive of [global]' releases/1.3.1/system/srv-control-samba-agent
+          grep -Fq 'last_update_attempt_at' releases/1.3.1/system/srvcc-configure-auto-updates
+          grep -Fq 'last_successful_update_at' releases/1.3.1/system/srvcc-configure-auto-updates
+          ! grep -R -n -i -E 'пока не работает|будет реализовано|future release only|будет включено' releases/1.3.1/payload/templates releases/1.3.1/payload/static
 
   database-rbac-validation:
     runs-on: ubuntu-latest
@@ -55,7 +59,7 @@ jobs:
       - name: Validate migrations and RBAC
         run: |
           python -m venv /tmp/venv
-          /tmp/venv/bin/pip install --disable-pip-version-check -r releases/1.3.0/payload/requirements.lock
+          /tmp/venv/bin/pip install --disable-pip-version-check -r releases/1.3.1/payload/requirements.lock
           sudo apt-get update -y && sudo apt-get install -y --no-install-recommends postgresql postgresql-client
           sudo systemctl start postgresql
           sudo groupadd --system srv-control || true
@@ -63,7 +67,7 @@ jobs:
           sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='srv-control'" | grep -q 1 || sudo -u postgres createuser --login srv-control
           sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='srv_control'" | grep -q 1 || sudo -u postgres createdb --owner=srv-control srv_control
           sudo install -d -m 0750 -o root -g srv-control /opt/srv-control
-          sudo cp -a releases/1.3.0/payload/. /opt/srv-control/ && sudo chown -R root:srv-control /opt/srv-control
+          sudo cp -a releases/1.3.1/payload/. /opt/srv-control/ && sudo chown -R root:srv-control /opt/srv-control
           sudo -u srv-control env PYTHONPATH=/opt/srv-control /tmp/venv/bin/alembic -c /opt/srv-control/alembic.ini upgrade head
           test "$(sudo -u srv-control psql -d srv_control -Atc 'SELECT version_num FROM alembic_version LIMIT 1;')" = 13f0a1300001
           sudo -u srv-control env PYTHONPATH=/opt/srv-control /tmp/venv/bin/python - <<'PY'
@@ -90,9 +94,9 @@ jobs:
           from importlib.machinery import SourceFileLoader
           from pathlib import Path
           import tempfile
-          mc=SourceFileLoader('mc','releases/1.3.0/system/srv-control-minecraft-admin-core').load_module()
-          pl=SourceFileLoader('pl','releases/1.3.0/system/srv-control-minecraft-player-admin').load_module()
-          up=SourceFileLoader('up','releases/1.3.0/system/srv-control-minecraft-update').load_module()
+          mc=SourceFileLoader('mc','releases/1.3.1/system/srv-control-minecraft-admin-core').load_module()
+          pl=SourceFileLoader('pl','releases/1.3.1/system/srv-control-minecraft-player-admin').load_module()
+          up=SourceFileLoader('up','releases/1.3.1/system/srv-control-minecraft-update').load_module()
           assert mc.instance_id('srv_01')=='srv_01'
           try: mc.instance_id('../bad')
           except RuntimeError: pass
@@ -105,9 +109,9 @@ jobs:
           assert {'minecraft-player-kick','minecraft-player-permission'} <= pl.PLAYER_ACTIONS
           assert up.version_tuple('1.21.100.1') > up.version_tuple('1.21.99.1')
           PY
-          grep -Fq '/api/v1/minecraft/instances' releases/1.3.0/payload/static/js/minecraft.js
-          grep -Fq 'automatic' releases/1.3.0/payload/static/js/minecraft.js
-          grep -Fq 'published' releases/1.3.0/payload/static/js/minecraft.js
+          grep -Fq '/api/v1/minecraft/instances' releases/1.3.1/payload/static/js/minecraft.js
+          grep -Fq 'automatic' releases/1.3.1/payload/static/js/minecraft.js
+          grep -Fq 'published' releases/1.3.1/payload/static/js/minecraft.js
 
   samba-domain-lab-validation:
     runs-on: ubuntu-latest
@@ -120,11 +124,11 @@ jobs:
           sudo groupadd --system srv-control || true
           sudo install -d -m 0750 -o root -g srv-control /var/lib/srv-control /var/lib/srv-control/domain-backups /var/lib/srv-control/samba-actions /var/lib/srv-control/system-results /srv/shares
           sudo install -d -m 0700 -o root -g root /var/lib/srv-control/action-secrets /var/lib/srv-control/domain-imports
-          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-admin /usr/local/libexec/srv-control-samba-admin
-          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-agent /usr/local/libexec/srv-control-samba-agent
-          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-ldif-editor /usr/local/libexec/srv-control-samba-ldif-editor
-          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-monitor /usr/local/libexec/srv-control-samba-monitor
-          sudo install -m 0755 releases/1.3.0/system/srv-control-samba-shares-monitor /usr/local/libexec/srv-control-samba-shares-monitor
+          sudo install -m 0755 releases/1.3.1/system/srv-control-samba-admin /usr/local/libexec/srv-control-samba-admin
+          sudo install -m 0755 releases/1.3.1/system/srv-control-samba-agent /usr/local/libexec/srv-control-samba-agent
+          sudo install -m 0755 releases/1.3.1/system/srv-control-samba-ldif-editor /usr/local/libexec/srv-control-samba-ldif-editor
+          sudo install -m 0755 releases/1.3.1/system/srv-control-samba-monitor /usr/local/libexec/srv-control-samba-monitor
+          sudo install -m 0755 releases/1.3.1/system/srv-control-samba-shares-monitor /usr/local/libexec/srv-control-samba-shares-monitor
       - name: Provision isolated domain
         run: |
           sudo systemctl stop smbd nmbd winbind samba-ad-dc 2>/dev/null || true
