@@ -56,6 +56,32 @@ def _pxe_denied(mac: str, reason: str = 'This computer is not authorized for ins
     )
 
 
+def _pxe_firmware_compatible(firmware: str, buildarch: str, image_arch: str) -> bool:
+    fw = str(firmware or '').strip().lower()
+    boot_arch = str(buildarch or '').strip().lower()
+    image = str(image_arch or '').strip().lower()
+    aliases = {
+        'amd64': 'x86_64', 'x86_64': 'x86_64',
+        'i386': 'i386', 'x86': 'i386', 'ia32': 'i386',
+        'arm64': 'arm64', 'aarch64': 'arm64',
+        'arm32': 'arm32',
+    }
+    image = aliases.get(image, image)
+    boot_arch = aliases.get(boot_arch, boot_arch)
+
+    if fw in {'pcbios', 'bios'}:
+        # The managed Legacy chain is x86 BIOS. ARM operating-system images are
+        # UEFI-only and must be rejected before a destructive installer starts.
+        return image in {'i386', 'x86_64'}
+    if fw == 'efi':
+        if image not in {'i386', 'x86_64', 'arm32', 'arm64'}:
+            return False
+        return not boot_arch or image == boot_arch
+    # Older/custom iPXE builds may omit platform metadata. Do not regress those
+    # clients; the published installer still performs its own firmware check.
+    return True
+
+
 @router.get('/pxe/boot.ipxe', response_class=PlainTextResponse)
 def pxe_boot(request: Request, mac: str, platform: str = '', buildarch: str = ''):
     try:
@@ -74,11 +100,11 @@ def pxe_boot(request: Request, mac: str, platform: str = '', buildarch: str = ''
     firmware = str(platform or '').strip().lower()
     arch = str(buildarch or '').strip().lower()
     image_arch = str(profile.get('architecture') or 'amd64').strip().lower()
-    if firmware == 'efi':
-        if image_arch in {'amd64', 'x86_64'} and arch and arch != 'x86_64':
-            return _pxe_denied(mac, f'Image architecture {image_arch} is not compatible with UEFI {arch}.')
-        if image_arch == 'arm64' and arch and arch != 'arm64':
-            return _pxe_denied(mac, f'Image architecture arm64 is not compatible with UEFI {arch}.')
+    if not _pxe_firmware_compatible(firmware, arch, image_arch):
+        return _pxe_denied(
+            mac,
+            f'Image architecture {image_arch} is not compatible with firmware {firmware or "unknown"}/{arch or "unknown"}.',
+        )
 
     return PlainTextResponse(
         boot_file.read_text(encoding='utf-8'),
