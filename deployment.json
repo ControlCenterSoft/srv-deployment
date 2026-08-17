@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "stable",
-  "release": "1.0.0",
-  "release_id": "1.0.0",
-  "release_path": "releases/1.0.0",
-  "manifest": "releases/1.0.0/manifest.json",
-  "preflight": "releases/1.0.0/preflight.sh",
-  "apply": "releases/1.0.0/apply.sh",
-  "acceptance": "releases/1.0.0/acceptance.sh",
-  "rollback": "releases/1.0.0/rollback.sh",
-  "description": "Consolidated SRV Control Center 1.0.0 baseline with all production functionality through 0.10.0 and repaired release-fingerprint updates."
+  "release": "1.1.0",
+  "release_id": "1.1.0",
+  "release_path": "releases/1.1.0",
+  "manifest": "releases/1.1.0/manifest.json",
+  "preflight": "releases/1.1.0/preflight.sh",
+  "apply": "releases/1.1.0/apply.sh",
+  "acceptance": "releases/1.1.0/acceptance.sh",
+  "rollback": "releases/1.1.0/rollback.sh",
+  "description": "User-requested administration release: system/domain authentication, SSO, group RBAC, GitHub and OS update controls, backups, Torrents, AdGuard VPN and Services."
 }
