@@ -1,0 +1,66 @@
+name: Release 1.3.3 validation
+
+on:
+  pull_request:
+    paths:
+      - 'deployment.json'
+      - 'releases/1.3.3/**'
+      - '.github/workflows/release-1.3.3-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          set -euxo pipefail
+          for f in \
+            releases/1.3.3/preflight-1.3.3.sh \
+            releases/1.3.3/apply-1.3.3.sh \
+            releases/1.3.3/acceptance-1.3.3.sh \
+            releases/1.3.3/rollback-1.3.3.sh
+          do
+            bash -n "$f"
+          done
+      - name: Python payload syntax
+        run: |
+          python3 -m py_compile \
+            releases/1.3.3/payload/app/main.py \
+            releases/1.3.3/payload/app/routers/minecraft_legacy.py
+      - name: Print release script hashes
+        run: |
+          sha256sum \
+            releases/1.3.3/preflight-1.3.3.sh \
+            releases/1.3.3/apply-1.3.3.sh \
+            releases/1.3.3/acceptance-1.3.3.sh \
+            releases/1.3.3/rollback-1.3.3.sh
+      - name: Metadata and hash contract
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('.')
+          dep=json.loads((root/'deployment.json').read_text())
+          man=json.loads((root/'releases/1.3.3/manifest.json').read_text())
+          assert dep['release_id']=='1.3.3'
+          assert man['release_id']=='1.3.3' and man['release_version']=='1.3.3'
+          release=root/dep['release_path']
+          for stage in ('preflight','apply','acceptance','rollback'):
+              p=root/dep[stage]
+              entry=man['scripts'][stage]
+              assert p == release/entry['path'],(stage,p,entry)
+              actual=hashlib.sha256(p.read_bytes()).hexdigest()
+              print(stage,actual)
+              assert actual == entry['sha256'],(stage,actual,entry['sha256'])
+          PY
+      - name: Release invariants
+        run: |
+          set -euxo pipefail
+          grep -q 'LAST_FAILED_FINGERPRINT' releases/1.3.3/apply-1.3.3.sh
+          grep -q 'session.key missing after deployment' releases/1.3.3/acceptance-1.3.3.sh
+          grep -q 'minecraft-update.timer is not active' releases/1.3.3/acceptance-1.3.3.sh
+          grep -q 'srv-control-minecraft-auto-update.timer' releases/1.3.3/acceptance-1.3.3.sh
