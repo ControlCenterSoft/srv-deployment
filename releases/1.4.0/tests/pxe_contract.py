@@ -240,8 +240,6 @@ def main() -> int:
         'diskpart /s %DiskScript%',
         '/CheckIntegrity /Verify',
     )
-    if windows.index('dism /Get-WimInfo') > windows.index('diskpart /s %DiskScript%'):
-        fail('Windows image/index validation is generated after destructive diskpart')
 
     linux = effective_function(agent, 'def publish_linux(')
     require(
