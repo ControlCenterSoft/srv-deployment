@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/shell.css">
+    <link rel="stylesheet" href="/static/css/shell.css?v=1.1.0-ui4">
 </head>
 <body>
 <div class="app-shell">
@@ -50,12 +50,10 @@
                 <strong id="sessionUser">—</strong>
                 <button id="logoutButton" type="button">Выйти</button>
             </div>
-            <div class="backend-line">
-                <div class="health-dot" id="backendHealthDot"></div>
-                <div class="backend-state">
-                    <strong id="backendHealth">Проверка...</strong>
-                    <span>Backend</span>
-                </div>
+            <div class="health-dot" id="backendHealthDot"></div>
+            <div class="backend-state">
+                <strong id="backendHealth">Проверка...</strong>
+                <span>Backend</span>
             </div>
             <div class="release-meta">
                 <strong id="releaseVersion">Релиз —</strong>
@@ -64,6 +62,6 @@
         </div>
     </aside>
 </div>
-<script src="/static/js/shell.js"></script>
+<script src="/static/js/shell.js?v=1.1.0-ui4"></script>
 </body>
 </html>
