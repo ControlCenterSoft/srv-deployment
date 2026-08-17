@@ -9,6 +9,7 @@ import uuid
 
 
 ACTION_DIR = Path("/var/lib/srv-control/system-actions")
+SAMBA_ACTION_DIR = Path("/var/lib/srv-control/samba-actions")
 RESULT_DIR = Path("/var/lib/srv-control/system-results")
 GITHUB_CONFIG = Path("/var/lib/srv-control/github-update-config.json")
 GITHUB_STATUS = Path("/var/lib/srv-control/github-update-status.json")
@@ -19,6 +20,27 @@ BACKUP_DIR = Path("/var/lib/srv-control/backups")
 ADGUARD_STATUS = Path("/var/lib/srv-control/adguard-vpn-status.json")
 SAMBA_STATUS = Path("/var/lib/srv-control/samba-domain-status.json")
 
+SAMBA_ACTIONS = {
+    "service-install-samba-dc",
+    "service-remove-samba-dc",
+    "samba-password-policy",
+    "samba-user-create",
+    "samba-user-update",
+    "samba-user-password",
+    "samba-user-enable",
+    "samba-user-disable",
+    "samba-user-unlock",
+    "samba-user-delete",
+    "samba-group-create",
+    "samba-group-update",
+    "samba-group-members",
+    "samba-group-delete",
+    "samba-backup-create",
+    "samba-backup-restore",
+    "samba-share-create",
+    "samba-share-update",
+    "samba-share-delete",
+}
 ALLOWED_ACTIONS = {
     "reboot",
     "github-update-config",
@@ -39,25 +61,7 @@ ALLOWED_ACTIONS = {
     "service-configure-adguard-vpn",
     "service-install-pxe",
     "service-remove-pxe",
-    "service-install-samba-dc",
-    "service-remove-samba-dc",
-    "samba-password-policy",
-    "samba-user-create",
-    "samba-user-update",
-    "samba-user-password",
-    "samba-user-enable",
-    "samba-user-disable",
-    "samba-user-unlock",
-    "samba-user-delete",
-    "samba-group-create",
-    "samba-group-update",
-    "samba-group-members",
-    "samba-group-delete",
-    "samba-backup-create",
-    "samba-backup-restore",
-    "samba-share-create",
-    "samba-share-update",
-    "samba-share-delete",
+    *SAMBA_ACTIONS,
     "minecraft-configure",
     "minecraft-start",
     "minecraft-stop",
@@ -225,7 +229,8 @@ def backups() -> list[dict]:
 def action_queue(limit: int = 20) -> list[dict]:
     items: list[dict] = []
     try:
-        paths = sorted(ACTION_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime)
+        paths = [*ACTION_DIR.glob("*.json"), *SAMBA_ACTION_DIR.glob("*.json")]
+        paths = sorted(paths, key=lambda item: item.stat().st_mtime)
         for path in paths[: max(0, min(limit, 50))]:
             payload = _read_json(path)
             if payload:
@@ -323,7 +328,8 @@ def enqueue(
 ) -> dict:
     if action not in ALLOWED_ACTIONS:
         raise ValueError("unsupported system action")
-    ACTION_DIR.mkdir(parents=True, exist_ok=True)
+    target_dir = SAMBA_ACTION_DIR if action in SAMBA_ACTIONS else ACTION_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
     request_id = uuid.uuid4().hex
     body = {
         "schema_version": 3,
@@ -333,8 +339,8 @@ def enqueue(
         "client_ip": client_ip,
         "payload": payload if isinstance(payload, dict) else {},
     }
-    tmp = ACTION_DIR / f".{request_id}.tmp"
-    target = ACTION_DIR / f"{request_id}.json"
+    tmp = target_dir / f".{request_id}.tmp"
+    target = target_dir / f"{request_id}.json"
     tmp.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o640)
     os.replace(tmp, target)
