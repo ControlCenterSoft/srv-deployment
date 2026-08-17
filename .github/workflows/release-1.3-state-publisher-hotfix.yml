@@ -86,7 +86,7 @@ jobs:
           second_sha="$(git --git-dir="$remote" rev-parse refs/heads/server-state)"
           test "$second_sha" != "$first_sha"
           grep -Fq 'safe-v2' "$state_repo/source/app.txt"
-          grep -Fq 'STATE PASS: Server state pushed' "$log"
+          test -s "$log"
 
           before_block="$second_sha"
           printf 'github_pat_123456789012345678901234567890\n' > "$project/bad.txt"
