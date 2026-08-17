@@ -21,6 +21,7 @@ jobs:
           set -Eeuo pipefail
           for f in releases/1.4.0/preflight.sh releases/1.4.0/apply.sh releases/1.4.0/acceptance.sh releases/1.4.0/rollback.sh; do bash -n "$f"; done
           python3 releases/1.4.0/tests/pxe_contract.py
+          python3 releases/1.4.0/tests/pxe_transport_contract.py
           cat releases/1.4.0/payload/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > /tmp/release14-core.py
           cat releases/1.4.0/payload/app/routers/release14.parts/{00,01,02,03}.part > /tmp/release14-router.py
           cat releases/1.4.0/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > /tmp/release14-agent.py
