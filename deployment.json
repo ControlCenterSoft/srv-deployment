@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "1.3.1",
-  "release_id": "1.3.1",
-  "release_path": "releases/1.3.1",
-  "manifest": "releases/1.3.1/manifest.json",
-  "preflight": "releases/1.3.1/preflight-1.3.1.sh",
-  "apply": "releases/1.3.1/apply-1.3.1.sh",
-  "acceptance": "releases/1.3.1/acceptance-1.3.1.sh",
-  "rollback": "releases/1.3.1/rollback-1.3.1.sh",
-  "description": "SRV Control Center 1.3.1 production release: cumulative 1.3.0 functionality plus GitHub update attempt and successful-update timestamps."
+  "release": "1.3.2",
+  "release_id": "1.3.2",
+  "release_path": "releases/1.3.2",
+  "manifest": "releases/1.3.2/manifest.json",
+  "preflight": "releases/1.3.2/preflight-1.3.2.sh",
+  "apply": "releases/1.3.2/apply-1.3.2.sh",
+  "acceptance": "releases/1.3.2/acceptance-1.3.2.sh",
+  "rollback": "releases/1.3.2/rollback-1.3.2.sh",
+  "description": "SRV Control Center 1.3.2 production release: new Minecraft UI with the proven pre-1.3 single-server backend and legacy updater path."
 }

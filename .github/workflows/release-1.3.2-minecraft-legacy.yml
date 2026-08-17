@@ -1,0 +1,133 @@
+name: SRV Control Center 1.3.2 Minecraft legacy backend
+
+on:
+  push:
+    branches:
+      - release/1.3.2-minecraft-stable-control
+  pull_request:
+    paths:
+      - 'releases/1.3.2/**'
+      - 'deployment.json'
+      - '.github/workflows/release-1.3.2-minecraft-legacy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-minecraft-legacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release scripts and manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n releases/1.3.2/preflight-1.3.2.sh releases/1.3.2/apply-1.3.2.sh releases/1.3.2/acceptance-1.3.2.sh releases/1.3.2/rollback-1.3.2.sh
+          python3 -m py_compile releases/1.3.2/payload/app/main.py releases/1.3.2/payload/app/routers/minecraft_legacy.py
+          node --check releases/1.3.2/payload/static/js/minecraft.js
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          root = pathlib.Path('releases/1.3.2')
+          manifest = json.loads((root/'manifest.json').read_text())
+          assert manifest['release_id'] == '1.3.2'
+          mismatches=[]
+          for stage, item in manifest['scripts'].items():
+              data = (root/item['path']).read_bytes()
+              actual = hashlib.sha256(data).hexdigest()
+              print(f'HASH {stage} {actual}')
+              if actual != item['sha256']:
+                  mismatches.append((stage, actual, item['sha256']))
+          deployment = json.loads(pathlib.Path('deployment.json').read_text())
+          assert deployment['release_id'] == '1.3.2'
+          assert deployment['release_path'] == 'releases/1.3.2'
+          if mismatches:
+              raise SystemExit('manifest hash mismatch: '+repr(mismatches))
+          print('MANIFEST PASS')
+          PY
+
+      - name: Validate restored Minecraft contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -q 'minecraft_legacy_router' releases/1.3.2/payload/app/main.py
+          grep -q 'prefix="/api/v1/minecraft/legacy"' releases/1.3.2/payload/app/routers/minecraft_legacy.py
+          grep -q 'BASE = "/api/v1/minecraft/legacy"' releases/1.3.2/payload/static/js/minecraft.js
+          grep -q '/usr/local/sbin/srv-control-minecraft' releases/1.3.2/payload/app/routers/minecraft_legacy.py
+          grep -q 'minecraft-update.timer' releases/1.3.2/apply-1.3.2.sh
+          grep -q 'disable --now srv-control-minecraft-auto-update.timer' releases/1.3.2/apply-1.3.2.sh
+          echo 'STATIC CONTRACT PASS'
+
+      - name: Exercise legacy helper adapter with mock helpers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet 'fastapi>=0.115,<1'
+          cat > /tmp/mock-control <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "${1:-}" in
+            status) printf '%s\n' '{"ok":true,"active":true,"version":"1.26.44.3","server_name":"Test","level_name":"Bedrock level","port":"19132"}' ;;
+            updater) printf '%s\n' '{"ok":true,"timer_enabled":"enabled","timer_active":"active","installed_version":"1.26.44.3","schedule":"daily"}' ;;
+            properties-get) printf '%s\n' '{"ok":true,"properties":{"server-name":"Test","gamemode":"creative"}}' ;;
+            properties-set) cat >/tmp/mock-properties-payload; printf '%s\n' '{"ok":true,"message":"saved"}' ;;
+            service) printf '%s\n' '{"ok":true,"message":"service ok"}' ;;
+            update) printf '%s\n' '{"ok":true,"message":"update ok"}' ;;
+            logs) printf '%s\n' '{"ok":true,"lines":["line1","line2"]}' ;;
+            backup) printf '%s\n' '{"ok":true,"message":"backup ok"}' ;;
+            *) printf '%s\n' '{"ok":false,"error":"unsupported mock action"}'; exit 1 ;;
+          esac
+          SH
+          cat > /tmp/mock-json <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          input="$(cat)"
+          case "$input" in
+            *'"action": "list"'*) printf '%s\n' '{"ok":true,"players":[],"online_count":0,"allowlist_count":0,"default_permission":"member"}' ;;
+            *'"action": "status"'*) printf '%s\n' '{"ok":true,"ready":true}' ;;
+            *) printf '%s\n' '{"ok":true,"message":"mock json action ok"}' ;;
+          esac
+          SH
+          sudo install -m 0755 /tmp/mock-control /usr/local/sbin/srv-control-minecraft
+          for h in srv-control-minecraft-players srv-control-minecraft-live; do sudo install -m 0755 /tmp/mock-json "/usr/local/sbin/$h"; done
+          cat > /tmp/mock-args <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "${1:-}" in
+            list) printf '%s\n' '{"ok":true,"worlds":[],"count":0,"active_world":"Bedrock level","backups":[]}' ;;
+            *) printf '%s\n' '{"ok":true,"message":"mock args action ok"}' ;;
+          esac
+          SH
+          for h in srv-control-minecraft-worlds srv-control-minecraft-restore; do sudo install -m 0755 /tmp/mock-args "/usr/local/sbin/$h"; done
+          python3 - <<'PY'
+          import importlib.util, sys, types
+          from pathlib import Path
+          app = types.ModuleType('app'); app.__path__=[]; sys.modules['app']=app
+          core = types.ModuleType('app.core'); core.__path__=[]; sys.modules['app.core']=core
+          rbac = types.ModuleType('app.core.rbac')
+          rbac.has_permission=lambda *a,**k: True
+          rbac.is_full_admin=lambda *a,**k: True
+          rbac.require_permission=lambda *a,**k: None
+          sys.modules['app.core.rbac']=rbac
+          auth = types.ModuleType('app.core.system_auth')
+          class Identity:
+              is_admin=True
+              username='ci'
+          auth.Identity=Identity
+          auth.require_csrf=lambda *a,**k: None
+          auth.require_session=lambda *a,**k: {'identity': Identity()}
+          sys.modules['app.core.system_auth']=auth
+          path=Path('releases/1.3.2/payload/app/routers/minecraft_legacy.py')
+          spec=importlib.util.spec_from_file_location('minecraft_legacy_ci', path)
+          mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          status=mod._run_args('control','status',timeout=5)
+          assert status['ok'] and status['version']=='1.26.44.3'
+          updater=mod._run_args('control','updater',timeout=5)
+          assert updater['timer_active']=='active'
+          players=mod._run_json('players','list',timeout=5)
+          assert players['ok'] and players['online_count']==0
+          worlds=mod._run_args('worlds','list',timeout=5)
+          assert worlds['ok']
+          print('MOCK ADAPTER PASS')
+          PY
