@@ -41,16 +41,16 @@ jobs:
           test "$(stat -c %s /tmp/ipxeboot.tar.gz)" -gt 250000
           tar -tzf /tmp/ipxeboot.tar.gz > /tmp/ipxe-files.txt
           for path in \
-            undionly.kpxe \
-            i386-efi/snponly.efi \
-            x86_64-efi/snponly.efi \
-            x86_64-sb/snponly-shim.efi \
-            x86_64-sb/snponly.efi \
-            arm32-efi/snponly.efi \
-            arm64-efi/snponly.efi \
-            arm64-sb/snponly-shim.efi \
-            arm64-sb/snponly.efi; do
-            grep -Eq "(^|/)${path//./\\.}$" /tmp/ipxe-files.txt || { echo "missing upstream iPXE asset: $path" >&2; exit 1; }
+            ipxeboot/undionly.kpxe \
+            ipxeboot/i386/snponly.efi \
+            ipxeboot/x86_64/snponly.efi \
+            ipxeboot/x86_64-sb/snponly-shim.efi \
+            ipxeboot/x86_64-sb/snponly.efi \
+            ipxeboot/arm32/snponly.efi \
+            ipxeboot/arm64/snponly.efi \
+            ipxeboot/arm64-sb/snponly-shim.efi \
+            ipxeboot/arm64-sb/snponly.efi; do
+            grep -Fxq "$path" /tmp/ipxe-files.txt || { echo "missing upstream iPXE asset: $path" >&2; grep -E '(^|/)(i386|x86_64|arm32|arm64)(-sb)?/.*snponly' /tmp/ipxe-files.txt || true; exit 1; }
           done
           for name in wimboot wimboot.i386 wimboot.arm64; do
             curl -fsSL --retry 3 --retry-all-errors \
@@ -70,10 +70,17 @@ jobs:
           manifest=json.loads(Path(cfg['manifest']).read_text())
           assert manifest['release_id']=='1.4.0',manifest
           assert manifest['upgrade_from']=='>=1.3.0,<1.4.0',manifest
+          mismatches=[]
           for name,item in manifest['scripts'].items():
               path=Path(cfg['release_path'])/item['path']
               assert path.is_file(),(name,path)
-              assert hashlib.sha256(path.read_bytes()).hexdigest()==item['sha256'],(name,path)
+              actual=hashlib.sha256(path.read_bytes()).hexdigest()
+              if actual != item['sha256']:
+                  mismatches.append((name,str(path),item['sha256'],actual))
+          if mismatches:
+              for name,path,expected,actual in mismatches:
+                  print(f'MANIFEST HASH MISMATCH {name}: expected={expected} actual={actual} path={path}')
+              raise SystemExit(1)
           acceptance=Path('releases/1.4.0/acceptance.sh').read_text()
           assert 'unknown PXE device received installation payload' in acceptance
           assert 'private PXE profile leaked through static media root' in acceptance
