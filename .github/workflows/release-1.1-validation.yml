@@ -1,0 +1,105 @@
+name: SRV Control Center 1.1.0 validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-release-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate active staging release
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('deployment.json').read_text())
+          assert cfg['release_id']=='1.1.0', cfg
+          assert cfg['release_path']=='releases/1.1.0', cfg
+          assert cfg['manifest']=='releases/1.1.0/manifest.json', cfg
+          PY
+
+      - name: Validate release script checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('releases/1.1.0')
+          manifest=json.loads((root/'manifest.json').read_text())
+          assert manifest['release_version']=='1.1.0'
+          for name, item in manifest['scripts'].items():
+              path=root/item['path']
+              digest=hashlib.sha256(path.read_bytes()).hexdigest()
+              assert digest==item['sha256'], (name,digest,item['sha256'])
+          PY
+
+      - name: Syntax and compile validation
+        run: |
+          bash -n releases/1.1.0/preflight.sh
+          bash -n releases/1.1.0/apply.sh
+          bash -n releases/1.1.0/acceptance.sh
+          bash -n releases/1.1.0/rollback.sh
+          bash -n releases/1.1.0/system/install-auth.sh
+          bash -n releases/1.1.0/system/srvcc-configure-auto-updates
+          python3 -m compileall -q releases/1.1.0/payload/app
+          python3 -m py_compile \
+            releases/1.1.0/system/srv-control-system-agent \
+            releases/1.1.0/system/srv-control-backup \
+            releases/1.1.0/system/srv-control-os-auto-update
+
+      - name: Validate credential and UI policy
+        run: |
+          test ! -e releases/1.1.0/payload/app/core/auth.py
+          ! grep -R -n -E 'change_password|password_hash|admin-bootstrap' releases/1.1.0/payload/app
+          ! grep -R -n -E 'пока не работает|будет реализовано|недоступно потому' \
+            releases/1.1.0/payload/templates releases/1.1.0/payload/static
+          grep -Fq 'Права пользователей' releases/1.1.0/payload/templates/shell.html
+          grep -Fq 'Торренты' releases/1.1.0/payload/templates/shell.html
+          grep -Fq 'AdGuard VPN' releases/1.1.0/payload/templates/shell.html
+          grep -Fq 'Сервисы' releases/1.1.0/payload/templates/shell.html
+
+  database-migration-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python and PostgreSQL dependencies
+        run: |
+          python -m venv /tmp/srvcc-venv
+          /tmp/srvcc-venv/bin/pip install --disable-pip-version-check -r releases/1.1.0/payload/requirements.lock
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends postgresql postgresql-client
+          sudo systemctl start postgresql
+
+      - name: Create service account and database
+        run: |
+          sudo groupadd --system srv-control || true
+          sudo useradd --system --gid srv-control --home-dir /var/lib/srv-control --shell /usr/sbin/nologin srv-control || true
+          sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='srv-control'" | grep -q 1 || sudo -u postgres createuser --login srv-control
+          sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='srv_control'" | grep -q 1 || sudo -u postgres createdb --owner=srv-control srv_control
+          sudo install -d -m 0750 -o root -g srv-control /opt/srv-control
+          sudo cp -a releases/1.1.0/payload/. /opt/srv-control/
+          sudo chown -R root:srv-control /opt/srv-control
+          sudo find /opt/srv-control -type d -exec chmod 0750 {} +
+          sudo find /opt/srv-control -type f -exec chmod 0640 {} +
+
+      - name: Apply complete database migration chain
+        run: |
+          sudo -u srv-control env \
+            PYTHONPATH=/opt/srv-control \
+            PYTHONDONTWRITEBYTECODE=1 \
+            /tmp/srvcc-venv/bin/alembic \
+            -c /opt/srv-control/alembic.ini \
+            upgrade head
+          test "$(sudo -u srv-control psql -d srv_control -Atc 'SELECT version_num FROM alembic_version LIMIT 1;')" = "11f0a1100001"
+          sudo -u srv-control psql -d srv_control -Atc "SELECT count(*) FROM rbac_group_permissions;" >/dev/null
