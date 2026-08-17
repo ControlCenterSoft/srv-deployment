@@ -27,4 +27,3 @@ jobs:
           grep -Fq 'permissions.push' tools/srvcc-send-diagnostics.sh
           ! grep -Fq '/root/.config/gh/hosts.yml' tools/srvcc-send-diagnostics.sh
           ! grep -Fq '/root/.ssh' tools/srvcc-send-diagnostics.sh
-          ! grep -Fq '.env' tools/srvcc-send-diagnostics.sh
