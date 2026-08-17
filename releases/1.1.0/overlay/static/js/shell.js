@@ -13,7 +13,7 @@
     if (menu) {
         menu.addEventListener("click", (event) => {
             const item = event.target.closest(".nav-item");
-            if (!item) return;
+            if (!item || item.hidden) return;
             for (const link of menu.querySelectorAll(".nav-item")) {
                 link.classList.remove("active");
             }
@@ -38,6 +38,11 @@
         if (release.git_sha) githubSync.title = `GitHub commit: ${release.git_sha}`;
     }
 
+    function canReadAny(identity, permissions, names) {
+        if (identity.is_admin) return true;
+        return names.some((name) => Boolean(permissions[name]));
+    }
+
     async function loadIdentity() {
         const response = await fetch("/api/v1/auth/status", {cache: "no-store"});
         if (!response.ok) {
@@ -55,8 +60,11 @@
         sessionUser.textContent = identity.username || "—";
 
         for (const item of menu.querySelectorAll(".nav-item[data-module]")) {
-            const moduleName = item.dataset.module;
-            item.hidden = !identity.is_admin && !permissions[moduleName];
+            item.hidden = !canReadAny(identity, permissions, [item.dataset.module]);
+        }
+        for (const item of menu.querySelectorAll(".nav-item[data-modules]")) {
+            const names = item.dataset.modules.split(",").map((value) => value.trim()).filter(Boolean);
+            item.hidden = !canReadAny(identity, permissions, names);
         }
         for (const item of menu.querySelectorAll(".nav-item[data-admin-only='true']")) {
             item.hidden = !identity.is_admin;
