@@ -44,6 +44,16 @@ def internet_module(request: Request):
     return render(request, "internet.html")
 
 
+@router.get("/ui/module/samba", response_class=HTMLResponse)
+def samba_module(request: Request):
+    return render(request, "samba.html")
+
+
+@router.get("/ui/module/shares", response_class=HTMLResponse)
+def shares_module(request: Request):
+    return render(request, "shares.html")
+
+
 @router.get("/ui/module/access", response_class=HTMLResponse)
 def access_module(request: Request):
     return render(request, "access.html")
