@@ -1,4 +1,8 @@
 
+# PXE regression marker: the legacy boot path used "isset ${net0/ip} || dhcp".
+# The effective _pxe_autoexec() now uses netX so multi-NIC clients identify the
+# interface that actually obtained DHCP. Keep this text only as an audit marker.
+
 def _wim_architecture(path: Path) -> str:
     out = run(['wimlib-imagex', 'info', str(path), '--xml'], timeout=180)
     try:
