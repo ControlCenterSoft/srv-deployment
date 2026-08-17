@@ -83,7 +83,7 @@ async def instance_update(instance_id: str, request: Request):
     }
 
 
-@router.post("/instances/{instance_id}/{operation}")
+@router.post("/instances/{instance_id}/control/{operation}")
 def instance_operation(instance_id: str, operation: str, request: Request):
     identity = _identity(request, csrf=True)
     require_permission(identity, "minecraft", "write")
