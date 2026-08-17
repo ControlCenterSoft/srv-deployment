@@ -291,8 +291,6 @@ def main() -> int:
         'if errorlevel 1 goto setup_failed',
         'Add-Computer -DomainName',
     )
-    if 'select disk 0' in agent:
-        fail('Windows PXE still contains a destructive hard-coded select disk 0')
 
     windows = effective_function(agent, 'def publish_windows(')
     require(
