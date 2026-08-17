@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.system_auth import parse_session
 from app.routers.admin import router as admin_router
 from app.routers.api import router as api_router
+from app.routers.minecraft_legacy import router as minecraft_legacy_router
 from app.routers.minecraft_multi import router as minecraft_multi_router
 from app.routers.share_directory import router as share_directory_router
 from app.routers.ui import router as ui_router
@@ -27,6 +28,9 @@ app.mount(
 )
 
 app.include_router(api_router)
+# 1.3.2 restores the proven single-server Minecraft backend for the UI while
+# retaining the 1.3.x multi-instance API for backward compatibility.
+app.include_router(minecraft_legacy_router)
 app.include_router(minecraft_multi_router)
 app.include_router(admin_router)
 app.include_router(share_directory_router)

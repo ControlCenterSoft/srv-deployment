@@ -1,494 +1,221 @@
 (() => {
     "use strict";
 
-    const byId = (id) => document.getElementById(id);
-    const listBox = byId("minecraftInstanceList");
-    const editor = byId("minecraftEditor");
-    const message = byId("minecraftMessage");
-    const search = byId("minecraftSearch");
-    const newButton = byId("minecraftNew");
-
-    const state = {
-        csrf: "",
-        data: {instances: [], available_ports: {ipv4_start: 19132, ipv6_start: 19133}},
-        canWrite: false,
-        fullAdmin: false,
-        selectedId: null,
-        creating: false,
-        dirty: false,
-        busy: false,
-    };
+    const $ = (id) => document.getElementById(id);
+    const BASE = "/api/v1/minecraft/legacy";
+    const state = {csrf: "", canWrite: false, fullAdmin: false, busy: false, overview: null};
 
     function esc(value) {
         return String(value ?? "")
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;")
-            .replaceAll('"', "&quot;")
-            .replaceAll("'", "&#39;");
+            .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
     }
-
-    function setMessage(text, error = false) {
-        message.textContent = text || "";
-        message.classList.toggle("error", error);
+    function message(text, error = false) {
+        const box = $("minecraftMessage");
+        box.textContent = text || "";
+        box.classList.toggle("error", error);
     }
-
-    function labelState(value) {
-        const stateValue = String(value || "unknown");
-        const labels = {
-            active: "Работает",
-            inactive: "Остановлен",
-            failed: "Ошибка",
-            activating: "Запускается",
-            deactivating: "Останавливается",
-            "not-installed": "Не установлен",
-        };
-        return labels[stateValue] || stateValue;
+    function setBusy(value) {
+        state.busy = Boolean(value);
+        document.querySelectorAll("button").forEach((button) => {
+            if (button.classList.contains("mc132-tab")) return;
+            button.disabled = state.busy || (!state.canWrite && button.dataset.write === "1");
+        });
     }
-
-    function badge(text, kind = "") {
-        return `<span class="mc-badge ${esc(kind)}">${esc(text)}</span>`;
-    }
-
-    function boolValue(value) {
-        return value === true || String(value).toLowerCase() === "true";
-    }
-
     async function api(url, options = {}) {
         const response = await fetch(url, {cache: "no-store", ...options});
         if (response.status === 401) {
             window.top.location.replace("/login");
             throw new Error("Требуется вход в систему");
         }
-        if (!response.ok) {
-            let detail = "";
-            try {
-                const payload = await response.json();
-                detail = payload.detail || payload.error || "";
-            } catch (_) {}
-            throw new Error(detail || `HTTP ${response.status}`);
+        let payload = null;
+        try { payload = await response.json(); } catch (_) {}
+        if (!response.ok || !payload || payload.ok === false) {
+            const detail = payload?.detail || payload?.error || `HTTP ${response.status}`;
+            throw new Error(String(detail));
         }
-        return response.json();
+        return payload.data ?? payload;
     }
-
-    async function postJson(url, body = {}) {
-        return api(url, {
-            method: "POST",
-            headers: {"Content-Type": "application/json", "X-CSRF-Token": state.csrf},
-            body: JSON.stringify(body),
-        });
-    }
-
-    function instanceById(id) {
-        return (state.data.instances || []).find((item) => String(item.id) === String(id)) || null;
-    }
-
-    function selectedInstance() {
-        return state.creating ? null : instanceById(state.selectedId);
-    }
-
-    function updateSummary(item) {
-        const status = item && item.update_status;
-        if (!status) return "Не проверялось";
-        if (status.result === "error") return `Ошибка: ${status.error || "проверка обновления"}`;
-        const installed = status.installed || item.version || "—";
-        const latest = status.latest || "—";
-        if (status.updated === true) return `Обновлено: ${installed || "—"} → ${latest}`;
-        if (status.update_available === true) return `Доступно ${latest}; установлено ${installed}`;
-        if (status.update_available === false) return `Актуально: ${latest || installed}`;
-        return `Установлено ${installed}; последнее ${latest}`;
-    }
-
-    function renderList() {
-        const query = String(search.value || "").trim().toLowerCase();
-        const items = (state.data.instances || []).filter((item) => {
-            if (!query) return true;
-            return `${item.id || ""} ${item.display_name || ""} ${item.properties?.["server-name"] || ""}`.toLowerCase().includes(query);
-        });
-        listBox.replaceChildren();
-
-        if (!items.length) {
-            const empty = document.createElement("div");
-            empty.className = "mc-empty";
-            empty.textContent = query ? "Серверы не найдены." : "Minecraft-серверы ещё не зарегистрированы.";
-            listBox.appendChild(empty);
-            return;
+    function writeOptions(method, body) {
+        const options = {method, headers: {"X-CSRF-Token": state.csrf}};
+        if (body !== undefined) {
+            options.headers["Content-Type"] = "application/json";
+            options.body = JSON.stringify(body);
         }
-
-        for (const item of items) {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "minecraft-instance-row";
-            if (!state.creating && String(item.id) === String(state.selectedId)) button.classList.add("active");
-            const stateKind = item.state === "active" ? "ok" : item.state === "failed" ? "error" : "warn";
-            button.innerHTML = `
-                <strong>${esc(item.display_name || item.id)}</strong>
-                <small>${esc(item.id)} · ${esc(item.server_port || "—")}/UDP · ${esc(item.version || "версия —")}</small>
-                <div class="mc-badges">
-                    ${badge(labelState(item.state), stateKind)}
-                    ${badge(item.published ? "Опубликован" : "Не опубликован", item.published ? "ok" : "")}
-                    ${badge(item.update_mode === "automatic" ? "Автообновление" : "Ручное обновление")}
-                    ${item.managed ? badge("Управляемый") : badge("Импортирован", "warn")}
-                </div>`;
-            button.addEventListener("click", () => {
-                if (state.dirty && !window.confirm("Есть несохранённые изменения. Переключиться без сохранения?")) return;
-                state.creating = false;
-                state.dirty = false;
-                state.selectedId = item.id;
-                renderList();
-                renderEditor();
-            });
-            listBox.appendChild(button);
-        }
+        return options;
+    }
+    async function write(url, method = "POST", body) {
+        return api(url, writeOptions(method, body));
+    }
+    function text(id, value, fallback = "—") { $(id).textContent = value === undefined || value === null || value === "" ? fallback : String(value); }
+    function badge(id, label, kind = "") {
+        const node = $(id); node.textContent = label; node.className = `mc-badge ${kind}`.trim();
+    }
+    function details(id, rows) {
+        $(id).innerHTML = rows.map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v ?? "—")}</dd>`).join("");
+    }
+    function humanBytes(bytes) {
+        const n = Number(bytes || 0); if (!Number.isFinite(n) || n <= 0) return "—";
+        const units = ["B","KB","MB","GB","TB"]; let value=n, i=0;
+        while (value >= 1024 && i < units.length-1) { value /= 1024; i += 1; }
+        return `${value.toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
+    }
+    function firstArray(obj, ...keys) {
+        for (const key of keys) if (Array.isArray(obj?.[key])) return obj[key];
+        return [];
     }
 
-    function controlDisabled() {
-        return !state.canWrite || state.busy ? "disabled" : "";
+    async function loadAuth() {
+        const auth = await api("/api/v1/auth/status");
+        state.csrf = auth.csrf_token || "";
     }
 
-    function property(item, key, fallback = "") {
-        const value = item?.properties?.[key];
-        return value == null || value === "" ? fallback : value;
-    }
-
-    function renderCreateEditor() {
-        const ports = state.data.available_ports || {};
-        const port = Number(ports.ipv4_start || 19132);
-        const port6 = Number(ports.ipv6_start || port + 1);
-        const sources = (state.data.instances || []).filter((item) => item.working_directory);
-        editor.innerHTML = `
-            <section class="mc-section">
-                <h2 class="mc-section-title">Новый Minecraft Bedrock Server</h2>
-                <form id="mcCreateForm">
-                    <div class="mc-grid">
-                        <label>ID сервера<input name="id" required maxlength="32" pattern="[a-z0-9][a-z0-9_-]{0,31}" placeholder="survival"></label>
-                        <label>Отображаемое имя<input name="display_name" required maxlength="80" placeholder="Основной сервер"></label>
-                        <label>Источник Bedrock runtime
-                            <select name="source_instance" ${sources.length ? "" : "disabled"}>
-                                ${sources.map((item) => `<option value="${esc(item.id)}">${esc(item.display_name || item.id)}</option>`).join("")}
-                            </select>
-                        </label>
-                        <label>IPv4 UDP порт<input name="server_port" type="number" min="1" max="65535" value="${port}" required></label>
-                        <label>IPv6 UDP порт<input name="server_portv6" type="number" min="1" max="65535" value="${port6}" required></label>
-                        <label>Имя мира<input name="level_name" maxlength="80" value="world-new" required></label>
-                        <label>Обновления
-                            <select name="update_mode"><option value="manual">Вручную</option><option value="automatic">Автоматически</option></select>
-                        </label>
-                    </div>
-                    <div class="mc-checks">
-                        <label><input name="published" type="checkbox"> Опубликован в сети</label>
-                        <label><input name="start" type="checkbox"> Запустить после создания</label>
-                        <label><input name="eula_accepted" type="checkbox"> Принимаю Minecraft EULA / Privacy для загрузки и автообновлений</label>
-                    </div>
-                    ${sources.length ? "" : '<div class="mc-warning">Для создания дополнительного экземпляра нужен уже установленный Bedrock runtime. Сначала установите/импортируйте основной сервер.</div>'}
-                    <div class="mc-actions"><button class="action-button" type="submit" ${controlDisabled()} ${sources.length ? "" : "disabled"}>Создать сервер</button><button class="secondary-button" id="mcCancelCreate" type="button">Отмена</button></div>
-                </form>
-            </section>`;
-
-        const form = byId("mcCreateForm");
-        form.addEventListener("input", () => { state.dirty = true; });
-        form.addEventListener("change", () => { state.dirty = true; });
-        byId("mcCancelCreate").addEventListener("click", () => {
-            state.creating = false;
-            state.dirty = false;
-            renderEditor();
-        });
-        form.addEventListener("submit", async (event) => {
-            event.preventDefault();
-            const data = new FormData(form);
-            const id = String(data.get("id") || "").trim().toLowerCase();
-            const updateMode = String(data.get("update_mode") || "manual");
-            const eula = data.get("eula_accepted") === "on";
-            if (updateMode === "automatic" && !eula) {
-                setMessage("Для автоматического обновления необходимо подтвердить EULA / Privacy.", true);
-                return;
-            }
-            await queueOperation(() => postJson("/api/v1/minecraft/instances", {
-                id,
-                display_name: String(data.get("display_name") || "").trim(),
-                source_instance: String(data.get("source_instance") || ""),
-                server_port: Number(data.get("server_port")),
-                server_portv6: Number(data.get("server_portv6")),
-                level_name: String(data.get("level_name") || "").trim(),
-                update_mode: updateMode,
-                published: data.get("published") === "on",
-                start: data.get("start") === "on",
-                eula_accepted: eula,
-            }), "Создание Minecraft-сервера поставлено в очередь.", id);
-        });
-    }
-
-    function playerRows(item) {
-        const players = item.players?.known || [];
-        const allowed = new Set((item.players?.allowlist || []).map((row) => String(row.name || "").toLowerCase()));
-        if (!players.length) return '<tr><td colspan="6">Игроки пока не обнаружены.</td></tr>';
-        return players.map((player, index) => {
-            const name = String(player.name || "");
-            const xuid = String(player.xuid || "");
-            const permission = String(player.permission || "member");
-            const isAllowed = allowed.has(name.toLowerCase());
-            return `<tr data-player-index="${index}">
-                <td><div class="player-name"><strong>${esc(name)}</strong><span>${esc(xuid || "XUID неизвестен")}</span></div></td>
-                <td>${player.online ? badge("Онлайн", "ok") : badge("Оффлайн")}</td>
-                <td>${isAllowed ? badge("Разрешён", "ok") : badge("Нет")}</td>
-                <td><select class="player-permission" ${state.canWrite && xuid ? "" : "disabled"}><option value="visitor" ${permission === "visitor" ? "selected" : ""}>Visitor</option><option value="member" ${permission === "member" ? "selected" : ""}>Member</option><option value="operator" ${permission === "operator" ? "selected" : ""}>Operator</option></select></td>
-                <td><button class="secondary-button player-save-permission" type="button" ${state.canWrite && xuid ? "" : "disabled"}>Применить</button></td>
-                <td><div class="mc-actions">
-                    <button class="secondary-button player-toggle-allow" type="button" ${state.canWrite ? "" : "disabled"}>${isAllowed ? "Убрать" : "Разрешить"}</button>
-                    <button class="danger-button player-kick" type="button" ${state.canWrite && player.online && item.command_channel ? "" : "disabled"}>Kick</button>
-                </div></td>
-            </tr>`;
-        }).join("");
-    }
-
-    function renderExistingEditor(item) {
-        const update = item.update_status || {};
-        const p = item.properties || {};
-        const managedWarning = item.managed ? "" : '<div class="mc-warning">Это импортированный/legacy экземпляр. Его параметры можно менять, но удаление самого экземпляра через Control Center запрещено.</div>';
-        editor.innerHTML = `
-            <section class="mc-section">
-                <h2 class="mc-section-title">${esc(item.display_name || item.id)}</h2>
-                <div class="mc-badges">
-                    ${badge(labelState(item.state), item.state === "active" ? "ok" : item.state === "failed" ? "error" : "warn")}
-                    ${badge(item.published ? "Опубликован" : "Не опубликован", item.published ? "ok" : "")}
-                    ${badge(item.version ? `Bedrock ${item.version}` : "Версия неизвестна")}
-                    ${badge(item.command_channel ? "Командный канал" : "Без command channel", item.command_channel ? "ok" : "warn")}
-                </div>
-                ${managedWarning}
-                <div class="mc-actions">
-                    ${item.state === "active" ? `<button class="action-button" data-control="restart" type="button" ${controlDisabled()}>Перезапустить</button><button class="secondary-button" data-control="stop" type="button" ${controlDisabled()}>Остановить</button>` : `<button class="action-button" data-control="start" type="button" ${controlDisabled()}>Запустить</button>`}
-                </div>
-            </section>
-
-            <section class="mc-section">
-                <h2 class="mc-section-title">Параметры сервера</h2>
-                <form id="mcInstanceForm">
-                    <div class="mc-grid">
-                        <label>Отображаемое имя<input name="display_name" maxlength="80" value="${esc(item.display_name || item.id)}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>Имя Bedrock<input name="server-name" maxlength="80" value="${esc(property(item, "server-name", item.display_name || item.id))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>Обновления<select name="update_mode" ${state.canWrite ? "" : "disabled"}><option value="manual" ${item.update_mode !== "automatic" ? "selected" : ""}>Вручную</option><option value="automatic" ${item.update_mode === "automatic" ? "selected" : ""}>Автоматически</option></select></label>
-                        <label>Режим игры<select name="gamemode" ${state.canWrite ? "" : "disabled"}><option value="survival" ${property(item,"gamemode","survival") === "survival" ? "selected" : ""}>Survival</option><option value="creative" ${property(item,"gamemode") === "creative" ? "selected" : ""}>Creative</option><option value="adventure" ${property(item,"gamemode") === "adventure" ? "selected" : ""}>Adventure</option></select></label>
-                        <label>Сложность<select name="difficulty" ${state.canWrite ? "" : "disabled"}><option value="peaceful" ${property(item,"difficulty") === "peaceful" ? "selected" : ""}>Peaceful</option><option value="easy" ${property(item,"difficulty","easy") === "easy" ? "selected" : ""}>Easy</option><option value="normal" ${property(item,"difficulty") === "normal" ? "selected" : ""}>Normal</option><option value="hard" ${property(item,"difficulty") === "hard" ? "selected" : ""}>Hard</option></select></label>
-                        <label>Максимум игроков<input name="max-players" type="number" min="1" max="1000" value="${esc(property(item,"max-players",10))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>IPv4 UDP порт<input name="server-port" type="number" min="1" max="65535" value="${esc(property(item,"server-port",item.server_port || 19132))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>IPv6 UDP порт<input name="server-portv6" type="number" min="1" max="65535" value="${esc(property(item,"server-portv6",item.server_portv6 || 19133))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>Мир<input name="level-name" maxlength="80" value="${esc(property(item,"level-name","Bedrock level"))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>View distance<input name="view-distance" type="number" min="5" max="64" value="${esc(property(item,"view-distance",32))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>Tick distance<input name="tick-distance" type="number" min="4" max="12" value="${esc(property(item,"tick-distance",4))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>Idle timeout, мин<input name="player-idle-timeout" type="number" min="0" max="100000" value="${esc(property(item,"player-idle-timeout",30))}" ${state.canWrite ? "" : "disabled"}></label>
-                        <label>Online mode<select name="online-mode" ${state.canWrite ? "" : "disabled"}><option value="true" ${boolValue(property(item,"online-mode",true)) ? "selected" : ""}>Включён</option><option value="false" ${!boolValue(property(item,"online-mode",true)) ? "selected" : ""}>Выключен</option></select></label>
-                        <label>Allow list<select name="allow-list" ${state.canWrite ? "" : "disabled"}><option value="false" ${!boolValue(property(item,"allow-list",false)) ? "selected" : ""}>Выключен</option><option value="true" ${boolValue(property(item,"allow-list",false)) ? "selected" : ""}>Включён</option></select></label>
-                        <label>Читы<select name="allow-cheats" ${state.canWrite ? "" : "disabled"}><option value="false" ${!boolValue(property(item,"allow-cheats",false)) ? "selected" : ""}>Запрещены</option><option value="true" ${boolValue(property(item,"allow-cheats",false)) ? "selected" : ""}>Разрешены</option></select></label>
-                    </div>
-                    <div class="mc-checks">
-                        <label><input name="published" type="checkbox" ${item.published ? "checked" : ""} ${state.canWrite ? "" : "disabled"}> Опубликован в сети</label>
-                        <label><input name="eula_accepted" type="checkbox" ${item.eula_accepted ? "checked" : ""} ${state.canWrite ? "" : "disabled"}> EULA / Privacy приняты для загрузки обновлений</label>
-                    </div>
-                    <div class="mc-actions"><button class="action-button" type="submit" ${controlDisabled()}>Сохранить параметры</button></div>
-                </form>
-            </section>
-
-            <section class="mc-section">
-                <h2 class="mc-section-title">Обновление Bedrock Server</h2>
-                <div class="mc-note">${esc(updateSummary(item))}</div>
-                ${update.checked_at ? `<div class="mc-note">Проверено: ${esc(update.checked_at)}</div>` : ""}
-                <div class="mc-actions">
-                    <button class="secondary-button" id="mcCheckUpdate" type="button" ${controlDisabled()}>Проверить обновление</button>
-                    <button class="action-button" id="mcApplyUpdate" type="button" ${controlDisabled()}>Обновить сервер</button>
-                </div>
-                <div class="mc-note">Перед установкой создаётся резервная копия мира и конфигурации. При ошибке runtime откатывается автоматически.</div>
-            </section>
-
-            <section class="mc-section">
-                <h2 class="mc-section-title">Игроки</h2>
-                <form class="player-toolbar" id="mcAllowPlayerForm">
-                    <input name="name" maxlength="64" placeholder="Имя игрока" required ${state.canWrite ? "" : "disabled"}>
-                    <input name="xuid" maxlength="64" placeholder="XUID (если известен)" ${state.canWrite ? "" : "disabled"}>
-                    <select name="permission" ${state.canWrite ? "" : "disabled"}><option value="member">Member</option><option value="visitor">Visitor</option><option value="operator">Operator</option></select>
-                    <button class="action-button" type="submit" ${controlDisabled()}>Разрешить</button>
-                </form>
-                <div class="player-table-wrap"><table class="player-table"><thead><tr><th>Игрок</th><th>Статус</th><th>Allow list</th><th>Права</th><th></th><th>Действия</th></tr></thead><tbody>${playerRows(item)}</tbody></table></div>
-            </section>
-
-            ${item.managed ? `<section class="mc-section"><h2 class="mc-section-title">Удаление экземпляра</h2><div class="mc-danger">Удаление записи сервера и удаление его файлов — разные операции. Удаление данных доступно только полному администратору.</div><div class="mc-actions"><button class="danger-button" id="mcDeleteInstance" type="button" ${controlDisabled()}>Удалить сервер</button>${state.fullAdmin ? `<button class="danger-button" id="mcDeleteInstanceData" type="button" ${controlDisabled()}>Удалить сервер и данные</button>` : ""}</div></section>` : ""}
-        `;
-        bindExistingEditor(item);
-    }
-
-    function renderEditor() {
-        if (state.creating) {
-            renderCreateEditor();
-            return;
-        }
-        const item = selectedInstance();
-        if (!item) {
-            editor.innerHTML = '<div class="mc-empty">Выберите Minecraft-сервер или создайте новый.</div>';
-            return;
-        }
-        renderExistingEditor(item);
-    }
-
-    function bindExistingEditor(item) {
-        document.querySelectorAll("[data-control]").forEach((button) => {
-            button.addEventListener("click", () => queueOperation(
-                () => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/control/${encodeURIComponent(button.dataset.control)}`),
-                "Команда серверу поставлена в очередь.", item.id,
-            ));
-        });
-
-        const form = byId("mcInstanceForm");
-        form.addEventListener("input", () => { state.dirty = true; });
-        form.addEventListener("change", () => { state.dirty = true; });
-        form.addEventListener("submit", async (event) => {
-            event.preventDefault();
-            const data = new FormData(form);
-            const updateMode = String(data.get("update_mode") || "manual");
-            const eula = data.get("eula_accepted") === "on";
-            if (updateMode === "automatic" && !eula && !item.eula_accepted) {
-                setMessage("Для автоматического обновления необходимо подтвердить EULA / Privacy.", true);
-                return;
-            }
-            const properties = {};
-            for (const name of ["server-name","gamemode","difficulty","max-players","server-port","server-portv6","level-name","view-distance","tick-distance","player-idle-timeout","online-mode","allow-list","allow-cheats"]) {
-                properties[name] = String(data.get(name) ?? "");
-            }
-            await queueOperation(() => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/update`, {
-                display_name: String(data.get("display_name") || "").trim(),
-                update_mode: updateMode,
-                published: data.get("published") === "on",
-                eula_accepted: eula,
-                properties,
-            }), "Параметры Minecraft поставлены в очередь на применение.", item.id);
-        });
-
-        byId("mcCheckUpdate").addEventListener("click", () => queueOperation(
-            () => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/update/check`),
-            "Проверка версии поставлена в очередь.", item.id,
-        ));
-        byId("mcApplyUpdate").addEventListener("click", () => {
-            const eula = form.elements.eula_accepted.checked || Boolean(item.eula_accepted);
-            if (!eula) {
-                setMessage("Перед загрузкой обновления подтвердите EULA / Privacy и сохраните настройки.", true);
-                return;
-            }
-            queueOperation(
-                () => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/update/apply`, {eula_accepted: true}),
-                "Обновление Minecraft поставлено в очередь. Перед заменой runtime будет создан backup.", item.id,
-            );
-        });
-
-        const allowForm = byId("mcAllowPlayerForm");
-        allowForm.addEventListener("submit", async (event) => {
-            event.preventDefault();
-            const data = new FormData(allowForm);
-            const name = String(data.get("name") || "").trim();
-            const xuid = String(data.get("xuid") || "").trim();
-            const permission = String(data.get("permission") || "member");
-            await queueOperation(async () => {
-                await postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/players/allow`, {name, xuid});
-                if (xuid) {
-                    await postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/players/permission`, {name, xuid, permission});
-                }
-            }, "Игрок добавлен в очередь управления allow list.", item.id);
-        });
-
-        const players = item.players?.known || [];
-        document.querySelectorAll("tr[data-player-index]").forEach((row) => {
-            const player = players[Number(row.dataset.playerIndex)];
-            if (!player) return;
-            row.querySelector(".player-save-permission")?.addEventListener("click", () => {
-                const permission = row.querySelector(".player-permission")?.value || "member";
-                queueOperation(() => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/players/permission`, {
-                    name: player.name, xuid: player.xuid, permission,
-                }), "Права игрока поставлены в очередь на применение.", item.id);
-            });
-            row.querySelector(".player-toggle-allow")?.addEventListener("click", () => {
-                const allowed = (item.players?.allowlist || []).some((entry) => String(entry.name || "").toLowerCase() === String(player.name || "").toLowerCase());
-                const operation = allowed ? "deny" : "allow";
-                queueOperation(() => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/players/${operation}`, {
-                    name: player.name, xuid: player.xuid || "",
-                }), allowed ? "Удаление игрока из allow list поставлено в очередь." : "Добавление игрока в allow list поставлено в очередь.", item.id);
-            });
-            row.querySelector(".player-kick")?.addEventListener("click", () => {
-                const reason = window.prompt("Причина отключения игрока", "Отключено администратором");
-                if (reason === null) return;
-                queueOperation(() => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/players/kick`, {
-                    name: player.name, reason,
-                }), "Команда Kick поставлена в очередь.", item.id);
-            });
-        });
-
-        byId("mcDeleteInstance")?.addEventListener("click", () => deleteInstance(item, false));
-        byId("mcDeleteInstanceData")?.addEventListener("click", () => deleteInstance(item, true));
-    }
-
-    async function deleteInstance(item, deleteData) {
-        const question = deleteData
-            ? `Удалить сервер «${item.display_name || item.id}» и ВСЕ его данные, включая миры?`
-            : `Удалить сервер «${item.display_name || item.id}» из Control Center, сохранив данные?`;
-        if (!window.confirm(question)) return;
-        if (deleteData && !window.confirm("Это необратимое удаление данных Minecraft. Подтвердить ещё раз?")) return;
-        await queueOperation(() => postJson(`/api/v1/minecraft/instances/${encodeURIComponent(item.id)}/delete`, {delete_data: deleteData}),
-            deleteData ? "Удаление сервера и данных поставлено в очередь." : "Удаление сервера поставлено в очередь.", null);
-        state.selectedId = null;
-    }
-
-    async function queueOperation(callback, text, selectId = null) {
-        if (state.busy) return;
-        state.busy = true;
-        setMessage("");
-        try {
-            await callback();
-            state.dirty = false;
-            if (selectId !== undefined) state.selectedId = selectId;
-            state.creating = false;
-            setMessage(text);
-            window.setTimeout(() => refresh(true).catch(() => {}), 1200);
-            window.setTimeout(() => refresh(true).catch(() => {}), 3500);
-        } catch (error) {
-            setMessage(error.message || "Операция Minecraft не выполнена.", true);
-        } finally {
-            state.busy = false;
-            renderList();
-            if (!state.dirty) renderEditor();
-        }
-    }
-
-    async function refresh(forceEditor = false) {
-        const response = await api("/api/v1/minecraft/instances");
-        const data = response.data || {};
-        state.data = {
-            instances: Array.isArray(data.instances) ? data.instances : [],
-            available_ports: data.available_ports || {ipv4_start: 19132, ipv6_start: 19133},
-        };
+    async function loadOverview() {
+        const data = await api(`${BASE}/overview`);
+        state.overview = data;
         state.canWrite = Boolean(data.can_write);
         state.fullAdmin = Boolean(data.full_admin);
-        newButton.disabled = !state.canWrite;
+        const s = data.status || {};
+        const u = data.updater || {};
+        const p = data.players || {};
+        const b = data.backups || {};
+        const live = data.live || {};
 
-        if (!state.creating && state.selectedId && !instanceById(state.selectedId)) state.selectedId = null;
-        if (!state.selectedId && !state.creating && state.data.instances.length) state.selectedId = state.data.instances[0].id;
-        renderList();
-        if (!state.dirty || forceEditor) renderEditor();
+        const active = Boolean(s.active);
+        badge("serviceBadge", active ? "Сервер работает" : "Сервер остановлен", active ? "ok" : "warn");
+        text("summaryState", active ? "ONLINE" : "OFFLINE");
+        text("summaryName", s.server_name);
+        text("summaryVersion", s.version);
+        text("summaryStarted", s.started);
+        text("summaryWorld", s.level_name);
+        text("summaryMode", [s.gamemode, s.difficulty].filter(Boolean).join(" · "));
+        text("summaryPlayers", p.online_count ?? 0);
+        text("summaryMaxPlayers", s.max_players ? `из ${s.max_players}` : "онлайн");
+        text("summaryUpdate", u.installed_version || s.version);
+        text("summarySchedule", u.schedule || (u.timer_enabled ? "автообновление включено" : "ручной режим"));
+
+        details("serviceDetails", [
+            ["Служба", s.service || "minecraft.service"], ["PID", s.main_pid], ["Память", s.memory_human],
+            ["Порт", s.port], ["Мир", s.level_name], ["Версия", s.version]
+        ]);
+        details("updaterDetails", [
+            ["Установлено", u.installed_version || s.version], ["Timer enabled", u.timer_enabled],
+            ["Timer active", u.timer_active], ["Расписание", u.schedule]
+        ]);
+        const backups = firstArray(b, "backups");
+        text("backupSummary", backups.length ? `Доступно копий: ${backups.length}` : "Резервные копии не найдены");
+        text("liveSummary", `Командный канал: ${live.ready ? "READY" : "OFFLINE"}`);
+
+        const errs = data.errors || {};
+        const errorBox = $("overviewErrors");
+        if (Object.keys(errs).length) {
+            errorBox.classList.remove("hidden");
+            errorBox.textContent = Object.entries(errs).map(([k,v]) => `${k}: ${v}`).join(" · ");
+        } else { errorBox.classList.add("hidden"); errorBox.textContent = ""; }
+        setBusy(false);
     }
 
-    async function start() {
-        const auth = await api("/api/v1/auth/status");
-        state.csrf = auth.data?.csrf_token || "";
-        await refresh(true);
+    async function serviceAction(action) {
+        if (action !== "start" && !window.confirm(`${action === "stop" ? "Остановить" : "Перезапустить"} Minecraft сервер?`)) return;
+        setBusy(true); message("Выполняется команда управления сервером…");
+        try { const d = await write(`${BASE}/service/${action}`); message(d.message || "Команда выполнена."); await loadOverview(); }
+        catch (e) { message(`Ошибка управления: ${e.message}`, true); setBusy(false); }
     }
 
-    search.addEventListener("input", renderList);
-    newButton.addEventListener("click", () => {
-        if (!state.canWrite) return;
-        if (state.dirty && !window.confirm("Есть несохранённые изменения. Создать новый сервер без сохранения?")) return;
-        state.creating = true;
-        state.dirty = false;
-        renderList();
-        renderEditor();
-    });
+    async function updateNow() {
+        if (!window.confirm("Проверить актуальную версию Minecraft Bedrock и при необходимости обновить сервер сейчас? Перед обновлением прежний updater сам выполняет предусмотренную им процедуру.")) return;
+        setBusy(true); message("Проверка и обновление Minecraft выполняются. Это может занять несколько минут…");
+        try { const d = await write(`${BASE}/update`); message(d.message || "Проверка обновления завершена."); await Promise.all([loadOverview(), loadBackups(), loadLogs()]); }
+        catch (e) { message(`Ошибка обновления: ${e.message}`, true); setBusy(false); }
+    }
 
-    start().catch((error) => setMessage(error.message || "Не удалось загрузить Minecraft.", true));
-    window.setInterval(() => {
-        if (!state.busy) refresh(false).catch(() => {});
-    }, 10000);
+    async function backupNow() {
+        setBusy(true); message("Создаётся резервная копия Minecraft…");
+        try { const d = await write(`${BASE}/backup`); message(d.message || "Резервная копия создана."); await loadBackups(); await loadOverview(); }
+        catch (e) { message(`Ошибка backup: ${e.message}`, true); setBusy(false); }
+    }
+
+    async function broadcast() {
+        const value = $("broadcastMessage").value.trim(); if (!value) return message("Введите сообщение для игроков.", true);
+        setBusy(true);
+        try { const d = await write(`${BASE}/live/say`, "POST", {message:value}); $("broadcastMessage").value=""; message(d.message || "Сообщение отправлено."); }
+        catch(e){ message(`Ошибка live-консоли: ${e.message}`, true); }
+        finally { setBusy(false); }
+    }
+
+    const settingIds = ["server-name","level-name","gamemode","difficulty","max-players","server-port","server-portv6","view-distance","tick-distance","player-idle-timeout","default-player-permission-level","online-mode","allow-list","allow-cheats"];
+    async function loadSettings() {
+        const [data, worlds] = await Promise.all([api(`${BASE}/properties`), api(`${BASE}/worlds`)]);
+        state.canWrite = Boolean(data.can_write ?? state.canWrite);
+        const props = data.properties || data.values || {};
+        const worldSelect = $("level-name");
+        worldSelect.replaceChildren();
+        const worldItems = firstArray(worlds, "worlds");
+        for (const world of worldItems) {
+            const option=document.createElement("option"); option.value=world.name; option.textContent=`${world.name}${world.size_human ? ` · ${world.size_human}` : ""}`; worldSelect.appendChild(option);
+        }
+        if (!worldItems.length && props["level-name"]) { const option=document.createElement("option"); option.value=props["level-name"]; option.textContent=props["level-name"]; worldSelect.appendChild(option); }
+        for (const id of settingIds) if ($(id) && props[id] !== undefined) $(id).value = String(props[id]);
+        document.querySelectorAll("#settingsForm input,#settingsForm select,#settingsForm button").forEach((el)=>{el.disabled=!state.canWrite;});
+    }
+    async function saveSettings(event) {
+        event.preventDefault();
+        const changes = {}; for (const id of settingIds) changes[id] = $(id).value;
+        setBusy(true); message("Сохраняю server.properties…");
+        try { const d=await write(`${BASE}/properties`, "PUT", {changes}); message(d.message || "Параметры сохранены."); await Promise.all([loadSettings(), loadOverview()]); }
+        catch(e){ message(`Ошибка сохранения: ${e.message}`, true); setBusy(false); }
+    }
+
+    function rowButton(label, cls, handler, disabled=false) {
+        const b=document.createElement("button"); b.type="button"; b.textContent=label; b.className=cls || "secondary-button"; b.disabled=disabled || !state.canWrite; b.addEventListener("click",handler); return b;
+    }
+    async function loadPlayers() {
+        const d=await api(`${BASE}/players`); state.canWrite=Boolean(d.can_write ?? state.canWrite);
+        const body=$("playersBody"); body.replaceChildren(); const players=firstArray(d,"players");
+        $("playerSettings").innerHTML = `<span class="mc-badge ${d.allow_list_enabled ? "ok" : "warn"}">Allow-list: ${d.allow_list_enabled ? "включён" : "выключен"}</span><span class="mc-badge">По умолчанию: ${esc(d.default_permission || "member")}</span><span class="mc-badge ok">Онлайн: ${esc(d.online_count ?? 0)}</span>`;
+        if (!players.length) { body.innerHTML='<tr><td colspan="5" class="mc132-dim">Игроки ещё не обнаружены.</td></tr>'; return; }
+        for (const player of players) {
+            const tr=document.createElement("tr");
+            const name=document.createElement("td"); name.innerHTML=`<div class="player-name"><strong>${esc(player.name || "—")}</strong><span>${esc(player.xuid || "XUID неизвестен")}</span></div>`;
+            const online=document.createElement("td"); online.innerHTML=player.online?'<span class="mc-badge ok">ONLINE</span>':'<span class="mc-badge">offline</span>';
+            const allow=document.createElement("td"); allow.innerHTML=player.allowlisted?'<span class="mc-badge ok">Разрешён</span>':'<span class="mc-badge warn">Нет</span>';
+            const perm=document.createElement("td"); const select=document.createElement("select"); select.className="player-permission"; ["","visitor","member","operator"].forEach((v)=>{const o=document.createElement("option");o.value=v;o.textContent=v||`по умолчанию (${d.default_permission || "member"})`;select.appendChild(o);}); select.value=player.permission||""; select.disabled=!state.canWrite||!player.xuid; perm.appendChild(select);
+            const actions=document.createElement("td"); actions.className="mc132-row-actions";
+            if (player.allowlisted) actions.appendChild(rowButton("Убрать", "danger-button", ()=>removeAllow(player.name || player.xuid)));
+            else if (player.name) actions.appendChild(rowButton("В Allow-list", "secondary-button", ()=>quickAllow(player)));
+            if (player.xuid) actions.appendChild(rowButton("Права", "secondary-button", ()=>savePermission(player.xuid,select.value)));
+            if (player.online && player.name) { actions.appendChild(rowButton("Kick","danger-button",()=>livePlayer("kick",player.name))); actions.appendChild(rowButton("OP","secondary-button",()=>livePlayer("op",player.name))); actions.appendChild(rowButton("DeOP","secondary-button",()=>livePlayer("deop",player.name))); }
+            tr.append(name,online,allow,perm,actions); body.appendChild(tr);
+        }
+    }
+    async function addAllow() {
+        const name=$("newPlayerName").value.trim(), xuid=$("newPlayerXuid").value.trim(), permission=$("newPlayerPermission").value;
+        if(!name) return message("Введите имя игрока.",true); setBusy(true);
+        try { await write(`${BASE}/players/allowlist`,"POST",{name,xuid,ignores_player_limit:false}); if(xuid&&permission) await write(`${BASE}/players/${encodeURIComponent(xuid)}/permission`,"PUT",{permission}); $("newPlayerName").value=""; $("newPlayerXuid").value=""; message("Игрок добавлен."); await loadPlayers(); }
+        catch(e){message(`Ошибка игрока: ${e.message}`,true);} finally{setBusy(false);}
+    }
+    async function quickAllow(player){setBusy(true);try{await write(`${BASE}/players/allowlist`,"POST",{name:player.name,xuid:player.xuid||"",ignores_player_limit:false});message("Игрок добавлен в Allow-list.");await loadPlayers();}catch(e){message(e.message,true);}finally{setBusy(false);}}
+    async function removeAllow(key){if(!confirm(`Убрать ${key} из Allow-list?`))return;setBusy(true);try{await write(`${BASE}/players/allowlist/${encodeURIComponent(key)}`,"DELETE");message("Игрок удалён из Allow-list.");await loadPlayers();}catch(e){message(e.message,true);}finally{setBusy(false);}}
+    async function savePermission(xuid,permission){setBusy(true);try{if(permission)await write(`${BASE}/players/${encodeURIComponent(xuid)}/permission`,"PUT",{permission});else await write(`${BASE}/players/${encodeURIComponent(xuid)}/permission`,"DELETE");message("Права игрока обновлены.");await loadPlayers();}catch(e){message(e.message,true);}finally{setBusy(false);}}
+    async function livePlayer(action,username){if(action==="kick"&&!confirm(`Отключить игрока ${username}?`))return;setBusy(true);try{const body={username};if(action==="kick")body.reason="Отключён администратором";await write(`${BASE}/live/${action}`,"POST",body);message(`${action.toUpperCase()} выполнен для ${username}.`);setTimeout(()=>loadPlayers().catch(()=>{}),1000);}catch(e){message(e.message,true);}finally{setBusy(false);}}
+
+    async function loadWorlds(){const d=await api(`${BASE}/worlds`);state.canWrite=Boolean(d.can_write??state.canWrite);const body=$("worldsBody");body.replaceChildren();const worlds=firstArray(d,"worlds");if(!worlds.length){body.innerHTML='<tr><td colspan="5" class="mc132-dim">Миры не найдены.</td></tr>';return;}for(const world of worlds){const tr=document.createElement("tr");tr.innerHTML=`<td><strong>${esc(world.name)}</strong></td><td>${esc(world.size_human||humanBytes(world.size))}</td><td>${esc(world.modified||"—")}</td><td>${world.active?'<span class="mc-badge ok">Активный</span>':'<span class="mc-badge">—</span>'}</td><td></td>`;const a=tr.lastElementChild;a.className="mc132-row-actions";a.append(rowButton("Активировать","secondary-button",()=>worldAction("activate",world.name),world.active),rowButton("Клонировать","secondary-button",()=>worldAction("clone",world.name)),rowButton("Переименовать","secondary-button",()=>worldAction("rename",world.name,world.active)),rowButton("Удалить","danger-button",()=>worldAction("delete",world.name),world.active));body.appendChild(tr);}}
+    async function worldAction(action,name,active=false){let body,method="POST",url=`${BASE}/worlds/${encodeURIComponent(name)}/${action}`;if(action==="activate"&&!confirm(`Активировать мир «${name}»? Minecraft будет перезапущен.`))return;if(action==="clone"||action==="rename"){if(action==="rename"&&active&&!confirm("Это активный мир. Продолжить переименование?"))return;const nn=prompt(`${action==="clone"?"Имя копии":"Новое имя"} мира «${name}»:`,action==="clone"?`${name} - копия`:name);if(nn===null||!nn.trim())return;body={new_name:nn.trim()};}if(action==="delete"){if(!confirm(`Удалить мир «${name}»? Это необратимая операция.`))return;method="DELETE";url=`${BASE}/worlds/${encodeURIComponent(name)}`;body={confirm:name};}setBusy(true);try{const d=await write(url,method,body);message(d.message||"Операция с миром выполнена.");await Promise.all([loadWorlds(),loadSettings(),loadOverview()]);}catch(e){message(`Ошибка мира: ${e.message}`,true);}finally{setBusy(false);}}
+
+    async function loadBackups(){const d=await api(`${BASE}/backups`);state.canWrite=Boolean(d.can_write??state.canWrite);const body=$("backupsBody");body.replaceChildren();const backups=firstArray(d,"backups");if(!backups.length){body.innerHTML='<tr><td colspan="6" class="mc132-dim">Резервные копии не найдены.</td></tr>';return;}for(const b of backups){const tr=document.createElement("tr");const valid=b.valid!==false;tr.innerHTML=`<td><strong>${esc(b.name||b.id||"—")}</strong></td><td>${esc(b.size_human||humanBytes(b.size))}</td><td>${esc(b.mtime||b.created_at||"—")}</td><td>${esc((b.contents||[]).join(", "))}</td><td>${valid?'<span class="mc-badge ok">OK</span>':'<span class="mc-badge error">Ошибка</span>'}</td><td></td>`;const a=tr.lastElementChild;a.className="mc132-row-actions";const name=b.name||b.id;if(valid)a.appendChild(rowButton("Восстановить","secondary-button",()=>restoreBackup(name)));a.appendChild(rowButton("Удалить","danger-button",()=>deleteBackup(name)));body.appendChild(tr);}}
+    async function restoreBackup(name){if(!confirm(`Восстановить Minecraft из backup «${name}»? Текущий сервер будет остановлен на время восстановления.`))return;setBusy(true);message("Восстановление Minecraft…");try{const d=await write(`${BASE}/backups/${encodeURIComponent(name)}/restore`);message(d.message||"Восстановление завершено.");await Promise.all([loadOverview(),loadBackups(),loadWorlds(),loadSettings()]);}catch(e){message(`Ошибка восстановления: ${e.message}`,true);}finally{setBusy(false);}}
+    async function deleteBackup(name){if(!confirm(`Удалить backup «${name}»?`))return;setBusy(true);try{const d=await write(`${BASE}/backups/${encodeURIComponent(name)}`,"DELETE",{confirm:name});message(d.message||"Backup удалён.");await loadBackups();}catch(e){message(e.message,true);}finally{setBusy(false);}}
+
+    async function loadLogs(){const d=await api(`${BASE}/logs?limit=250`);const lines=firstArray(d,"lines");$("logText").textContent=lines.length?lines.join("\n"):(d.log||d.text||"Журнал пуст.");}
+
+    async function loadAll(){message("Обновление данных…");try{await loadOverview();const active=document.querySelector(".mc132-tab.active")?.dataset.tab||"overview";if(active==="settings")await loadSettings();if(active==="players")await loadPlayers();if(active==="worlds")await loadWorlds();if(active==="backups")await loadBackups();if(active==="logs")await loadLogs();message("");}catch(e){message(`Ошибка загрузки Minecraft: ${e.message}`,true);setBusy(false);}}
+    async function openTab(name){document.querySelectorAll(".mc132-tab").forEach((b)=>b.classList.toggle("active",b.dataset.tab===name));document.querySelectorAll(".mc132-tab-panel").forEach((p)=>p.classList.toggle("active",p.dataset.panel===name));try{if(name==="settings")await loadSettings();else if(name==="players")await loadPlayers();else if(name==="worlds")await loadWorlds();else if(name==="backups")await loadBackups();else if(name==="logs")await loadLogs();else await loadOverview();}catch(e){message(`Ошибка раздела: ${e.message}`,true);}}
+
+    document.querySelectorAll(".mc132-tab").forEach((b)=>b.addEventListener("click",()=>openTab(b.dataset.tab)));
+    $("refreshAll").addEventListener("click",loadAll); $("serverStart").addEventListener("click",()=>serviceAction("start")); $("serverRestart").addEventListener("click",()=>serviceAction("restart")); $("serverStop").addEventListener("click",()=>serviceAction("stop"));
+    $("updateNow").addEventListener("click",updateNow); $("backupNow").addEventListener("click",backupNow); $("broadcastSend").addEventListener("click",broadcast); $("settingsForm").addEventListener("submit",saveSettings); $("reloadSettings").addEventListener("click",loadSettings);
+    $("reloadPlayers").addEventListener("click",loadPlayers); $("addPlayer").addEventListener("click",addAllow); $("reloadWorlds").addEventListener("click",loadWorlds); $("reloadBackups").addEventListener("click",loadBackups); $("reloadLogs").addEventListener("click",loadLogs);
+    ["serverStart","serverRestart","serverStop","updateNow","backupNow","broadcastSend","addPlayer"].forEach((id)=>$(id).dataset.write="1");
+
+    (async()=>{try{await loadAuth();await loadOverview();message("");window.setInterval(()=>{if(!state.busy&&document.visibilityState==="visible")loadOverview().catch(()=>{});},15000);}catch(e){message(`Minecraft недоступен: ${e.message}`,true);}})();
 })();
