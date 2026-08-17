@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "release_id": "0005-network-overview",
+  "release_version": "0.5.0",
+  "description": "Activate a read-only Internet/VPN network overview with default route, DNS, interface roles and traffic.",
+  "scripts": {
+    "preflight": {
+      "path": "preflight.sh",
+      "sha256": "46b41b3f68291dcbf968591a7ecfa35d0db7ce0293d710de08408eeee4dbae85"
+    },
+    "apply": {
+      "path": "apply.sh",
+      "sha256": "45da5462fcbfe1f3802399cf7e03794a9dd269acdf8afa462d70bba01d84a0c6"
+    },
+    "acceptance": {
+      "path": "acceptance.sh",
+      "sha256": "80f5a5a7bf3972b7c5b85327022442861d6cef006142b55144b25d2664a4fe8f"
+    },
+    "rollback": {
+      "path": "rollback.sh",
+      "sha256": "b0571285c0b8ffa07522c92c3542553ec327a0a06598e4669e402bad04b98ba3"
+    }
+  }
+}

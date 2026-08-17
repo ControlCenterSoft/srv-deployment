@@ -47,6 +47,14 @@ sudo ./install.sh
 
 В этот же этап добавлен clean-install installer из GitHub и инструкция по установке.
 
+### 0.5.0 / 0005-network-overview — обзор сети «Интернет / VPN»
+
+Заглушка «Интернет / VPN» заменена рабочим read-only модулем сети. Backend публикует `/api/v1/network/overview` с интерфейсами, IPv4/IPv6, MAC, MTU, скоростью, счётчиками RX/TX, DNS, IPv4-маршрутом по умолчанию, WAN-кандидатом, LAN-кандидатами и обнаруженными VPN-интерфейсами.
+
+Релиз намеренно **не меняет сетевую конфигурацию**: он формирует безопасный фактический baseline перед включением транзакционного управления WAN DHCP/PPPoE/L2TP, LAN, Wi‑Fi, DHCP/DNS, VLAN и firewall. Обновление приложения выполняется graceful worker rotation из 0.4.0 без жёсткого `systemctl restart`.
+
+Clean-install bootstrap теперь определяет активные `release_id` и `release_version` из `deployment.json` и manifest, поэтому новая чистая установка получает актуальную версию без ручного обновления номера релиза внутри installer.
+
 ## Deployment safety
 
 Каждый product-релиз содержит:
