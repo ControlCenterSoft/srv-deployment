@@ -1,0 +1,117 @@
+name: Validate Control Center release
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python syntax
+        run: |
+          python -m py_compile app/main.py license/issue-license.py
+
+      - name: Bash syntax
+        run: |
+          set -euo pipefail
+          for f in \
+            install/install.sh \
+            install/uninstall.sh \
+            update/control-center-update \
+            update/control-center-os-update \
+            network/control-center-network-apply \
+            market/control-center-market-apply \
+            market/control-center-dhcp-apply \
+            license/control-center-license-apply; do
+            bash -n "$f"
+          done
+
+      - name: Validate JSON and release consistency
+        run: |
+          python - <<'PY'
+          import ast
+          import json
+          import pathlib
+          import re
+
+          root = pathlib.Path('.')
+          for p in root.rglob('*.json'):
+              json.loads(p.read_text())
+
+          module = ast.parse((root/'app/main.py').read_text())
+          version = None
+          for node in module.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'APP_VERSION':
+                          version = ast.literal_eval(node.value)
+          assert version and re.fullmatch(r'\d+\.\d+\.\d+', version), f'invalid APP_VERSION: {version}'
+
+          deployment = json.loads((root/'deployment.json').read_text())
+          assert deployment['release'] == version, (deployment['release'], version)
+          assert deployment['channel'] == 'production'
+          assert deployment['release_branch'] == f'release/{version}'
+
+          manifest_path = root/'releases'/version/'manifest.json'
+          assert manifest_path.exists(), manifest_path
+          manifest = json.loads(manifest_path.read_text())
+          assert manifest['release'] == version
+          assert manifest['channel'] == 'production'
+
+          installer = (root/'install/install.sh').read_text()
+          assert re.search(rf'^VERSION={re.escape(version)}$', installer, re.M), 'installer VERSION mismatch'
+
+          updater = (root/'update/control-center-update').read_text()
+          assert "^APP_VERSION[[:space:]]*=" in updater, 'updater APP_VERSION parser regressed'
+
+          readme = (root/'README.md').read_text()
+          assert f'Control Center {version}' in readme
+          print(f'Validated release {version}')
+          PY
+
+      - name: Validate Professional public key
+        run: |
+          openssl pkey -pubin -in license/vendor-public.pem -noout
+
+      - name: Reject private signing keys
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -Eai '(^|/)(private|secret|signing)[^/]*(\.pem|\.key)$'; then
+            echo 'Private/signing key material must never be committed.' >&2
+            exit 1
+          fi
+          if grep -RIl --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' 'BEGIN PRIVATE KEY\|BEGIN RSA PRIVATE KEY' .; then
+            echo 'Private key material detected in repository.' >&2
+            exit 1
+          fi
+
+      - name: Required documentation
+        run: |
+          set -euo pipefail
+          for f in \
+            docs/README.md \
+            docs/INSTALL.md \
+            docs/UPDATE.md \
+            docs/OS_UPDATES.md \
+            docs/LICENSING.md \
+            docs/NETWORK.md \
+            docs/DHCP.md \
+            docs/SECURITY.md \
+            docs/TROUBLESHOOTING.md; do
+            test -s "$f"
+          done
