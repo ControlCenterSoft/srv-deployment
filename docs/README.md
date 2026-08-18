@@ -1,23 +1,26 @@
-# Документация Control Center 1.0.5
+# Документация Control Center 1.0.6
 
-- [INSTALL.md](INSTALL.md) — установка, повторная установка и удаление.
+- [INSTALL.md](INSTALL.md) — установка, обновление существующей установки и удаление.
 - [UPDATE.md](UPDATE.md) — обновление самого Control Center.
 - [OS_UPDATES.md](OS_UPDATES.md) — обновление Ubuntu/Debian пакетов.
-- [LICENSING.md](LICENSING.md) — Home, Professional, выпуск и активация лицензии.
-- [NETWORK.md](NETWORK.md) — WAN/LAN, DHCP/Static и Netplan.
-- [DHCP.md](DHCP.md) — DHCP Server из Маркета.
+- [LICENSING.md](LICENSING.md) — Home, Professional и активация.
+- [NETWORK.md](NETWORK.md) — WAN/LAN, перечень интерфейсов и источники live-данных.
+- [DHCP.md](DHCP.md) — DHCP Server, дополнительные параметры, статус и проверка конфигурации.
+- [NOTIFICATIONS.md](NOTIFICATIONS.md) — общий центр уведомлений и логика цвета колокольчика.
+- [UI.md](UI.md) — типографика, SVG-ярлычки меню и мобильная верстка.
 - [SECURITY.md](SECURITY.md) — модель привилегий и известные ограничения.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — диагностика.
-- [AUDIT-1.0.5.md](AUDIT-1.0.5.md) — результаты полного аудита 1.0.5, исправления и acceptance checklist.
+- [AUDIT-1.0.5.md](AUDIT-1.0.5.md) — базовый security-аудит архитектуры 1.0.5.
+- `releases/1.0.6/README.md` — изменения текущего релиза.
 
-## Быстрая проверка
+## Быстрая проверка 1.0.6
 
 ```bash
 cat /opt/control-center/VERSION
 curl -fsS http://127.0.0.1:8080/api/health | python3 -m json.tool
-systemctl status control-center --no-pager
+sudo bash scripts/acceptance-1.0.6.sh
 ```
 
-## Важное ограничение 1.0.5
+## Ограничение
 
-Web UI пока не имеет полноценной встроенной аутентификации. TCP/8080 должен быть ограничен доверенной LAN/VPN/firewall.
+Встроенная Web-аутентификация ещё не реализована. TCP/8080 должен быть ограничен доверенной административной LAN/VPN/firewall.
