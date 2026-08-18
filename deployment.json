@@ -10,5 +10,5 @@
   "apply": "releases/1.3.4/apply-1.3.4.sh",
   "acceptance": "releases/1.3.4/acceptance-1.3.4.sh",
   "rollback": "releases/1.3.4/rollback-1.3.4.sh",
-  "description": "SRV Control Center 1.3.4 production patch: fixes the 1.3.3 preflight anchor failure while preserving the proven 1.3.3 payload, rollback, session continuity, and Minecraft update path."
+  "description": "SRV Control Center 1.3.4 production repair: hardens preflight and allows the proven 1.3.3 payload to repair an unhealthy pre-update Minecraft updater while preserving rollback and session continuity."
 }
