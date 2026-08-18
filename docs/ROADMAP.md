@@ -23,6 +23,9 @@
 8. Секреты не публикуются в Git; diagnostics и logs проходят redaction.
 9. Для долгоживущих функций используются Desired State, audit и RBAC.
 10. Документация является частью release acceptance и синхронизируется с фактической реализацией до публикации релиза.
+11. Для каждого нового **функционального** релиза автоматически включается следующий незавершённый этап licensing roadmap из `PRODUCT-EDITIONS.md`. Этапы идут строго последовательно и не пропускаются.
+12. Emergency repair/hotfix patch-релиз не продвигает licensing roadmap сам по себе. Если активный licensing stage не завершён acceptance, он остаётся обязательным для следующего функционального релиза.
+13. Новый release scope обязан явно указывать активный licensing stage и его acceptance criteria до начала реализации.
 
 ---
 
@@ -38,6 +41,38 @@
 - единые безопасные confirmation/prompt dialogs для административных операций;
 - адаптация существующих модулей под новый интерфейс без потери их backend-контрактов;
 - бренд продукта — **Control Center**, без устаревшего префикса `SRV` в новом интерфейсе и новой документации.
+
+## Licensing Stage 1 — Edition / Entitlement Engine
+
+**Обязательный scope 2.0.0.** Это первый этап последовательного внедрения Professional licensing и он должен войти в 2.0.0 по умолчанию.
+
+- ввести явное edition state: **Control Center Home** / **Control Center Professional**;
+- единый Entitlement Engine в Core с API/backend enforcement, а не только UI-ограничениями;
+- Home: максимум **10 доменных пользователей**;
+- Home: максимум **10 сетевых общих ресурсов (SMB/network shares)**;
+- попытка создать 11-го доменного пользователя или 11-ю шару должна безопасно блокироваться до изменения системы и показывать требование Professional;
+- коммерческое использование остаётся Professional независимо от количества пользователей/шар;
+- достижение лимита не должно останавливать уже работающие Samba AD, SMB, DHCP, DNS или другие критические сервисы;
+- добавить **Система → О системе / Лицензия** либо эквивалентный экран с edition, entitlement state, текущим использованием Home-лимитов и состоянием лицензии;
+- подготовить schema/state/API foundation для последующих signed-license и activation stages;
+- licensing private key или activation secrets на Stage 1 не требуются и не должны появляться в product repository.
+
+### Stage 1 acceptance
+
+Stage 1 нельзя считать завершённым, пока одновременно не проверено:
+
+1. Home edition определяется детерминированно и сохраняется после reboot/update;
+2. текущие значения domain-user/share usage отображаются корректно;
+3. 1–10 доменных пользователей допускаются, 11-й блокируется до privileged mutation;
+4. 1–10 сетевых шар допускаются, 11-я блокируется до privileged mutation;
+5. обход UI прямым API-запросом не позволяет превысить лимит;
+6. privileged helper/system boundary также не позволяет обойти entitlement check;
+7. существующая Home-конфигурация при достижении лимита продолжает обслуживать уже созданные ресурсы;
+8. migration с production 1.3.8 не теряет пользователей, шары и права;
+9. RBAC, backup, update и rollback regression проходят;
+10. `PRODUCT-EDITIONS.md`, `PRODUCT-MANUAL-RU.md`, release notes и сайт синхронизированы с фактической реализацией.
+
+После acceptance Stage 1 следующий функциональный релиз автоматически получает **Licensing Stage 2 — Signed local Professional licenses** из `PRODUCT-EDITIONS.md`.
 
 ## Update Center / механизм обновления
 
@@ -106,10 +141,11 @@ Production pointer нельзя переключать на 2.0.0, пока не
 5. Minecraft health/recovery tests;
 6. authentication/RBAC regressions;
 7. Samba/share regressions;
-8. migration test с фактической 1.3.8 production line;
-9. rollback test;
-10. real-server acceptance;
-11. актуализация `PRODUCT-MANUAL-RU.md`, `RELEASE-HISTORY.md`, `INSTALL.md`, `SYSTEM-ADMIN.md`, `AUTO-UPDATES.md` и этого roadmap.
+8. **Licensing Stage 1 acceptance полностью пройден**;
+9. migration test с фактической 1.3.8 production line, включая сохранение domain users и SMB shares;
+10. rollback test;
+11. real-server acceptance;
+12. актуализация `PRODUCT-MANUAL-RU.md`, `RELEASE-HISTORY.md`, `INSTALL.md`, `SYSTEM-ADMIN.md`, `AUTO-UPDATES.md`, `PRODUCT-EDITIONS.md` и этого roadmap.
 
 После успешного перехода неактуальные **неопубликованные** 1.x development branches могут быть удалены. Опубликованные frozen release directories и необходимая историческая release lineage сохраняются.
 
@@ -117,7 +153,7 @@ Production pointer нельзя переключать на 2.0.0, пока не
 
 # После 2.0.0 — функциональные направления 2.x
 
-Ниже перечислены направления, а не обещанные номера/даты релизов. Приоритет определяется отдельным release scope.
+Ниже перечислены направления, а не обещанные номера/даты релизов. Приоритет определяется отдельным release scope. Исключение — последовательный licensing track: следующий незавершённый licensing stage включается в каждый новый функциональный release scope автоматически.
 
 ## DHCP и PXE
 
@@ -173,7 +209,16 @@ Production pointer нельзя переключать на 2.0.0, пока не
 
 ## Product editions и licensing
 
-Архитектура редакций описывается отдельно в `PRODUCT-EDITIONS.md`. Licensing не должен ослаблять security controls, RBAC, backup safety или integrity проверки.
+Архитектура редакций и полный staged rollout описываются в `PRODUCT-EDITIONS.md`. Licensing не должен ослаблять security controls, RBAC, backup safety или integrity проверки.
+
+Автоматический порядок после Stage 1:
+
+- следующий функциональный релиз после принятого 2.0.0 → **Stage 2: signed local Professional licenses**;
+- следующий после принятого Stage 2 → **Stage 3: online activation service**;
+- следующий после принятого Stage 3 → **Stage 4: offline activation**;
+- следующий после принятого Stage 4 → **Stage 5: customer licensing portal**.
+
+Точные номера этих релизов назначаются при начале их подготовки и не угадываются заранее. Если предыдущий stage не прошёл acceptance, следующий stage не начинается.
 
 ---
 
@@ -192,6 +237,9 @@ Production pointer нельзя переключать на 2.0.0, пока не
 Перед каждым новым release scope необходимо:
 
 1. определить, какие пункты этого roadmap входят в релиз;
-2. отделить реализованное от запланированного;
-3. после публикации перенести фактически реализованные пользовательские возможности в `PRODUCT-MANUAL-RU.md` и `RELEASE-HISTORY.md`;
-4. не оставлять roadmap единственным источником инструкции по уже выпущенной функции.
+2. **автоматически назначить следующий незавершённый licensing stage из `PRODUCT-EDITIONS.md` для функционального релиза**;
+3. записать acceptance criteria этого licensing stage в release scope;
+4. отделить реализованное от запланированного;
+5. после публикации перенести фактически реализованные пользовательские возможности в `PRODUCT-MANUAL-RU.md` и `RELEASE-HISTORY.md`;
+6. отметить licensing stage как принятый только после его полного acceptance;
+7. не оставлять roadmap единственным источником инструкции по уже выпущенной функции.
