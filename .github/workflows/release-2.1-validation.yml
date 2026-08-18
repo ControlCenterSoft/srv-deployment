@@ -41,6 +41,15 @@ jobs:
           grep -Fq 'direct upgrade from the real production state `1.3.8`' docs/2.1/README.md
           grep -Fq 'published `2.0.0`' docs/2.1/README.md
 
+      - name: Print 2.1.0 release script hashes
+        run: |
+          set -euo pipefail
+          sha256sum \
+            releases/2.1.0/preflight-2.1.0.sh \
+            releases/2.1.0/apply-2.1.0.sh \
+            releases/2.1.0/acceptance-2.1.0.sh \
+            releases/2.1.0/rollback-2.1.0.sh
+
       - name: Validate 2.1.0 manifest hashes
         run: |
           set -euo pipefail
@@ -56,15 +65,6 @@ jobs:
               assert digest == item['sha256'],(stage,digest,item['sha256'])
           print('2.1.0 MANIFEST PASS')
           PY
-
-      - name: Print 2.1.0 release script hashes
-        run: |
-          set -euo pipefail
-          sha256sum \
-            releases/2.1.0/preflight-2.1.0.sh \
-            releases/2.1.0/apply-2.1.0.sh \
-            releases/2.1.0/acceptance-2.1.0.sh \
-            releases/2.1.0/rollback-2.1.0.sh
 
       - name: Validate 2.1.0 release syntax
         run: |
@@ -114,7 +114,7 @@ jobs:
           grep -Fq "ROLE == 'srv-control-minecraft-restore'" "$dispatcher"
           grep -Fq "UDP" docs/2.1/README.md
 
-      - name: Validate non-destructive normalization safety
+      - name: Validate non-destructive normalization and rollback safety
         run: |
           set -euo pipefail
           helper='releases/2.1.0/system/srv-control-minecraft-normalize'
@@ -128,11 +128,14 @@ jobs:
           grep -Fq "multiple Bedrock runtime directories are active" "$helper"
           grep -Fq "multiple bedrock_server processes" "$helper"
           grep -Fq 'backup_path "/etc/systemd/system/$CANONICAL_UNIT"' "$apply"
+          grep -Fq 'canonical-unit.generated' "$apply"
           grep -Fq 'minecraft-normalize.json' "$apply"
+          grep -Fq 'if [[ "$previous_unit" != "$CANONICAL_UNIT" ]]' "$rollback"
+          grep -Fq 'canonical-unit.generated' "$rollback"
           grep -Fq 'availability fallback' "$rollback"
           grep -Fq 'source-version' "$rollback"
 
-      - name: Validate acceptance gates
+      - name: Validate real runtime acceptance gates
         run: |
           set -euo pipefail
           acceptance='releases/2.1.0/acceptance-2.1.0.sh'
@@ -142,6 +145,11 @@ jobs:
           grep -Fq "assert len(p.get('pids') or []) == 1" "$acceptance"
           grep -Fq "assert p.get('port_listening') is True" "$acceptance"
           grep -Fq "assert p.get('world_exists') is True" "$acceptance"
+          grep -Fq '/usr/local/sbin/srv-control-minecraft backup' "$acceptance"
+          grep -Fq '/usr/local/sbin/srv-control-minecraft-restore inspect' "$acceptance"
+          grep -Fq '/usr/local/sbin/srv-control-minecraft service restart' "$acceptance"
+          grep -Fq '/usr/local/sbin/srv-control-minecraft logs 60' "$acceptance"
+          grep -Fq '/usr/local/sbin/srv-control-minecraft updater' "$acceptance"
           grep -Fq "srv-control-minecraft-auto-update.timer" "$acceptance"
 
       - name: Validate conflicting scheduler handling
