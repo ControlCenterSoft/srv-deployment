@@ -40,6 +40,45 @@ The Home EULA defines permitted use. The software must not attempt to infer whet
 - Full Endpoint Management and future multi-server/HA capabilities according to entitlements.
 - **Minecraft is excluded from the Professional build**, not merely hidden in the UI. Minecraft backend/API/helpers/systemd/templates/assets must not be shipped in the commercial artifact.
 
+## Professional release lifecycle and update rights
+
+Update entitlement is calculated from the **official release date of the applicable release line**, not from the customer's purchase or activation date.
+
+For every commercially supported release line, Control Center publishes concrete lifecycle dates. The authoritative timestamps are stored in signed release/lifecycle metadata and are displayed in **System → About / О системе**.
+
+Lifecycle policy:
+
+1. **Full updates — 24 months from the official release date.** During this period the supported line receives applicable feature/minor updates, maintenance/bug-fix updates and security updates according to the release compatibility policy.
+2. **Security-only period — the following 12 months.** After the first 24 months, the line receives security updates only. Functional/minor feature development is no longer included for that line.
+3. **End of updates — 36 months from the official release date.** After this date free update entitlement for that release line ends. The already activated licensed installation is not disabled merely because its update period ended.
+4. **Major upgrade is paid.** A new major product generation is a separately licensed upgrade unless the commercial agreement explicitly grants it.
+
+Example: if a commercial major release `1.0.0` is officially released on `YYYY-MM-DD`, its default lifecycle is:
+
+- Release date: `YYYY-MM-DD`;
+- Full updates until: `YYYY-MM-DD + 24 months`;
+- Security updates only until: `YYYY-MM-DD + 36 months`;
+- End of updates: the latter date.
+
+**Concrete dates must never be guessed in documentation or UI.** They are populated only when a release is actually published and its official release timestamp is known. For existing pre-commercial/development releases, no Professional commercial lifecycle date is claimed retroactively unless explicitly designated.
+
+### About/System UI contract
+
+For Control Center Professional, **О системе / About** must show at least:
+
+- Product: Control Center Professional;
+- installed version;
+- official release date for the licensed/supported release line;
+- full-updates-until date;
+- security-updates-until date;
+- lifecycle state: `Full updates`, `Security updates only`, or `Updates ended`;
+- licensed major generation;
+- license/activation status;
+- update channel;
+- link/reference to applicable release notes and license terms.
+
+The Update Center must use the same signed lifecycle metadata, so UI display and update authorization cannot disagree.
+
 ## Edition enforcement
 
 Edition is selected at build/release time and is not a user-editable UI switch. Entitlements are enforced at UI, API authorization, privileged helper and build-time module levels. The UI is never the sole security boundary.
@@ -74,14 +113,14 @@ Home and Professional use edition-aware production channels/artifacts so cross-e
 
 ## EULA
 
-Two agreements are required: Home EULA for personal/non-commercial use and Professional EULA for commercial rights, installation count, activation, transfer/re-host, maintenance/update terms, support and termination. EULA and technical entitlement enforcement are separate layers. Final agreements require professional legal review before external commercial launch.
+Two agreements are required: Home EULA for personal/non-commercial use and Professional EULA for commercial rights, installation count, activation, transfer/re-host, release-based maintenance/update terms, support and termination. EULA and technical entitlement enforcement are separate layers. Final agreements require professional legal review before external commercial launch.
 
 ## Roadmap integration
 
 - 1.4.x: prepare module boundaries, edition manifest and user-facing branding transition without destabilizing production.
-- 1.5.x: License/Entitlement Engine foundations in DB/API/UI.
+- 1.5.x: License/Entitlement Engine foundations in DB/API/UI, including signed release lifecycle metadata and About/System lifecycle fields.
 - 1.6.x: Professional activation/offline activation and signed releases; Ansible foundation is entitlement-aware.
 - 1.7.x: Endpoint Management uses the same Desired State Core with Home vs Professional entitlements.
 - 1.8.x: multi-server/HA is a Professional entitlement; Home remains single-server.
 
-Detailed release scope remains in `docs/ROADMAP.md`. This document is the canonical architecture reference for editions, licensing and public product naming.
+Detailed release scope remains in `docs/ROADMAP.md`. This document is the canonical architecture reference for editions, licensing, release lifecycle and public product naming.
