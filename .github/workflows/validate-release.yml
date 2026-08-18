@@ -113,6 +113,9 @@ jobs:
           wsgi=(root/'app/wsgi.py').read_text()
           assert "script-src 'self';" in wsgi and 'unsafe-inline' not in wsgi
 
+          lifecycle=(root/'docs/UPDATE-LIFECYCLE-POLICY-RU.md').read_text()
+          assert 'не заявляет строгую совместимость с Semantic Versioning' in lifecycle
+          assert 'последовательный production-релиз' in lifecycle
           readme=(root/'README.md').read_text()
           assert f'Control Center {version}' in readme
           print(f'Validated Control Center {version} build {build}')
@@ -137,7 +140,8 @@ jobs:
         run: |
           set -euo pipefail
           for f in \
-            docs/README.md docs/INSTALL.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md \
+            docs/README.md docs/EULA-RU.md docs/PRODUCT-EDITIONS.md docs/UPDATE-LIFECYCLE-POLICY-RU.md docs/RELEASE-HISTORY.md \
+            docs/INSTALL.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md \
             docs/NETWORK.md docs/DHCP.md docs/NOTIFICATIONS.md docs/UI.md docs/SECURITY.md docs/TROUBLESHOOTING.md \
             releases/1.0.6/README.md releases/1.0.6/manifest.json; do
             test -s "$f"
