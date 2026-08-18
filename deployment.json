@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "2.1.1",
-  "release_id": "2.1.1",
-  "release_path": "releases/2.1.1",
-  "manifest": "releases/2.1.1/manifest.json",
-  "preflight": "releases/2.1.1/preflight-2.1.1.sh",
-  "apply": "releases/2.1.1/apply-2.1.1.sh",
-  "acceptance": "releases/2.1.1/acceptance-2.1.1.sh",
-  "rollback": "releases/2.1.1/rollback-2.1.1.sh",
-  "description": "Control Center 2.1.1 production candidate: fix Minecraft UI control under the retained NoNewPrivileges web sandbox by routing privileged operations through the root action agent instead of sudo; run Bedrock as the dedicated minecraft account; enforce mutable-data ownership; and use one canonical update scheduler."
+  "release": "2.1.2",
+  "release_id": "2.1.2",
+  "release_path": "releases/2.1.2",
+  "manifest": "releases/2.1.2/manifest.json",
+  "preflight": "releases/2.1.2/preflight-2.1.2.sh",
+  "apply": "releases/2.1.2/apply-2.1.2.sh",
+  "acceptance": "releases/2.1.2/acceptance-2.1.2.sh",
+  "rollback": "releases/2.1.2/rollback-2.1.2.sh",
+  "description": "Control Center 2.1.2 production candidate: keep Minecraft Bedrock status visible while stopped by using the canonical systemd WorkingDirectory, return explicit confirmed ONLINE/OFFLINE command results, and add a 5-second live status panel while preserving the 2.1.1 privilege bridge and NoNewPrivileges sandbox."
 }
