@@ -99,6 +99,13 @@ if ! /usr/local/libexec/srv-control-minecraft-normalize normalize > "$BACKUP_DIR
 fi
 cat "$BACKUP_DIR/state/minecraft-normalize.json"
 
+# Preserve the exact generated canonical unit after successful normalization.
+# This is an availability fallback only for a source Bedrock process that was
+# genuinely unmanaged and therefore has no old systemd unit rollback can restart.
+[[ -s "/etc/systemd/system/$CANONICAL_UNIT" ]] || fail "canonical Minecraft unit was not created"
+cp -a -- "/etc/systemd/system/$CANONICAL_UNIT" "$BACKUP_DIR/state/canonical-unit.generated"
+chmod 0640 "$BACKUP_DIR/state/canonical-unit.generated"
+
 systemctl disable --now srv-control-minecraft-auto-update.timer >/dev/null 2>&1 || true
 if systemctl cat minecraft-update.timer >/dev/null 2>&1; then
     systemctl enable --now minecraft-update.timer >/dev/null 2>&1 || true
