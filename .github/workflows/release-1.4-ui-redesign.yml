@@ -48,6 +48,7 @@ jobs:
             static/css/access.css \
             static/css/service-config-1.2.css \
             static/css/minecraft-1.4.css \
+            static/js/ui-1.4.js \
             static/js/login.js \
             static/js/shell.js \
             static/js/dashboard.js \
@@ -98,8 +99,9 @@ jobs:
           contracts = {
               'templates/login.html': {'loginForm','loginUsername','loginPassword','loginError'},
               'templates/shell.html': {
-                  'mainMenu','moduleFrame','globalSearch','backendHealthDot','backendHealth',
-                  'releaseVersion','githubSync','sessionUser','logoutButton','refreshButton'
+                  'mainNav','navBackdrop','mobileMenuButton','mainMenu','moduleFrame','globalSearch',
+                  'backendHealthDot','backendHealth','releaseVersion','githubSync','sessionUser',
+                  'logoutButton','refreshButton'
               },
               'templates/dashboard.html': {
                   'streamDot','streamText','serviceGrid','networkTx','networkRx','storageList',
@@ -178,6 +180,8 @@ jobs:
           do
             grep -Fq '@media' "$f" || { echo "missing responsive rules: $f"; exit 1; }
           done
+          grep -Fq '.main-nav.open' releases/1.4.0/payload/static/css/shell.css
+          grep -Fq '.nav-backdrop.open' releases/1.4.0/payload/static/css/shell.css
 
       - name: Validate interaction safety and accessibility contracts
         run: |
@@ -188,8 +192,10 @@ jobs:
           grep -Fq 'prefers-reduced-motion' releases/1.4.0/payload/static/css/shell.css
           grep -Fq 'aria-current' releases/1.4.0/payload/static/js/shell.js
           grep -Fq 'ArrowDown' releases/1.4.0/payload/static/js/shell.js
-          grep -Fq 'window.confirm' releases/1.4.0/payload/static/js/services.js
-          grep -Fq 'Полный администратор' releases/1.4.0/payload/static/js/access.js
+          grep -Fq 'mobileMenuButton' releases/1.4.0/payload/static/js/shell.js
+          grep -Fq 'window.ControlCenterUI' releases/1.4.0/payload/static/js/ui-1.4.js
+          grep -Fq 'ui.confirm' releases/1.4.0/payload/static/js/services.js
+          grep -Fq 'ui.confirm' releases/1.4.0/payload/static/js/access.js
           grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/services.js
           grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/access.js
 
