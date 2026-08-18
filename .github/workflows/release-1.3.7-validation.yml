@@ -1,0 +1,63 @@
+name: Control Center 1.3.7 frozen validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'releases/1.3.7/**'
+      - '.github/workflows/release-1.3.7-validation.yml'
+      - '.github/workflows/release-1.3.8-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frozen-1-3-7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Frozen tree identity
+        run: |
+          set -euxo pipefail
+          test "$(git rev-parse HEAD:releases/1.3.7)" = "d8442b7184493a7c8c4d5a50a10005873066f94b"
+
+      - name: Frozen shell syntax
+        run: |
+          set -euxo pipefail
+          bash -n releases/1.3.7/preflight-1.3.7.sh
+          bash -n releases/1.3.7/apply-1.3.7.sh
+          bash -n releases/1.3.7/acceptance-1.3.7.sh
+          bash -n releases/1.3.7/rollback-1.3.7.sh
+
+      - name: Frozen manifest hashes
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('releases/1.3.7')
+          manifest=json.loads((root/'manifest.json').read_text())
+          assert manifest['release_id']==manifest['release_version']=='1.3.7',manifest
+          for stage,entry in manifest['scripts'].items():
+              p=root/entry['path']
+              actual=hashlib.sha256(p.read_bytes()).hexdigest()
+              assert actual == entry['sha256'],(stage,actual,entry['sha256'])
+          print('FROZEN 1.3.7 MANIFEST PASS')
+          PY
+
+      - name: Frozen repair contracts
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          acceptance=Path('releases/1.3.7/acceptance-1.3.7.sh').read_text()
+          rollback=Path('releases/1.3.7/rollback-1.3.7.sh').read_text()
+          assert 'TMP="$(mktemp "${RELEASE_DIR}/.acceptance-1.3.7.XXXXXX.sh")"' in acceptance
+          assert 'adapted acceptance escaped release directory' in acceptance
+          assert 'TMP="$(mktemp "${SOURCE_DIR}/.rollback-1.3.7.XXXXXX.sh")"' in rollback
+          assert 'adapted rollback escaped release directory' in rollback
+          print('FROZEN 1.3.7 REPAIR CONTRACTS PASS')
+          PY

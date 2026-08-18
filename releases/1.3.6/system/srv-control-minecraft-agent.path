@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for SRV Control Center Minecraft actions
+
+[Path]
+PathExistsGlob=/var/lib/srv-control/minecraft-actions/*.json
+Unit=srv-control-minecraft-agent.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Домен Samba — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.3.0-rc1">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.3.0-rc1">
+    <link rel="stylesheet" href="/static/css/samba-1.3.css?v=1.3.0-rc1">
+</head>
+<body>
+<div class="page">
+    <header class="page-header">
+        <div>
+            <h1>Домен Samba</h1>
+            <p>Active Directory: состояние, парольная политика, пользователи, группы и переносимый backup домена.</p>
+        </div>
+    </header>
+
+    <div class="module-grid">
+        <section class="panel panel-wide">
+            <div class="panel-title">Состояние домена</div>
+            <div class="status-grid compact" id="sambaOverview"></div>
+            <div class="badge-row" id="sambaHealth"></div>
+            <div class="action-message" id="sambaMessage"></div>
+        </section>
+
+        <section class="panel" id="passwordPanel">
+            <div class="panel-title">Парольная политика</div>
+            <form id="passwordPolicyForm">
+                <div class="field-grid">
+                    <label><span>Сложность пароля</span><select id="policyComplexity"><option value="true">Включена</option><option value="false">Выключена</option></select></label>
+                    <label><span>История паролей</span><input id="policyHistory" type="number" min="0" max="24"></label>
+                    <label><span>Минимальная длина</span><input id="policyMinLength" type="number" min="0" max="255"></label>
+                    <label><span>Минимальный возраст, дней</span><input id="policyMinAge" type="number" min="0" max="998"></label>
+                    <label><span>Максимальный возраст, дней</span><input id="policyMaxAge" type="number" min="0" max="999"></label>
+                    <label><span>Блокировка после попыток</span><input id="policyLockThreshold" type="number" min="0" max="999"></label>
+                    <label><span>Блокировка, минут</span><input id="policyLockDuration" type="number" min="0" max="1000000"></label>
+                    <label><span>Сброс счётчика через, минут</span><input id="policyLockReset" type="number" min="0" max="1000000"></label>
+                </div>
+                <div class="config-actions"><button class="action-button" id="policySave" type="submit">Сохранить политику</button></div>
+            </form>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">Резервная копия домена</div>
+            <div class="field-grid">
+                <label><span>Состав копии</span><select id="domainBackupMode"><option value="domain-config">Домен + конфигурация шар</option><option value="full">Полная миграционная копия</option></select></label>
+            </div>
+            <div class="config-actions">
+                <button class="action-button" id="domainBackupCreate" type="button">Создать резервную копию</button>
+                <button class="secondary-button" id="domainRestoreOpen" type="button">Восстановить из резервной копии</button>
+            </div>
+            <div class="danger-note hidden" id="domainRestoreBox">
+                <strong>Восстановление домена</strong>
+                <p>Разрешено только полному администратору и предназначено для нового сервера с установленной, но ещё не provisioned Samba AD.</p>
+                <input id="domainRestoreFile" type="file" accept=".tar,.srvdom,.backup,application/x-tar,application/octet-stream">
+                <div class="config-actions"><button class="action-button" id="domainRestoreStart" type="button">Загрузить и восстановить</button></div>
+            </div>
+            <div class="table-wrap" style="margin-top:14px">
+                <table class="data-table">
+                    <thead><tr><th>Создана</th><th>Режим</th><th>Размер</th><th>SID</th><th></th></tr></thead>
+                    <tbody id="domainBackupRows"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel panel-wide">
+            <div class="panel-title">Пользователи домена</div>
+            <div class="toolbar">
+                <input class="grow" id="userSearch" type="search" placeholder="Поиск по логину, ФИО, e-mail или телефону">
+                <button class="action-button" id="userNew" type="button">Новый пользователь</button>
+            </div>
+            <div class="split-pane">
+                <div class="object-list" id="userList"></div>
+                <div class="object-editor" id="userEditor">
+                    <div class="empty-state">Выберите пользователя или создайте нового.</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel panel-wide">
+            <div class="panel-title">Группы домена</div>
+            <div class="toolbar">
+                <input class="grow" id="groupSearch" type="search" placeholder="Поиск группы">
+                <button class="action-button" id="groupNew" type="button">Новая группа</button>
+            </div>
+            <div class="split-pane">
+                <div class="object-list" id="groupList"></div>
+                <div class="object-editor" id="groupEditor">
+                    <div class="empty-state">Выберите группу или создайте новую.</div>
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+<script src="/static/js/samba.js?v=1.3.0-rc1"></script>
+</body>
+</html>
