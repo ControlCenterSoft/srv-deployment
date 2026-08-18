@@ -1,38 +1,34 @@
-# Безопасность Control Center 1.0.5
+# Безопасность Control Center 1.0.6
 
 ## Разделение привилегий
 
-Основной Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные действия выполняются отдельными systemd workers: сеть, Market/DHCP, лицензирование, обновление Control Center и обновление ОС/пакетов.
+Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные действия выполняются отдельными systemd workers: сеть, Market/DHCP, лицензирование, обновление Control Center и обновление ОС/пакетов.
 
-Web UI создаёт запросы в Web-writable state, но root helpers **не считают их доверенными**. Network и DHCP helpers независимо повторно проверяют интерфейсы, типы значений, IPv4, маски, шлюзы, DNS, диапазоны и ограничения непосредственно перед применением.
+Web UI создаёт pending requests в Web-writable state, но root helpers не доверяют им и повторно валидируют критичные параметры перед применением.
 
-## Четыре уровня state
-
-```text
-/var/lib/control-center
-```
-Web-writable: настройки и pending requests.
+## State
 
 ```text
-/var/lib/control-center-system
+/var/lib/control-center          # Web-writable settings + pending requests
+/var/lib/control-center-system   # root:control-center applied state/status/modules
+/var/lib/control-center-root     # root:root 0700 rollback
+/var/lib/control-center-license  # root:control-center validated license
 ```
-`root:control-center 0750`: применённые конфигурации, статусы и ownership модулей. Web-процесс имеет только чтение.
+
+## Read-only live configuration
+
+Для выполнения требования 1.0.6 «показывать уже настроенные параметры» Web service получает только чтение Control Center-managed конфигураций:
 
 ```text
-/var/lib/control-center-root
+/etc/netplan/90-control-center.yaml
+/etc/dnsmasq.d/control-center-dhcp.conf
 ```
-`root:root 0700`: rollback-копии приложения, Netplan и DHCP. Web service получает `InaccessiblePaths=/var/lib/control-center-root`.
 
-```text
-/var/lib/control-center-license
-```
-`root:control-center 0750`, файл лицензии `0640`: подтверждённая Professional-лицензия. Web service может читать, но не изменять её.
-
-Compatibility symlinks внутри `/var/lib/control-center` используются только для чтения текущим Web API. Root helpers всегда обращаются к защищённым оригиналам и не доверяют этим ссылкам.
+Netplan-файл хранится как `root:control-center 0640`. Изменение этих файлов по-прежнему возможно только через root helpers.
 
 ## Production Web runtime
 
-Web UI запускается Gunicorn через `wsgi:app`, а не Flask development server. Production entrypoint добавляет:
+Web UI запускается Gunicorn через `wsgi:app`. WSGI layer включает:
 
 - `Content-Security-Policy`;
 - `X-Content-Type-Options: nosniff`;
@@ -41,25 +37,29 @@ Web UI запускается Gunicorn через `wsgi:app`, а не Flask deve
 - `Permissions-Policy`;
 - `Cross-Origin-Opener-Policy`;
 - `Cache-Control: no-store` для HTML/API;
-- same-origin проверку браузерных POST/PUT/PATCH/DELETE запросов;
+- same-origin проверку browser write requests;
 - лимит request body 64 KiB;
-- уникальные атомарные temp-файлы для JSON writes при нескольких Gunicorn workers.
+- атомарные JSON writes для нескольких Gunicorn workers.
 
-Динамические строки, вставляемые JavaScript через `innerHTML`, экранируются перед отображением.
+В 1.0.6 JavaScript вынесен в `/static/app.js`. CSP теперь использует:
 
-Текущий CSP временно содержит `script-src 'unsafe-inline'`, поскольку JavaScript 1.0.5 ещё находится в шаблоне HTML. В следующей архитектурной итерации рекомендуется вынести script в отдельный static-файл и убрать `unsafe-inline`.
+```text
+script-src 'self'
+```
 
-## Лицензирование
+и больше не требует `unsafe-inline`.
 
-Professional-лицензия проверяется RSA/SHA-256. Root helper проверяет подпись, `edition`, `device_id`, `license_id` и срок действия. Приватный ключ издателя никогда не должен храниться в GitHub или на клиентском сервере.
+## XSS
 
-## DHCP ownership
+Все системные/пользовательские строки, которые вставляются в динамический HTML, проходят HTML escaping в `app.js`.
 
-Control Center не захватывает `dnsmasq`, уже установленный вне продукта. Управляемый DHCP работает отдельным `control-center-dhcp-server.service`; дистрибутивный `dnsmasq.service` не используется как runtime модуля. Ownership пакета хранится только в защищённом system-state.
+## DHCP additional options
 
-## APT/dpkg
+Дополнительные DHCP options проходят двойную проверку Web API + root helper. Ограничены numeric codes `1..254`, максимум 32 записей; запрещены управляющие символы и дублирование. Options `1`, `3`, `6`, `51` управляются основными полями и не могут быть добавлены повторно.
 
-Установщик, OS/package updater и Маркет используют общий `/run/control-center-apt.lock`, чтобы внутренние пакетные операции не выполнялись одновременно.
+## Уведомления
+
+`/api/notifications` только агрегирует protected status files и фактический DHCP service state. Read/unread хранится в localStorage браузера и не влияет на server-side состояние.
 
 ## Systemd hardening Web UI
 
@@ -74,31 +74,21 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center
-ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
 InaccessiblePaths=/var/lib/control-center-root
 ```
 
-## Известное ограничение 1.0.5
+## Известное ограничение 1.0.6
 
-В 1.0.5 ещё **нет полноценной встроенной аутентификации Web UI**. Поэтому TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть. Same-origin/CSP уменьшают браузерные риски, но не являются заменой authentication/authorization.
+Встроенная Web-аутентификация пока отсутствует. Same-origin/CSP/systemd hardening не заменяют authentication/authorization. TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть.
 
-До внедрения аутентификации доступ должен ограничиваться доверенной административной LAN/VPN и firewall/reverse proxy с аутентификацией.
+Рекомендуется разрешать доступ только из административной LAN/VPN/firewall или через reverse proxy с аутентификацией.
 
-## Рекомендации
-
-- разрешать TCP/8080 только с административных адресов;
-- не публиковать порт через WAN/NAT;
-- использовать VPN для удалённого администрирования;
-- хранить приватный ключ Professional offline и в зашифрованном хранилище;
-- регулярно проверять журналы привилегированных workers;
-- выполнять `scripts/acceptance-1.0.5.sh` после установки/обновления.
-
-## Проверка прав
+## Проверка
 
 ```bash
-id control-center
+sudo bash scripts/acceptance-1.0.6.sh
 systemctl cat control-center
+ls -l /etc/netplan/90-control-center.yaml 2>/dev/null || true
 ls -ld /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root /var/lib/control-center-license
-find /var/lib/control-center-system -maxdepth 2 -ls
-ls -l /var/lib/control-center-license 2>/dev/null || true
 ```
