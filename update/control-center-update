@@ -10,6 +10,8 @@ STATUS="$SYSTEM_STATE/update-status.json"
 VERSION_FILE="/opt/control-center/VERSION"
 BUILD_FILE="/opt/control-center/BUILD"
 LOCK_FILE="/run/control-center-update.lock"
+DB_NAME=control_center
+DB_ROLE=control-center
 mkdir -p "$STATE_DIR"
 install -d -o root -g control-center -m 0750 "$SYSTEM_STATE"
 install -d -o root -g root -m 0700 "$ROOT_STATE"
@@ -77,17 +79,61 @@ mkdir -m 0700 "$BACKUP"
 [[ -d /opt/control-center ]] && cp -a /opt/control-center "$BACKUP/opt-control-center"
 [[ -f /etc/systemd/system/control-center.service ]] && cp -a /etc/systemd/system/control-center.service "$BACKUP/control-center.service"
 [[ -f /etc/control-center/web.env ]] && cp -a /etc/control-center/web.env "$BACKUP/web.env"
+[[ -f /etc/control-center/database.env ]] && cp -a /etc/control-center/database.env "$BACKUP/database.env"
+
+DB_EXISTED=0
+ROLE_EXISTED=0
+if command -v psql >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
+  if runuser -u postgres -- psql -d postgres -Atqc "SELECT 1 FROM pg_roles WHERE rolname='$DB_ROLE'" 2>/dev/null | grep -qx 1; then ROLE_EXISTED=1; fi
+  if runuser -u postgres -- psql -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null | grep -qx 1; then
+    DB_EXISTED=1
+    if id control-center >/dev/null 2>&1 && command -v pg_dump >/dev/null 2>&1; then
+      if ! runuser -u control-center -- pg_dump -Fc "$DB_NAME" >"$BACKUP/control-center-db.dump"; then
+        write_status error 'Не удалось создать PostgreSQL backup перед обновлением' "$latest" "$latest_build"
+        exit 1
+      fi
+      chmod 0600 "$BACKUP/control-center-db.dump"
+    else
+      write_status error 'PostgreSQL database существует, но pg_dump/control-center identity недоступны' "$latest" "$latest_build"
+      exit 1
+    fi
+  fi
+fi
+printf '%s\n' "$DB_EXISTED" >"$BACKUP/db-existed"
+printf '%s\n' "$ROLE_EXISTED" >"$BACKUP/db-role-existed"
+
 if bash "$TMP/repo/install/install.sh" --update-from "$current"; then
   write_status updated "Автоматически обновлено с $current${current_build:+/$current_build} до $latest${latest_build:+/$latest_build}" "$latest" "$latest_build"
   find "$ROOT_STATE" -maxdepth 1 -type d -name 'rollback-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
   exit 0
 fi
+
 systemctl stop control-center 2>/dev/null || true
 rm -rf /opt/control-center
 [[ -d "$BACKUP/opt-control-center" ]] && cp -a "$BACKUP/opt-control-center" /opt/control-center
 [[ -f "$BACKUP/control-center.service" ]] && cp -a "$BACKUP/control-center.service" /etc/systemd/system/control-center.service
-[[ -f "$BACKUP/web.env" ]] && cp -a "$BACKUP/web.env" /etc/control-center/web.env
+[[ -f "$BACKUP/web.env" ]] && { install -d -m 0755 /etc/control-center; cp -a "$BACKUP/web.env" /etc/control-center/web.env; }
+[[ -f "$BACKUP/database.env" ]] && { install -d -m 0755 /etc/control-center; cp -a "$BACKUP/database.env" /etc/control-center/database.env; }
+
+if command -v psql >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
+  systemctl start postgresql >/dev/null 2>&1 || true
+  if [[ "$DB_EXISTED" == 1 && -s "$BACKUP/control-center-db.dump" ]]; then
+    runuser -u postgres -- psql -d postgres -Atqc "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB_NAME' AND pid<>pg_backend_pid()" >/dev/null 2>&1 || true
+    runuser -u postgres -- dropdb --if-exists "$DB_NAME" >/dev/null 2>&1 || true
+    if [[ "$ROLE_EXISTED" == 1 ]]; then
+      runuser -u postgres -- createdb --owner="$DB_ROLE" "$DB_NAME" >/dev/null 2>&1 || true
+      runuser -u control-center -- pg_restore --no-owner -d "$DB_NAME" "$BACKUP/control-center-db.dump" >/dev/null 2>&1 || true
+    fi
+  elif [[ "$DB_EXISTED" == 0 ]]; then
+    runuser -u postgres -- psql -d postgres -Atqc "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB_NAME' AND pid<>pg_backend_pid()" >/dev/null 2>&1 || true
+    runuser -u postgres -- dropdb --if-exists "$DB_NAME" >/dev/null 2>&1 || true
+  fi
+  if [[ "$ROLE_EXISTED" == 0 ]]; then
+    runuser -u postgres -- psql -d postgres -c 'DROP ROLE IF EXISTS "control-center";' >/dev/null 2>&1 || true
+  fi
+fi
+
 systemctl daemon-reload
 systemctl restart control-center 2>/dev/null || true
-write_status rollback "Обновление до $latest/$latest_build завершилось ошибкой; восстановлена $current/$current_build" "$latest" "$latest_build"
+write_status rollback "Обновление до $latest/$latest_build завершилось ошибкой; восстановлена $current/$current_build вместе с PostgreSQL state" "$latest" "$latest_build"
 exit 1
