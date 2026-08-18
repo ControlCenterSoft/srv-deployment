@@ -68,7 +68,10 @@ jobs:
           python3 -m py_compile \
             releases/2.1.1/system/srv-control-minecraft-permissions \
             releases/2.1.1/system/srv-control-minecraft-bedrock-update \
-            releases/2.1.1/system/srv-control-minecraft-dispatch
+            releases/2.1.1/system/srv-control-minecraft-dispatch \
+            releases/2.1.1/system/srv-control-minecraft-agent \
+            releases/2.1.1/system/srv-control-minecraft-router-bridge-patch \
+            releases/2.1.1/payload/app/core/minecraft_privileged.py
 
       - name: Validate direct upgrade and frozen-base chaining
         run: |
@@ -83,6 +86,39 @@ jobs:
           grep -Fq 'original-source-version' "$apply"
           grep -Fq 'original-source-version' "$rollback"
 
+      - name: Validate NoNewPrivileges-safe Minecraft UI bridge
+        run: |
+          set -euo pipefail
+          agent=releases/2.1.1/system/srv-control-minecraft-agent
+          bridge=releases/2.1.1/payload/app/core/minecraft_privileged.py
+          patcher=releases/2.1.1/system/srv-control-minecraft-router-bridge-patch
+          apply=releases/2.1.1/apply-2.1.1.sh
+          acceptance=releases/2.1.1/acceptance-2.1.1.sh
+          rollback=releases/2.1.1/rollback-2.1.1.sh
+          grep -Fq "'action': 'minecraft-legacy-helper'" "$bridge"
+          grep -Fq "if request.get('action') == 'minecraft-legacy-helper'" "$agent"
+          grep -Fq "LEGACY_HELPERS" "$agent"
+          grep -Fq 'sudo execution remains in Minecraft legacy router after patch' "$patcher"
+          grep -Fq 'NoNewPrivileges remains enabled' "$apply"
+          grep -Fq 'systemctl enable --now srv-control-minecraft-agent.path' "$apply"
+          grep -Fq 'NoNewPrivileges --value' "$acceptance"
+          grep -Fq 'runuser -u srv-control' "$acceptance"
+          grep -Fq "run_helper('control',['service','restart']" "$acceptance"
+          grep -Fq 'restore_path /usr/local/libexec/srv-control-minecraft-agent' "$rollback"
+          grep -Fq 'restore_path "$PROJECT/app/routers/minecraft_legacy.py"' "$rollback"
+          grep -Fq 'restore_path "$PROJECT/app/core/minecraft_privileged.py"' "$rollback"
+
+      - name: Validate deterministic router patch against frozen source
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp)"
+          cp releases/2.0.0/payload/app/routers/minecraft_legacy.py "$tmp"
+          python3 releases/2.1.1/system/srv-control-minecraft-router-bridge-patch "$tmp"
+          python3 -m py_compile "$tmp"
+          ! grep -Fq '["/usr/bin/sudo", "-n", str(helper), *args]' "$tmp"
+          grep -Fq 'run_privileged_minecraft_helper(kind, list(args)' "$tmp"
+          rm -f "$tmp"
+
       - name: Validate unprivileged runtime ownership contract
         run: |
           set -euo pipefail
@@ -93,13 +129,14 @@ jobs:
           grep -Fq "TARGET_USER = 'minecraft'" "$helper"
           grep -Fq "TARGET_GROUP = 'minecraft'" "$helper"
           grep -Fq 'minecraft account unexpectedly resolves to uid 0' "$helper"
+          grep -Fq 'root-owned-program-minecraft-owned-data' "$helper"
           grep -Fq 'runtime-metadata.jsonl' "$apply"
           grep -Fq 'User=minecraft' "$apply"
           grep -Fq 'Group=minecraft' "$apply"
           grep -Fq 'srv-control-minecraft-permissions.service' "$apply"
           grep -Fq 'User=minecraft' "$acceptance"
           grep -Fq 'Group=minecraft' "$acceptance"
-          grep -Fq '.control-center-2.1.1-permission-probe' "$acceptance"
+          grep -Fq 'worlds/.control-center-2.1.1-permission-probe' "$acceptance"
           grep -Fq 'runtime-metadata.jsonl' "$rollback"
           grep -Fq 'os.lchown' "$rollback"
 
