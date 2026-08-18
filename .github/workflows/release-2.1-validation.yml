@@ -168,8 +168,11 @@ jobs:
           grep -Fq 'systemctl disable --now srv-control-minecraft-auto-update.timer' "$apply"
           grep -Fq 'systemctl enable --now minecraft-update.timer' "$apply"
 
-      - name: Validate server-state evidence contract
+      - name: Validate production evidence contract
         run: |
           set -euo pipefail
-          grep -Fq 'multi-instance automatic updater previously reported zero automatic instances' docs/2.1/README.md
-          grep -Fq 'live `bedrock_server` listening on UDP `19132`' docs/2.1/README.md
+          grep -Fq 'Control Center 2.1.0 was merged to `main` as commit `7cc7b0512233fa023a5ab36951d57363272d024f`' docs/2.1/README.md
+          grep -Fq 'deployment result `success` at stage `acceptance`' docs/2.1/README.md
+          grep -Fq '`srv-control-minecraft-bedrock.service` enabled' docs/2.1/README.md
+          grep -Fq 'one live `bedrock_server` process listening on UDP `19132`' docs/2.1/README.md
+          grep -Fq '`2.1.0` is frozen' docs/2.1/README.md
