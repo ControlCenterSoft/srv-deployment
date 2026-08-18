@@ -19,8 +19,9 @@ command -v systemctl >/dev/null || die "systemd is required."
 log "Preflight"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends python3 python3-pam python3-gunicorn nginx ca-certificates curl
+apt-get install -y --no-install-recommends python3 python3-pam gunicorn nginx ca-certificates curl
 
+command -v gunicorn >/dev/null || die "gunicorn executable is missing after package installation."
 getent passwd www-data >/dev/null || die "www-data user is missing after nginx installation."
 install -d -m 0755 "$ROOT/app/static" "$ETC"
 
@@ -65,7 +66,7 @@ User=www-data
 Group=www-data
 WorkingDirectory=/opt/control-center/app
 Environment=CONTROL_CENTER_SESSION_KEY=/etc/control-center/session.key
-ExecStart=/usr/bin/gunicorn3 --workers 2 --bind 127.0.0.1:8876 --access-logfile - --error-logfile - control_center:application
+ExecStart=/usr/bin/gunicorn --workers 2 --bind 127.0.0.1:8876 --access-logfile - --error-logfile - control_center:application
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -114,6 +115,7 @@ for i in {1..20}; do
   if curl -fsS http://127.0.0.1:8876/api/v1/health >/tmp/control-center-health.json 2>/dev/null; then break; fi
   sleep 1
 done
+[[ -s /tmp/control-center-health.json ]] || die "backend health check failed"
 python3 - <<'PY'
 import json
 p=json.load(open('/tmp/control-center-health.json', encoding='utf-8'))
