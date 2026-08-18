@@ -8,8 +8,8 @@ OUT="$LICENSE_DIR/license.json"
 PUB=/etc/control-center/license-public.pem
 [[ -f "$REQ" ]] || exit 0
 mkdir -p "$LICENSE_DIR"
-chown root:root "$LICENSE_DIR"
-chmod 0755 "$LICENSE_DIR"
+chown root:control-center "$LICENSE_DIR"
+chmod 0750 "$LICENSE_DIR"
 TMP=$(mktemp -d)
 cleanup(){ rm -rf "$TMP"; rm -f "$REQ"; }
 trap cleanup EXIT
@@ -47,6 +47,6 @@ out={'edition':'Professional','activated':True,'license_id':lid,'device_id':devi
 pathlib.Path(sys.argv[2]).write_text(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
 PY
 then write_status error 'Лицензия не подходит для этого сервера или истекла'; exit 1; fi
-chown root:root "$OUT"
-chmod 0644 "$OUT"
+chown root:control-center "$OUT"
+chmod 0640 "$OUT"
 write_status ok 'Professional активирована'
