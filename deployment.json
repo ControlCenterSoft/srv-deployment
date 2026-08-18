@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "1.3.6",
-  "release_id": "1.3.6",
-  "release_path": "releases/1.3.6",
-  "manifest": "releases/1.3.6/manifest.json",
-  "preflight": "releases/1.3.6/preflight-1.3.6.sh",
-  "apply": "releases/1.3.6/apply-1.3.6.sh",
-  "acceptance": "releases/1.3.6/acceptance-1.3.6.sh",
-  "rollback": "releases/1.3.6/rollback-1.3.6.sh",
-  "description": "Control Center 1.3.6 production repair: isolates optional Minecraft updater health from the core deployment transaction and restores reliable automatic GitHub updates."
+  "release": "1.3.7",
+  "release_id": "1.3.7",
+  "release_path": "releases/1.3.7",
+  "manifest": "releases/1.3.7/manifest.json",
+  "preflight": "releases/1.3.7/preflight-1.3.7.sh",
+  "apply": "releases/1.3.7/apply-1.3.7.sh",
+  "acceptance": "releases/1.3.7/acceptance-1.3.7.sh",
+  "rollback": "releases/1.3.7/rollback-1.3.7.sh",
+  "description": "Control Center 1.3.7 production repair: preserves release-relative acceptance and rollback paths and finalizes reliable automatic GitHub updates."
 }
