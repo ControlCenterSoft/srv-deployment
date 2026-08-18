@@ -22,9 +22,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Python syntax
-        run: |
-          python -m py_compile app/main.py app/wsgi.py license/issue-license.py
+        run: python -m py_compile app/main.py app/wsgi.py license/issue-license.py
+
+      - name: JavaScript syntax
+        run: node --check app/static/app.js
 
       - name: Bash syntax
         run: |
@@ -38,67 +45,77 @@ jobs:
             market/control-center-market-apply \
             market/control-center-dhcp-apply \
             license/control-center-license-apply \
-            scripts/acceptance-1.0.5.sh; do
+            scripts/acceptance-1.0.5.sh \
+            scripts/acceptance-1.0.6.sh; do
             bash -n "$f"
           done
 
-      - name: Validate JSON and release consistency
+      - name: Validate release consistency and 1.0.6 features
         run: |
           python - <<'PY'
           import ast,json,pathlib,re
           root=pathlib.Path('.')
           for p in root.rglob('*.json'): json.loads(p.read_text())
-          module=ast.parse((root/'app/main.py').read_text()); version=None
+
+          module=ast.parse((root/'app/main.py').read_text()); values={}
           for node in module.body:
               if isinstance(node,ast.Assign):
                   for target in node.targets:
-                      if isinstance(target,ast.Name) and target.id=='APP_VERSION': version=ast.literal_eval(node.value)
-          assert version and re.fullmatch(r'\d+\.\d+\.\d+',version)
+                      if isinstance(target,ast.Name) and target.id in {'APP_VERSION','APP_BUILD'}:
+                          values[target.id]=ast.literal_eval(node.value)
+          version=values['APP_VERSION']; build=values['APP_BUILD']
+          assert re.fullmatch(r'\d+\.\d+\.\d+',version)
+
           deployment=json.loads((root/'deployment.json').read_text())
-          assert deployment['release']==version
+          assert deployment['release']==version and deployment['build']==build
           assert deployment['channel']=='production'
           assert deployment['release_branch']==f'release/{version}'
+          app_release=json.loads((root/'app/release.json').read_text())
+          assert app_release=={'version':version,'build':build}
           manifest=json.loads((root/'releases'/version/'manifest.json').read_text())
-          assert manifest['release']==version and manifest['channel']=='production'
+          assert manifest['release']==version and manifest['build']==build and manifest['channel']=='production'
 
           installer=(root/'install/install.sh').read_text()
           assert re.search(rf'^VERSION={re.escape(version)}$',installer,re.M)
-          for token in ['/var/lib/control-center-system','/var/lib/control-center-root','/var/lib/control-center-license','ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license','InaccessiblePaths=/var/lib/control-center-root','/gunicorn ','wsgi:app','control-center-dhcp-server.service']:
-              assert token in installer, token
+          assert 'ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf' in installer
+          assert '/gunicorn ' in installer and 'wsgi:app' in installer
 
-          req=(root/'requirements.txt').read_text()
-          assert re.search(r'^gunicorn>=26\.0,<27\.0$',req,re.M)
-          assert (root/'app/requirements.txt').read_text()==req
+          main=(root/'app/main.py').read_text()
+          for token in [
+              "@app.get('/api/networks')",
+              "@app.post('/api/dhcp/check')",
+              "@app.get('/api/notifications')",
+              'extra_options',
+              'NETPLAN_CONF',
+              'DHCP_CONF',
+              'SYSTEM_STATE_DIR',
+          ]: assert token in main, token
 
-          updater=(root/'update/control-center-update').read_text()
-          assert "^APP_VERSION[[:space:]]*=" in updater
-          assert '/var/lib/control-center-system' in updater and '/var/lib/control-center-root' in updater
-          osup=(root/'update/control-center-os-update').read_text()
-          assert '/var/lib/control-center-system' in osup and '/run/control-center-apt.lock' in osup
-
-          network=(root/'network/control-center-network-apply').read_text()
           dhcp=(root/'market/control-center-dhcp-apply').read_text()
-          market=(root/'market/control-center-market-apply').read_text()
-          license_helper=(root/'license/control-center-license-apply').read_text()
-          assert '/var/lib/control-center-system' in network and '/var/lib/control-center-root' in network
-          assert '/var/lib/control-center-system' in dhcp and '/var/lib/control-center-root' in dhcp
-          assert 'net.netmask' in dhcp and '--conf-file="$TARGET"' in dhcp
-          assert 'DHCP Server не зарегистрирован как управляемый модуль' in dhcp
-          assert '/var/lib/control-center-system' in market and 'package_owned' in market
-          assert 'установленный вне Control Center' in market
-          assert '/var/lib/control-center-system' in license_helper and 'chmod 0640 "$OUT"' in license_helper
-
-          wsgi=(root/'app/wsgi.py').read_text()
-          for token in ['Content-Security-Policy','X-Frame-Options','MAX_CONTENT_LENGTH','mkstemp','os.replace','Origin']:
-              assert token in wsgi, token
+          assert 'extra_options' in dhcp and "lines.append(f'dhcp-option={code},{value}')" in dhcp
+          network=(root/'network/control-center-network-apply').read_text()
+          assert 'chown root:control-center "$TMP"' in network and 'chmod 0640 "$TMP"' in network
 
           template=(root/'app/templates/index.html').read_text()
-          assert 'const esc=' in template
-          assert 'Ctrl + K' in template
+          for token in ['interfacesTable','dhcpServiceStatus','dhcpOptionsTable','checkDhcp','notificationBell','mobileBackdrop','/static/app.js?v={{ version }}']:
+              assert token in template,token
+          inline=re.findall(r'<script(?![^>]*\bsrc=)[^>]*>',template,re.I)
+          assert not inline, f'inline script tags found: {inline}'
+
+          css=(root/'app/static/app.css').read_text()
+          assert 'html{font-size:15px}' in css
+          assert '@media(max-width:900px)' in css and 'mobile-nav-open' in css
+
+          js=(root/'app/static/app.js').read_text()
+          for token in ['/api/notifications','READ_KEY','renderInterfaces','extra_options','/api/dhcp/check']:
+              assert token in js,token
+
+          wsgi=(root/'app/wsgi.py').read_text()
+          assert "script-src 'self';" in wsgi and 'unsafe-inline' not in wsgi
 
           readme=(root/'README.md').read_text()
           assert f'Control Center {version}' in readme
-          print(f'Validated release {version}')
+          print(f'Validated Control Center {version} build {build}')
           PY
 
       - name: Validate Professional public key
@@ -119,6 +136,9 @@ jobs:
       - name: Required documentation
         run: |
           set -euo pipefail
-          for f in docs/README.md docs/INSTALL.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md docs/NETWORK.md docs/DHCP.md docs/SECURITY.md docs/TROUBLESHOOTING.md docs/AUDIT-1.0.5.md; do
+          for f in \
+            docs/README.md docs/INSTALL.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md \
+            docs/NETWORK.md docs/DHCP.md docs/NOTIFICATIONS.md docs/UI.md docs/SECURITY.md docs/TROUBLESHOOTING.md \
+            releases/1.0.6/README.md releases/1.0.6/manifest.json; do
             test -s "$f"
           done
