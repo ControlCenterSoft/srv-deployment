@@ -1,41 +1,134 @@
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Control Center</title><link rel="stylesheet" href="/static/app.css"></head><body><div class="app-shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">C</div><div class="brand-copy"><strong>CONTROL CENTER</strong><small id="editionBadge">HOME · {{ version }}</small></div></div><nav><button class="nav-item active" data-tab="system">⌘ <span>Система</span></button><button class="nav-item" data-tab="networks">◉ <span>Сети</span></button><button id="dhcpNav" class="nav-item hidden" data-tab="dhcp">≋ <span>DHCP</span></button><button class="nav-item" data-tab="market">◇ <span>Маркет</span></button><button class="nav-item" data-tab="rbac">♙ <span>RBAC</span></button><button class="nav-item" data-tab="settings">⚙ <span>Настройки</span></button></nav><div class="sidebar-footer"><div class="user-dot">E</div><div class="edition-copy"><b id="sidebarEdition">Home</b><small>Редакция</small></div></div></aside><main class="main"><header><button class="hamb" id="sidebarToggle" type="button" aria-label="Свернуть меню" aria-pressed="false">☰</button><input id="menuSearch" class="search" type="search" placeholder="Поиск раздела (Ctrl + K)" aria-label="Поиск по разделам"><div class="top-status"><span>● Система работает</span><b id="topVersion">Control Center {{ version }} Home</b></div></header><div class="content">
-<section id="system" class="panel active"><div class="page-head"><div><h1>Обзор системы</h1><p>Состояние и управление сервером в реальном времени</p></div><span class="ok-pill">● Система работает</span></div><div class="summary-grid"><article><small>CPU</small><strong id="cpuValue">—</strong><canvas id="cpuChart" width="320" height="80"></canvas></article><article><small>RAM</small><strong id="ramValue">—</strong><canvas id="ramChart" width="320" height="80"></canvas></article><article><small>Хранилище</small><strong id="storageValue">—</strong><div id="storageBars"></div></article><article><small>WAN</small><strong id="wanValue">—</strong><canvas id="wanChart" width="320" height="80"></canvas><div class="wanline"><span>↓ RX <b id="wanRx">0 B/s</b></span><span>↑ TX <b id="wanTx">0 B/s</b></span></div></article></div><div class="two-col"><article class="section-card"><h3>Топ процессов</h3><div id="topProcesses"></div></article><article class="section-card"><h3>Система</h3><div id="systemDetails" class="detail-list"></div></article></div></section>
-<section id="networks" class="panel"><div class="page-head"><div><h1>Сеть</h1><p>WAN/LAN и параметры интерфейсов</p></div></div><div class="two-col"><article class="section-card"><h3>WAN</h3><label>Интерфейс<select id="wanInterface"></select></label><div class="radio"><label><input type="radio" name="wanMethod" value="dhcp" checked> DHCP</label><label><input type="radio" name="wanMethod" value="static"> Static</label></div><div id="wanStatic" class="static-fields"><input id="wanIp" placeholder="IP"><input id="wanMask" placeholder="Маска"><input id="wanGateway" placeholder="Шлюз"><input id="wanDns" placeholder="DNS"></div></article><article class="section-card"><h3>LAN</h3><label>Интерфейс<select id="lanInterface"></select></label><div class="radio"><label><input type="radio" name="lanMethod" value="dhcp" checked> DHCP</label><label><input type="radio" name="lanMethod" value="static"> Static</label></div><div id="lanStatic" class="static-fields"><input id="lanIp" placeholder="IP"><input id="lanMask" placeholder="Маска"><input id="lanGateway" placeholder="Шлюз"><input id="lanDns" placeholder="DNS"></div></article></div><button class="primary" id="applyNetwork">Проверить и применить</button><span id="networkMessage"></span></section>
-<section id="market" class="panel"><div class="page-head"><div><h1>Маркет</h1><p>Установка и удаление сервисов сервера</p></div></div><div class="service-grid" id="marketList"></div><div id="marketMessage"></div></section>
-<section id="dhcp" class="panel"><div class="page-head"><div><h1>DHCP</h1><p>Настройка установленного DHCP Server</p></div><span class="ok-pill">● Установлен</span></div><article class="section-card form-card"><div class="form-grid"><label>Интерфейс<select id="dhcpInterface"></select></label><label>Начало диапазона<input id="dhcpStart" placeholder="192.168.10.100"></label><label>Конец диапазона<input id="dhcpEnd" placeholder="192.168.10.200"></label><label>Маска<input id="dhcpMask" placeholder="255.255.255.0 или 24"></label><label>Шлюз<input id="dhcpGateway" placeholder="192.168.10.1"></label><label>DNS<input id="dhcpDns" placeholder="192.168.10.1, 1.1.1.1"></label><label>Аренда, минут<input id="dhcpLease" type="number" min="10" max="10080" value="720"></label></div><button class="primary" id="saveDhcp">Сохранить DHCP</button><span id="dhcpMessage"></span></article></section>
-<section id="rbac" class="panel"><div class="page-head"><div><h1>RBAC</h1><p>Локальные пользователи и группы</p></div></div><div class="two-col"><article class="section-card"><h3>Пользователи</h3><div id="users"></div></article><article class="section-card"><h3>Группы</h3><div id="groups"></div></article></div></section>
-<section id="settings" class="panel"><div class="page-head"><div><h1>Настройки</h1><p>Версия, лицензия и обновления</p></div></div><div class="two-col"><article class="section-card form-card"><h3>Редакция Control Center</h3><div class="detail-list"><div><span>Текущая редакция</span><b id="licenseEdition">Home</b></div><div><span>Версия</span><b>{{ version }}</b></div><div><span>ID устройства</span><b id="deviceId">—</b></div><div><span>Лицензия</span><b id="licenseId">Не активирована</b></div></div><h3>Активация Professional</h3><label>Payload<input id="licensePayload" placeholder="Код payload" autocomplete="off"></label><label>Signature<input id="licenseSignature" placeholder="Подпись" autocomplete="off"></label><button class="primary" id="activateProfessional">Активировать Professional</button><span id="licenseMessage"></span></article><article class="section-card form-card"><h3>Обновления Control Center</h3><label class="switch-row">Автоматические обновления <input id="autoUpdates" type="checkbox"></label><label>Интервал проверки, минут<input id="updateInterval" type="number" min="5" max="10080" value="60"></label><button class="primary" id="saveSettings">Сохранить</button><button class="secondary" id="checkUpdate">Проверить обновление</button><span id="settingsMessage"></span><hr><h3>Обновления ОС и пакетов</h3><label class="switch-row">Автоматически <input id="autoOsUpdates" type="checkbox"></label><label>Интервал, минут<input id="osUpdateInterval" type="number" min="60" max="10080" value="1440"></label><button class="primary" id="saveOsUpdates">Сохранить</button><button class="secondary" id="runOsUpdate">Обновить сейчас</button><span id="osUpdateMessage"></span></article></div></section>
-</div></main></div><script>
-const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function tab(t){$$('.nav-item,.panel').forEach(x=>x.classList.remove('active'));const b=$(`.nav-item[data-tab="${t}"]`);if(b)b.classList.add('active');const p=$('#'+t);if(p)p.classList.add('active');load(t)}
-$$('.nav-item').forEach(b=>b.onclick=()=>tab(b.dataset.tab));
-const search=$('#menuSearch');
-function filterNav(){const q=(search?.value||'').trim().toLowerCase();$$('.nav-item').forEach(b=>{if(b.classList.contains('hidden')){b.style.display='none';return}b.style.display=!q||b.textContent.toLowerCase().includes(q)?'':'none'})}
-search?.addEventListener('input',filterNav);
-document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();search?.focus();search?.select()}});
-$('#sidebarToggle')?.addEventListener('click',e=>{const collapsed=document.body.classList.toggle('sidebar-collapsed');e.currentTarget.setAttribute('aria-pressed',String(collapsed))});
-const fmt=n=>{const u=['B','KB','MB','GB','TB'];let i=0;n=+n||0;while(n>=1024&&i<4){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]},rate=n=>fmt(n)+'/s';
-let ch={cpu:[],ram:[],wan:[]},lastWan=null,lastTs=0;
-function spark(id,data,idx=0,max=100,clear=true){const c=$(id),x=c.getContext('2d'),w=c.width,h=c.height;if(clear)x.clearRect(0,0,w,h);x.beginPath();data.forEach((p,i)=>{const v=Array.isArray(p)?p[idx]:p,px=i*w/Math.max(data.length-1,1),py=h-6-Math.min(Math.max(v,0)/Math.max(max,1),1)*(h-12);i?x.lineTo(px,py):x.moveTo(px,py)});x.strokeStyle=idx?'#e7b85d':'#36d6b4';x.lineWidth=2;x.stroke()}
-async function system(){try{const d=await fetch('/api/system').then(r=>r.json()),now=Date.now();ch.cpu.push(d.cpu_percent);ch.ram.push(d.memory.percent);ch.cpu=ch.cpu.slice(-30);ch.ram=ch.ram.slice(-30);$('#cpuValue').textContent=d.cpu_percent+'%';$('#ramValue').textContent=d.memory.percent+'%';spark('#cpuChart',ch.cpu);spark('#ramChart',ch.ram);$('#storageValue').textContent=(d.storage[0]?.percent??d.disk.percent)+'%';$('#storageBars').innerHTML=(d.storage||[]).slice(0,4).map(s=>`<div class="barrow"><span>${esc(s.mount)} <b>${Number(s.percent)||0}%</b></span><i><em style="width:${Math.min(Number(s.percent)||0,100)}%"></em></i></div>`).join('');$('#topProcesses').innerHTML=(d.top_processes||[]).map((p,i)=>`<div class="listrow"><span>${i+1}. ${esc(p.name)}</span><b>${Number(p.cpu_percent)||0}% CPU · ${Number(p.memory_percent)||0}% RAM</b></div>`).join('');let rx=0,tx=0;if(lastWan&&lastTs&&lastWan.interface===d.wan.interface){const sec=Math.max((now-lastTs)/1000,.1);rx=Math.max(0,(d.wan.rx_bytes-lastWan.rx_bytes)/sec);tx=Math.max(0,(d.wan.tx_bytes-lastWan.tx_bytes)/sec)}lastWan=d.wan;lastTs=now;ch.wan.push([rx,tx]);ch.wan=ch.wan.slice(-30);const mx=Math.max(1024,...ch.wan.flat());spark('#wanChart',ch.wan,0,mx,true);spark('#wanChart',ch.wan,1,mx,false);$('#wanValue').textContent=d.wan.interface||'Не назначен';$('#wanRx').textContent=rate(rx);$('#wanTx').textContent=rate(tx);$('#systemDetails').innerHTML=`<div><span>Hostname</span><b>${esc(d.hostname)}</b></div><div><span>ОС</span><b>${esc(d.os)}</b></div><div><span>Kernel</span><b>${esc(d.kernel)}</b></div><div><span>Редакция</span><b>${esc(d.edition)}</b></div><div><span>Версия</span><b>${esc(d.version)}</b></div>`}catch(e){console.error(e)}}
-function method(r){return document.querySelector(`input[name="${r}Method"]:checked`).value}
-function tog(r){$('#'+r+'Static').classList.toggle('active',method(r)==='static')}
-$$('input[name="wanMethod"],input[name="lanMethod"]').forEach(x=>x.onchange=()=>tog(x.name.startsWith('wan')?'wan':'lan'));
-function setRole(r,c){if(!c)return;$('#'+r+'Interface').value=c.interface||'';const radio=document.querySelector(`input[name="${r}Method"][value="${c.method||'dhcp'}"]`);if(radio)radio.checked=true;['Ip','Mask','Gateway','Dns'].forEach(k=>{const el=$('#'+r+k);if(el)el.value=k==='Dns'?(c.dns||[]).join(', '):(c[k.toLowerCase()]??'')});tog(r)}
-async function networks(){const d=await fetch('/api/network/config').then(r=>r.json()),o='<option value="">Выберите</option>'+d.interfaces.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} · ${esc(x.mac)}</option>`).join('');$('#wanInterface').innerHTML=o;$('#lanInterface').innerHTML=o;setRole('wan',d.config?.wan);setRole('lan',d.config?.lan);if(d.status?.message)$('#networkMessage').textContent=d.status.message}
-function rp(r){const o={interface:$('#'+r+'Interface').value,method:method(r)};if(o.method==='static'){o.ip=$('#'+r+'Ip').value;o.mask=$('#'+r+'Mask').value;o.gateway=$('#'+r+'Gateway').value;o.dns=$('#'+r+'Dns').value}return o}
-$('#applyNetwork').onclick=async()=>{const r=await fetch('/api/network/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wan:rp('wan'),lan:rp('lan')})}),d=await r.json();$('#networkMessage').textContent=r.ok?d.message:d.error;if(r.ok)setTimeout(networks,2000)};
-async function market(){const d=await fetch('/api/market').then(r=>r.json());$('#dhcpNav').classList.toggle('hidden',!d.dhcp_installed);filterNav();$('#marketList').innerHTML=d.items.map(x=>`<article class="service-card"><div><small>SERVICE</small><h3>${esc(x.name)}</h3><p>${esc(x.description)}</p></div>${x.id==='dhcp'?`<button class="${x.state==='installed'?'danger':'primary'}" data-dhcp="${x.state==='installed'?'remove':'install'}">${x.state==='installed'?'Удалить':'Установить'}</button>`:'<span class="planned">Запланировано</span>'}</article>`).join('');$$('[data-dhcp]').forEach(b=>b.onclick=async()=>{b.disabled=true;$('#marketMessage').textContent=b.dataset.dhcp==='install'?'Установка DHCP…':'Удаление DHCP…';const r=await fetch('/api/market/dhcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:b.dataset.dhcp})});if(!r.ok){$('#marketMessage').textContent='Ошибка запуска операции';b.disabled=false;return}setTimeout(async()=>{await market();$('#marketMessage').textContent='Операция обработана'},4500)})}
-async function dhcp(){const r=await fetch('/api/dhcp/config');if(!r.ok){$('#dhcpNav').classList.add('hidden');filterNav();tab('market');return}const d=await r.json(),o='<option value="">Выберите</option>'+d.interfaces.map(x=>`<option value="${esc(x.name)}">${esc(x.name)}</option>`).join('');$('#dhcpInterface').innerHTML=o;const c=d.config||{};$('#dhcpInterface').value=c.interface||d.suggested_interface||'';$('#dhcpStart').value=c.range_start||'';$('#dhcpEnd').value=c.range_end||'';$('#dhcpMask').value=c.mask??'';$('#dhcpGateway').value=c.gateway||'';$('#dhcpDns').value=(c.dns||[]).join(', ');$('#dhcpLease').value=c.lease_minutes||720;if(d.status?.message)$('#dhcpMessage').textContent=d.status.message}
-$('#saveDhcp').onclick=async()=>{const p={interface:$('#dhcpInterface').value,range_start:$('#dhcpStart').value,range_end:$('#dhcpEnd').value,mask:$('#dhcpMask').value,gateway:$('#dhcpGateway').value,dns:$('#dhcpDns').value,lease_minutes:+$('#dhcpLease').value},r=await fetch('/api/dhcp/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}),d=await r.json();$('#dhcpMessage').textContent=r.ok?d.message:d.error;if(r.ok)setTimeout(dhcp,1800)};
-async function rbac(){const d=await fetch('/api/rbac').then(r=>r.json());$('#users').innerHTML=d.users.slice(0,20).map(x=>`<div class="listrow"><span>${esc(x.name)}</span><b>UID ${Number(x.uid)||0}</b></div>`).join('');$('#groups').innerHTML=d.groups.slice(0,20).map(x=>`<div class="listrow"><span>${esc(x.name)}</span><b>GID ${Number(x.gid)||0}</b></div>`).join('')}
-async function settings(){const [u,o,l]=await Promise.all([fetch('/api/settings/update').then(r=>r.json()),fetch('/api/settings/os-update').then(r=>r.json()),fetch('/api/license').then(r=>r.json())]);$('#autoUpdates').checked=u.settings.automatic_updates;$('#updateInterval').value=u.settings.interval_minutes;$('#autoOsUpdates').checked=o.settings.automatic_updates;$('#osUpdateInterval').value=o.settings.interval_minutes;const lic=l.license;$('#licenseEdition').textContent=lic.edition;$('#sidebarEdition').textContent=lic.edition;$('#deviceId').textContent=lic.device_id;$('#licenseId').textContent=lic.license_id||'Не активирована';$('#editionBadge').textContent=lic.edition.toUpperCase()+' · {{ version }}';$('#topVersion').textContent='Control Center {{ version }} '+lic.edition;if(l.status?.message)$('#licenseMessage').textContent=l.status.message;if(o.status?.message)$('#osUpdateMessage').textContent=o.status.message+(o.status.reboot_required?' · требуется перезагрузка':'');if(u.status?.message)$('#settingsMessage').textContent=u.status.message}
-$('#saveSettings').onclick=async()=>{const r=await fetch('/api/settings/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automatic_updates:$('#autoUpdates').checked,interval_minutes:+$('#updateInterval').value,channel:'production'})}),d=await r.json();$('#settingsMessage').textContent=r.ok?'Настройки сохранены':(d.error||'Ошибка')};
-$('#checkUpdate').onclick=async()=>{const d=await fetch('/api/settings/update/check').then(r=>r.json());$('#settingsMessage').textContent=d.remote.available?'Production: '+d.remote.release:'Ошибка проверки'};
-$('#saveOsUpdates').onclick=async()=>{const r=await fetch('/api/settings/os-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automatic_updates:$('#autoOsUpdates').checked,interval_minutes:+$('#osUpdateInterval').value})}),d=await r.json();$('#osUpdateMessage').textContent=r.ok?'Настройки сохранены':(d.error||'Ошибка')};
-$('#runOsUpdate').onclick=async()=>{const r=await fetch('/api/settings/os-update/run',{method:'POST'}),d=await r.json();$('#osUpdateMessage').textContent=d.message||'Запущено';setTimeout(settings,3000)};
-$('#activateProfessional').onclick=async()=>{const r=await fetch('/api/license/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payload:$('#licensePayload').value,signature:$('#licenseSignature').value})}),d=await r.json();$('#licenseMessage').textContent=d.message||d.error;if(r.ok){setTimeout(settings,1000);setTimeout(settings,2500)}};
-function load(t){({system,networks,market,dhcp,rbac,settings}[t]||(()=>{}))()}
-market();system();settings();setInterval(()=>{if($('#system').classList.contains('active'))system()},3000);
-</script></body></html>
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#06131d">
+  <title>Control Center</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<div class="mobile-backdrop" id="mobileBackdrop"></div>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">C</div>
+      <div class="brand-copy"><strong>CONTROL CENTER</strong><small id="editionBadge">HOME · {{ version }}</small></div>
+      <button class="sidebar-close" id="sidebarClose" type="button" aria-label="Закрыть меню">×</button>
+    </div>
+    <nav aria-label="Основное меню">
+      <button class="nav-item active" data-tab="system" data-title="Система">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4M7 9h2M11 9h6"/></svg><span>Система</span>
+      </button>
+      <button class="nav-item" data-tab="networks" data-title="Сети">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7.5 11 16.5 7M7.5 13l9 4"/></svg><span>Сети</span>
+      </button>
+      <button id="dhcpNav" class="nav-item hidden" data-tab="dhcp" data-title="DHCP">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h4M7 13h7M17 9h.01M17 13h.01"/></svg><span>DHCP</span>
+      </button>
+      <button class="nav-item" data-tab="market" data-title="Маркет">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16l-1 12H5L4 8Z"/><path d="M8 8a4 4 0 0 1 8 0"/></svg><span>Маркет</span>
+      </button>
+      <button class="nav-item" data-tab="rbac" data-title="RBAC">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M17 10v6M14 13h6"/></svg><span>RBAC</span>
+      </button>
+      <button class="nav-item" data-tab="settings" data-title="Настройки">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.8-1L14.4 3h-4.8l-.4 3.1a7 7 0 0 0-1.8 1L5 6.1 3 9.5 5.1 11a7 7 0 0 0 0 2L3 14.5 5 18l2.4-1a7 7 0 0 0 1.8 1l.4 3h4.8l.4-3a7 7 0 0 0 1.8-1l2.4 1 2-3.5-2.1-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Настройки</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer"><div class="edition-avatar">C</div><div class="edition-copy"><b id="sidebarEdition">Home</b><small>Редакция</small></div></div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="hamb" id="sidebarToggle" type="button" aria-label="Открыть меню" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <input id="menuSearch" class="search" type="search" placeholder="Поиск раздела (Ctrl + K)" aria-label="Поиск по разделам">
+      <div class="top-actions">
+        <button class="bell neutral" id="notificationBell" type="button" aria-label="Уведомления" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+          <span id="notificationCount" class="bell-count hidden">0</span>
+        </button>
+        <div class="top-status"><span>● Система работает</span><b id="topVersion">Control Center {{ version }} Home</b></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <section id="system" class="panel active">
+        <div class="page-head"><div><h1>Обзор системы</h1><p>Состояние сервера и ресурсов в реальном времени</p></div><span class="status-pill ok">● Система работает</span></div>
+        <div class="summary-grid">
+          <article><small>CPU</small><strong id="cpuValue">—</strong><canvas id="cpuChart" width="360" height="96"></canvas></article>
+          <article><small>RAM</small><strong id="ramValue">—</strong><canvas id="ramChart" width="360" height="96"></canvas></article>
+          <article><small>Хранилище</small><strong id="storageValue">—</strong><div id="storageBars"></div></article>
+          <article><small>WAN</small><strong id="wanValue">—</strong><canvas id="wanChart" width="360" height="96"></canvas><div class="wanline"><span>↓ RX <b id="wanRx">0 B/s</b></span><span>↑ TX <b id="wanTx">0 B/s</b></span></div></article>
+        </div>
+        <div class="two-col"><article class="section-card"><h3>Топ процессов</h3><div id="topProcesses"></div></article><article class="section-card"><h3>Система</h3><div id="systemDetails" class="detail-list"></div></article></div>
+      </section>
+
+      <section id="networks" class="panel">
+        <div class="page-head"><div><h1>Сети</h1><p>Интерфейсы, текущие адреса и конфигурация WAN/LAN</p></div><span class="source-pill" id="networkSource">—</span></div>
+        <div class="two-col network-role-grid">
+          <article class="section-card"><div class="card-title-row"><h3>WAN</h3><span id="wanLiveState" class="status-pill compact">—</span></div><label>Интерфейс<select id="wanInterface"></select></label><div class="live-hint" id="wanLiveHint">—</div><div class="radio"><label><input type="radio" name="wanMethod" value="dhcp" checked> DHCP</label><label><input type="radio" name="wanMethod" value="static"> Static</label></div><div id="wanStatic" class="static-fields"><label>IP<input id="wanIp" placeholder="192.0.2.10"></label><label>Маска<input id="wanMask" placeholder="24"></label><label>Шлюз<input id="wanGateway" placeholder="192.0.2.1"></label><label>DNS<input id="wanDns" placeholder="1.1.1.1, 8.8.8.8"></label></div></article>
+          <article class="section-card"><div class="card-title-row"><h3>LAN</h3><span id="lanLiveState" class="status-pill compact">—</span></div><label>Интерфейс<select id="lanInterface"></select></label><div class="live-hint" id="lanLiveHint">—</div><div class="radio"><label><input type="radio" name="lanMethod" value="dhcp" checked> DHCP</label><label><input type="radio" name="lanMethod" value="static"> Static</label></div><div id="lanStatic" class="static-fields"><label>IP<input id="lanIp" placeholder="192.168.10.1"></label><label>Маска<input id="lanMask" placeholder="24"></label><label>Шлюз<input id="lanGateway" placeholder="необязательно"></label><label>DNS<input id="lanDns" placeholder="192.168.10.1, 1.1.1.1"></label></div></article>
+        </div>
+        <div class="button-row"><button class="primary" id="applyNetwork">Проверить и применить</button><span class="inline-message" id="networkMessage"></span></div>
+        <article class="section-card interface-card"><div class="card-title-row"><div><h3>Сетевые интерфейсы</h3><p>Фактическое состояние, считанное с сервера</p></div><button class="secondary compact-button" id="refreshNetworks">Обновить</button></div><div class="table-scroll"><table><thead><tr><th>Роль</th><th>Интерфейс</th><th>Тип</th><th>Состояние</th><th>IPv4</th><th>Шлюз</th><th>DNS</th><th>MAC</th><th>MTU</th><th>Скорость</th></tr></thead><tbody id="interfacesTable"></tbody></table></div></article>
+      </section>
+
+      <section id="market" class="panel">
+        <div class="page-head"><div><h1>Маркет</h1><p>Установка и удаление серверных сервисов</p></div></div>
+        <div class="service-grid" id="marketList"></div><div class="inline-message" id="marketMessage"></div>
+      </section>
+
+      <section id="dhcp" class="panel">
+        <div class="page-head"><div><h1>DHCP</h1><p>Текущая конфигурация DHCP Server и дополнительные параметры</p></div><span class="status-pill" id="dhcpServiceStatus">—</span></div>
+        <div class="two-col dhcp-layout">
+          <article class="section-card form-card">
+            <div class="card-title-row"><h3>Основные параметры</h3><span class="source-pill" id="dhcpSource">—</span></div>
+            <div class="form-grid">
+              <label>Интерфейс<select id="dhcpInterface"></select></label>
+              <label>Начало диапазона<input id="dhcpStart" placeholder="192.168.10.100"></label>
+              <label>Конец диапазона<input id="dhcpEnd" placeholder="192.168.10.200"></label>
+              <label>Маска<input id="dhcpMask" placeholder="255.255.255.0 или 24"></label>
+              <label>Шлюз<input id="dhcpGateway" placeholder="192.168.10.1"></label>
+              <label>DNS<input id="dhcpDns" placeholder="192.168.10.1, 1.1.1.1"></label>
+              <label>Аренда, минут<input id="dhcpLease" type="number" min="10" max="10080" value="720"></label>
+            </div>
+            <div class="button-row"><button class="primary" id="saveDhcp">Сохранить DHCP</button><button class="secondary" id="checkDhcp">Проверить конфигурацию</button></div>
+            <div class="inline-message" id="dhcpMessage"></div>
+            <pre class="check-output hidden" id="dhcpCheckOutput"></pre>
+          </article>
+          <article class="section-card">
+            <h3>Дополнительные DHCP параметры</h3><p class="section-description">Код DHCP option и его значение. Параметры 1, 3, 6 и 51 управляются основными полями.</p>
+            <div class="option-add"><label>Код<input id="dhcpOptionCode" type="number" min="1" max="254" placeholder="66"></label><label>Значение<input id="dhcpOptionValue" placeholder="192.168.10.2"></label><button class="secondary" id="addDhcpOption">Добавить</button></div>
+            <div class="table-scroll"><table><thead><tr><th>Код</th><th>Значение</th><th></th></tr></thead><tbody id="dhcpOptionsTable"></tbody></table></div>
+            <div class="empty-state hidden" id="dhcpOptionsEmpty">Дополнительные параметры не настроены.</div>
+          </article>
+        </div>
+      </section>
+
+      <section id="rbac" class="panel">
+        <div class="page-head"><div><h1>RBAC</h1><p>Локальные пользователи и группы Linux</p></div></div>
+        <div class="two-col"><article class="section-card"><h3>Пользователи</h3><div id="users"></div></article><article class="section-card"><h3>Группы</h3><div id="groups"></div></article></div>
+      </section>
+
+      <section id="settings" class="panel">
+        <div class="page-head"><div><h1>Настройки</h1><p>Редакция, лицензия и обновления</p></div></div>
+        <div class="two-col">
+          <article class="section-card form-card"><h3>Редакция Control Center</h3><div class="detail-list"><div><span>Текущая редакция</span><b id="licenseEdition">Home</b></div><div><span>Версия</span><b>{{ version }}</b></div><div><span>Сборка</span><b>{{ build }}</b></div><div><span>ID устройства</span><b id="deviceId">—</b></div><div><span>Лицензия</span><b id="licenseId">Не активирована</b></div></div><h3>Активация Professional</h3><label>Payload<input id="licensePayload" placeholder="Код payload" autocomplete="off"></label><label>Signature<input id="licenseSignature" placeholder="Подпись" autocomplete="off"></label><button class="primary" id="activateProfessional">Активировать Professional</button><span class="inline-message" id="licenseMessage"></span></article>
+          <article class="section-card form-card"><h3>Обновления Control Center</h3><label class="switch-row">Автоматические обновления <input id="autoUpdates" type="checkbox"></label><label>Интервал проверки, минут<input id="updateInterval" type="number" min="5" max="10080" value="60"></label><div class="button-row"><button class="primary" id="saveSettings">Сохранить</button><button class="secondary" id="checkUpdate">Проверить обновление</button></div><span class="inline-message" id="settingsMessage"></span><hr><h3>Обновления ОС и пакетов</h3><label class="switch-row">Автоматически <input id="autoOsUpdates" type="checkbox"></label><label>Интервал, минут<input id="osUpdateInterval" type="number" min="60" max="10080" value="1440"></label><div class="button-row"><button class="primary" id="saveOsUpdates">Сохранить</button><button class="secondary" id="runOsUpdate">Обновить сейчас</button></div><span class="inline-message" id="osUpdateMessage"></span></article>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<aside class="notification-drawer" id="notificationDrawer" aria-hidden="true">
+  <div class="notification-head"><div><h2>Уведомления</h2><p>Сеть, сервисы, задания и обновления</p></div><button id="closeNotifications" class="icon-button" type="button" aria-label="Закрыть">×</button></div>
+  <div class="notification-actions"><button class="secondary" id="markNotificationsRead">Отметить все прочитанными</button></div>
+  <div id="notificationList" class="notification-list"></div>
+</aside>
+</body>
+</html>
