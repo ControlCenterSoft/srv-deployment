@@ -16,6 +16,8 @@
 
 Механизм 2.x использует транзакционный `srvcc-update-controller`. Неудачный fingerprint релиза блокируется от повторного автоматического применения, но периодические проверки продолжаются. Новый fingerprint может быть рассмотрен снова. После обновления автоматический timer принудительно проверяется на enabled/active, чтобы ошибка установки не оставляла сервер без дальнейших проверок.
 
+Для аварийного перехода со старой линии 1.x, где updater уже оказался в `failed`, а timer был `disabled/inactive`, используется `tools/bootstrap-control-center-2.0.sh`. Этот recovery-путь после успешной установки восстанавливает канонический режим **automatic · 5 min** через `srvcc-configure-auto-updates`, выполняет немедленную проверку и повторно запускает acceptance уже в финальном автоматическом режиме.
+
 ## 3. Резервные копии
 
 В разделе резервных копий доступны выбор отдельных архивов, **Выбрать все** и **Удалить выбранные**. Массовое удаление проходит через административный API, CSRF-проверку и очередь привилегированных действий; максимальный размер одной операции ограничен 200 архивами.
@@ -42,11 +44,23 @@ PXE boot media публикуется через `/pxe/files`, при этом �
 
 ## 6. Minecraft Bedrock
 
-2.x использует health-first восстановление. Сначала проверяются сервис, UDP listener и активный мир. Исправный сервер не переустанавливается.
+2.x использует health-first восстановление. Сначала проверяются фактически запущенный `bedrock_server`, его UDP listener, рабочий каталог, `server.properties` и активный мир. Исправный сервер не переустанавливается и мир не заменяется.
 
-Если сервер неисправен, выполняется безопасное восстановление через проверенный single-server management path: backup, update/repair, restart и повторная health-проверка. Замена мира разрешается только если обычное восстановление не помогло и safety backup успешно создан. Recovery world получает имя вида `ControlCenter-Recovery-*`.
+Для совместимости с серверами, на которых исторические `/usr/local/sbin/srv-control-minecraft*` helpers никогда не устанавливались, 2.0 разворачивает собственный совместимый backend. Он определяет живой процесс через `/proc`, получает его рабочий каталог через `/proc/<pid>/cwd`, определяет systemd-unit через cgroup и предоставляет пять API-helper путей, которые ожидает модуль Minecraft:
 
-Если необходимые проверенные legacy helpers отсутствуют, релиз должен остановиться, а не выполнять неподтверждённую разрушительную переустановку.
+- `/usr/local/sbin/srv-control-minecraft`;
+- `/usr/local/sbin/srv-control-minecraft-worlds`;
+- `/usr/local/sbin/srv-control-minecraft-players`;
+- `/usr/local/sbin/srv-control-minecraft-restore`;
+- `/usr/local/sbin/srv-control-minecraft-live`.
+
+Web API запускает эти helpers через `sudo -n` от пользователя `srv-control`. Acceptance 2.0 отдельно проверяет именно этот путь исполнения, а не только запуск helper от root.
+
+Если сервер неисправен, recovery выполняется ступенчато: safety backup → обычный repair/update/restart → повторная health-проверка. Замена мира разрешается только если обычное восстановление не помогло и safety backup успешно создан. Recovery world получает имя вида `ControlCenter-Recovery-*`.
+
+Обновление Bedrock разрешается только когда backend смог безопасно определить systemd-unit. Перед заменой runtime создаётся backup пользовательских данных и отдельная временная копия runtime; при неуспешном старте новый runtime откатывается.
+
+Read-only операции статуса, мира, allowlist/permissions и backup доступны даже для ранее неуправляемой установки, если `bedrock_server` и его рабочий каталог обнаружены. Live-команды вроде `say/kick/op/deop` требуют управляемого command-channel; если его нет, backend явно возвращает `unavailable`, не имитируя успешное выполнение.
 
 ## 7. Диагностика обновлений
 
@@ -55,8 +69,9 @@ PXE boot media публикуется через `/pxe/files`, при этом �
 1. состояние блока обновления в UI;
 2. `github-update-status.json`: `last_check_at`, `last_update_attempt_at`, `last_successful_update_at`, `stage`, `blocked_fingerprint`;
 3. состояние `srvcc-github-agent.timer` и `srvcc-github-agent.service`;
-4. release fingerprint и причину блокировки;
-5. результаты preflight/apply/acceptance текущей транзакции.
+4. содержимое `github-update-config.json`: для штатного автоматического режима 2.x ожидаются `schema_version=4`, `mode=automatic`, `interval_minutes=5`;
+5. release fingerprint и причину блокировки;
+6. результаты preflight/apply/acceptance текущей транзакции.
 
 Повторяющиеся попытки одного и того же уже отклонённого fingerprint не являются нормальным поведением 2.x.
 
@@ -73,3 +88,5 @@ PXE boot media публикуется через `/pxe/files`, при этом �
 ## 10. Безопасность изменений
 
 Изменения системных сервисов выполняются через backend/agent, а не прямыми командами из браузера. Административные операции требуют сессию, права RBAC и CSRF. При обновлении 2.x необходимо сохранять обратимый rollback snapshot до изменения рабочих файлов и units.
+
+Minecraft compatibility backend, пять его `/usr/local/sbin` entrypoints и `/etc/sudoers.d/srv-control-minecraft-legacy` входят в тот же transactional snapshot и полностью восстанавливаются/удаляются при rollback 2.0.
