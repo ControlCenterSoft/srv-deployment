@@ -1,49 +1,48 @@
-# Центр уведомлений Control Center 1.0.7
+# Центр уведомлений — Control Center 1.0.8
 
 ## Назначение
 
-Колокольчик в верхней панели агрегирует состояния основных операций Control Center.
+Колокольчик агрегирует состояния сети, сервисов, лицензии, обновлений Control Center/ОС и смены Web-порта. Read/unread хранится server-side в PostgreSQL `control_center.notification_events`.
 
-Источники:
+## Market lifecycle events 1.0.8
 
-- Сеть — protected `network-status.json`;
-- Маркет — `market-status.json`;
-- DHCP apply — `dhcp-status.json`;
-- фактический статус DHCP service;
-- Professional activation — `license-status.json`;
-- обновление Control Center — `update-status.json`;
-- обновление ОС/пакетов — `os-update-status.json`;
-- смена Web-порта — `web-status.json`.
+Установка/удаление сервиса теперь записывается не только как последнее состояние, а как история отдельных событий в protected journal:
 
-Observed status сначала формируется из фактического/system state, затем синхронизируется в PostgreSQL `control_center.notification_events`.
+```text
+/var/lib/control-center-system/market-events.jsonl
+```
+
+Для DHCP сохраняются:
+
+- start — например `Установка началась: DHCP Server`;
+- success — `Установка успешно завершена: DHCP Server`;
+- failure — сообщение об ошибке + diagnostic detail root worker.
+
+У каждого события есть server timestamp. `/api/notifications` импортирует журнал в PostgreSQL, поэтому быстро завершившаяся установка не теряет событие «началась» и история сохраняется после обновления страницы.
 
 ## Цвет колокольчика
 
-- **красный** — есть непрочитанное событие `severity=error`;
-- **зелёный** — есть непрочитанные события, но ошибок среди них нет;
+- **красный** — есть непрочитанное `severity=error`;
+- **зелёный** — есть непрочитанные события без ошибок;
 - **нейтральный** — всё прочитано либо событий нет.
 
-## Прочитанность 1.0.7
-
-Read/unread перенесён из browser `localStorage` в PostgreSQL:
+## Прочитанность
 
 ```text
 control_center.notification_events.is_read
 ```
 
-Поэтому состояние сохраняется после очистки браузера и одинаково отображается с разных административных устройств.
-
-Поскольку встроенная пользовательская аутентификация ещё не реализована, read-state в 1.0.7 **общий для установки**, а не отдельный для каждого администратора. После появления account/session модели схема может быть расширена отдельной таблицей user notification state.
+Read-state общий для текущей установки Control Center, пока не реализована встроенная пользовательская authentication/session модель.
 
 ## API
 
-Получение:
+Получить события:
 
 ```bash
 curl -fsS http://127.0.0.1:PORT/api/notifications | python3 -m json.tool
 ```
 
-Прочитать одно или несколько событий:
+Отметить выбранные:
 
 ```bash
 curl -fsS -X POST -H 'Content-Type: application/json' \
@@ -51,7 +50,7 @@ curl -fsS -X POST -H 'Content-Type: application/json' \
   http://127.0.0.1:PORT/api/notifications/read
 ```
 
-Прочитать всё:
+Отметить все:
 
 ```bash
 curl -fsS -X POST -H 'Content-Type: application/json' \
@@ -59,26 +58,12 @@ curl -fsS -X POST -H 'Content-Type: application/json' \
   http://127.0.0.1:PORT/api/notifications/read
 ```
 
-Запись содержит:
-
-```json
-{
-  "id": "...",
-  "source": "dhcp",
-  "title": "DHCP",
-  "state": "applied",
-  "severity": "ok",
-  "message": "DHCP конфигурация применена",
-  "timestamp": 0,
-  "read": false
-}
-```
-
-## PostgreSQL диагностика
+## Диагностика
 
 ```bash
+sudo tail -n 50 /var/lib/control-center-system/market-events.jsonl
 sudo -u control-center psql -d control_center -c \
-  'select source,title,state,severity,is_read,last_seen_at from control_center.notification_events order by last_seen_at desc limit 30;'
+  'select source,title,state,severity,is_read,last_seen_at,message from control_center.notification_events order by last_seen_at desc limit 50;'
 ```
 
-Удаление/архивирование старой истории в 1.0.7 автоматически ещё не выполняется; retention policy следует добавить при росте event history в следующих релизах.
+Если PostgreSQL временно недоступен, API использует degraded aggregation; после восстановления БД Market events снова синхронизируются в PostgreSQL.

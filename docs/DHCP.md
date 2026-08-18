@@ -1,28 +1,95 @@
-# DHCP Server Control Center 1.0.6
+# DHCP Server — Control Center 1.0.8
 
-## Установка
+## Установка из Маркета
 
-DHCP Server устанавливается через **Маркет → DHCP Server → Установить**. Управляемый runtime:
+DHCP Server устанавливается через **Маркет → DHCP Server → Установить**. Карточка показывает server-side lifecycle status и не теряет его после обновления страницы:
+
+- **Установка…** — root worker выполняет пакетную операцию;
+- **Работает** — `dnsmasq` установлен и модуль зарегистрирован Control Center;
+- **Ошибка** — операция завершилась ошибкой; полный diagnostic detail доступен по наведению на статус;
+- **Не установлен** — модуль доступен для установки.
+
+Управляемый DHCP runtime после настройки:
 
 ```text
 control-center-dhcp-server.service
 ```
 
-Control Center не захватывает внешний `dnsmasq`, установленный и настроенный вне продукта.
+Дистрибутивный `dnsmasq.service` не используется для рабочего DHCP Control Center.
 
-## Загрузка уже настроенных параметров
+## Исправленная установка 1.0.8
 
-При открытии раздела DHCP Web API формирует effective configuration из двух источников:
+Пакет `dnsmasq` может пытаться стартовать во время `apt install`, ещё до появления конфигурации Control Center. В 1.0.8 Market worker временно устанавливает `policy-rc.d`, который запрещает только старт `dnsmasq` во время package transaction и обязательно восстанавливает предыдущий `policy-rc.d`, если он существовал.
+
+После установки worker выполняет:
+
+```bash
+dpkg-query -W -f='${Status}' dnsmasq
+command -v dnsmasq
+dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
+systemctl disable --now dnsmasq.service
+```
+
+До пользовательской настройки создаётся безопасный placeholder:
+
+```text
+/etc/dnsmasq.d/control-center-dhcp.conf
+```
+
+с `port=0` и без `dhcp-range`, поэтому модуль считается установленным, но ещё не выдаёт адреса.
+
+## Recovery предыдущей неудачной установки
+
+Если более ранняя операция Control Center успела установить пакет, но не записала module state, 1.0.8 может восстановить установку. Recovery разрешён только если одновременно выполняются условия безопасности:
+
+1. есть признаки предыдущей операции Control Center (`market-status.json` либо managed DHCP config);
+2. пакет `dnsmasq` уже установлен;
+3. в чужих конфигурационных файлах нет DHCP directives `dhcp-range`, `dhcp-host` или `dhcp-option`.
+
+Если обнаружена внешняя DHCP-конфигурация, Control Center **не захватывает** её автоматически.
+
+Старая маска `/etc/systemd/system/dnsmasq.service -> /dev/null`, оставшаяся от прежней незавершённой попытки Control Center, удаляется только при подтверждённом recovery-контексте.
+
+## Protected lifecycle state
+
+```text
+/var/lib/control-center-system/market-status.json
+/var/lib/control-center-system/market-events.jsonl
+/var/lib/control-center-system/market-last.log
+/var/lib/control-center-system/modules/dhcp.json
+```
+
+`market-last.log` содержит вывод последней Market операции. При ошибке последние строки попадают в `detail` статуса, tooltip и notification failure event.
+
+## Уведомления установки
+
+Каждая установка создаёт отдельные события:
+
+```text
+Установка началась: DHCP Server
+Установка успешно завершена: DHCP Server
+```
+
+или:
+
+```text
+Установка DHCP Server завершилась ошибкой (...)
+<diagnostic detail>
+```
+
+События имеют server timestamp и синхронизируются в PostgreSQL-центр уведомлений.
+
+## Настройка DHCP после установки
+
+Форма DHCP формирует effective configuration из:
 
 1. `/var/lib/control-center-system/dhcp-config.json` — последнее успешно применённое состояние;
-2. `/etc/dnsmasq.d/control-center-dhcp.conf` — фактически используемый конфигурационный файл.
-
-Фактический `dnsmasq`-файл имеет приоритет для отображения уже работающих значений. Поэтому после перезапуска или обновления формы сохраняют текущие параметры.
+2. `/etc/dnsmasq.d/control-center-dhcp.conf` — фактический managed config.
 
 Считываются:
 
 - интерфейс;
-- начало и конец диапазона;
+- начало/конец диапазона;
 - IPv4 netmask/CIDR;
 - шлюз;
 - DNS;
@@ -32,20 +99,15 @@ Control Center не захватывает внешний `dnsmasq`, устан�
 ## Основные параметры
 
 - интерфейс;
-- начало диапазона;
-- конец диапазона;
-- маска (`24` или `255.255.255.0` в форме);
+- начало и конец диапазона;
+- маска (`24` или `255.255.255.0`);
 - шлюз;
 - DNS;
-- срок аренды 10–10080 минут.
+- аренда 10–10080 минут.
 
-## Дополнительные DHCP параметры
+## Дополнительные DHCP options
 
-В 1.0.6 можно добавлять произвольные numeric DHCP options в формате:
-
-```text
-код + значение
-```
+Поддерживаются numeric options `1..254`, максимум 32 записи. Codes `1`, `3`, `6`, `51` зарезервированы основными полями. Дубли и управляющие символы запрещены.
 
 Пример:
 
@@ -55,85 +117,37 @@ Control Center не захватывает внешний `dnsmasq`, устан�
 252 → http://192.168.10.1/wpad.dat
 ```
 
-Ограничения:
-
-- код: `1..254`;
-- максимум 32 дополнительных options;
-- один код нельзя добавить дважды;
-- значение не может содержать управляющие символы/переводы строк;
-- options `1`, `3`, `6`, `51` зарезервированы за основными полями Control Center.
-
-Root helper повторно валидирует additional options и генерирует строки:
-
-```text
-dhcp-option=66,192.168.10.2
-```
-
-Текущие дополнительные параметры отображаются таблицей и могут быть удалены из будущей конфигурации перед сохранением.
-
-## Статус DHCP
-
-В заголовке раздела показывается фактический systemd status:
-
-```text
-control-center-dhcp-server.service
-```
-
-Состояния интерфейса:
-
-- `Работает` — service active;
-- `Установлен · не настроен` — модуль установлен, но `dhcp-range` ещё отсутствует;
-- `INACTIVE/FAILED` — конфигурация есть, но service не работает.
-
 ## Проверка конфигурации
 
-Кнопка **Проверить конфигурацию** не изменяет сервер. Она выполняет:
+Кнопка **Проверить конфигурацию** выполняет read-only:
 
 ```bash
 dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
 ```
 
-API:
+## Двухуровневое применение
+
+Web API проверяет запрос и пишет `/var/lib/control-center/dhcp-pending.json`. Root helper повторно валидирует интерфейс, диапазон, netmask, gateway, DNS, lease и additional options, генерирует временный config, выполняет `dnsmasq --test` и только затем перезапускает `control-center-dhcp-server.service`.
+
+## Диагностика установки
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:8080/api/dhcp/check | python3 -m json.tool
+PORT=$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
+curl -fsS "http://127.0.0.1:${PORT}/api/market" | python3 -m json.tool
+sudo cat /var/lib/control-center-system/market-status.json | python3 -m json.tool
+sudo tail -n 100 /var/lib/control-center-system/market-last.log
+sudo tail -n 30 /var/lib/control-center-system/market-events.jsonl
+journalctl -u control-center-market-apply.service -n 200 --no-pager
+dpkg-query -W -f='${Status}\n' dnsmasq
+sudo dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
 ```
 
-При ошибке Web UI показывает диагностический вывод `dnsmasq`.
-
-## Двухуровневая проверка и применение
-
-Web API проверяет запрос и пишет:
-
-```text
-/var/lib/control-center/dhcp-pending.json
-```
-
-Root helper независимо повторяет проверку интерфейса, диапазона, netmask, gateway, DNS, lease и дополнительных options. Затем формирует временный конфиг, выполняет `dnsmasq --test` и только после успешной проверки перезапускает выделенный DHCP runtime.
-
-Успешно применённое состояние:
-
-```text
-/var/lib/control-center-system/dhcp-config.json
-/var/lib/control-center-system/dhcp-status.json
-/var/lib/control-center-system/modules/dhcp.json
-```
-
-Rollback:
-
-```text
-/var/lib/control-center-root/control-center-dhcp.conf.rollback
-```
-
-## Диагностика
+## Диагностика работающего DHCP
 
 ```bash
-curl -fsS http://127.0.0.1:8080/api/dhcp/config | python3 -m json.tool
-curl -fsS -X POST http://127.0.0.1:8080/api/dhcp/check | python3 -m json.tool
 systemctl status control-center-dhcp-server.service --no-pager
 journalctl -u control-center-dhcp-server.service -n 100 --no-pager
-journalctl -u control-center-dhcp-apply.service -n 100 --no-pager
-sudo cat /etc/dnsmasq.d/control-center-dhcp.conf
-sudo cat /var/lib/control-center-system/dhcp-config.json
-sudo cat /var/lib/control-center-system/dhcp-status.json
+curl -fsS "http://127.0.0.1:${PORT}/api/dhcp/config" | python3 -m json.tool
+sudo cat /var/lib/control-center-system/dhcp-config.json 2>/dev/null || true
+sudo cat /var/lib/control-center-system/dhcp-status.json 2>/dev/null || true
 ```

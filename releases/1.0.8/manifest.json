@@ -1,0 +1,32 @@
+{
+  "product": "Control Center",
+  "release": "1.0.8",
+  "build": "20260819.1",
+  "channel": "production",
+  "upgrade_from": ["1.0.7", "1.0.6", "1.0.5", "clean install"],
+  "database": {
+    "engine": "PostgreSQL",
+    "schema_migration": "001",
+    "mode": "local",
+    "cluster_ready": true
+  },
+  "components": [
+    "persistent-market-service-status",
+    "market-event-history",
+    "dhcp-install-recovery",
+    "dhcp-real-install-ci",
+    "manual-control-center-update",
+    "update-availability-button",
+    "postgresql-notifications",
+    "configurable-web-port"
+  ],
+  "notes": [
+    "Market service cards persist server-side status across page reloads",
+    "DHCP installation start/success/failure events are retained and shown in notifications",
+    "Error status exposes the root-worker failure detail as a tooltip",
+    "DHCP installation uses policy-rc.d to prevent unsafe dnsmasq autostart during package installation",
+    "Incomplete previous Control Center DHCP installation can be safely recovered when no external DHCP configuration is detected",
+    "The Install update button is enabled only when Production metadata is newer than the installed version/build",
+    "Manual update requests trigger the root updater through a systemd path unit"
+  ]
+}

@@ -2,6 +2,19 @@
 
 Авторитетное production-состояние определяется `../deployment.json`; подробности каждого релиза — каталогом `../releases/<version>/`.
 
+## 1.0.8 — 19.08.2026
+
+- постоянные server-side статусы сервисов в Маркете: установка, работа, ошибка и planned/available;
+- diagnostic tooltip для ошибок установки/работы;
+- отдельная история start/success/failure Market операций в PostgreSQL-уведомлениях;
+- защищённый `market-events.jsonl` и `market-last.log`;
+- переработана установка DHCP/dnsmasq через временный `policy-rc.d`;
+- safe recovery незавершённой предыдущей установки Control Center без захвата внешней DHCP-конфигурации;
+- GitHub Actions выполняет реальную установку и удаление dnsmasq;
+- update availability API учитывает release/build;
+- кнопка ручной установки обновления активируется только при обнаружении нового Production build;
+- `control-center-update-now.path` запускает root updater без ожидания автоматического интервала.
+
 ## 1.0.7 — 18.08.2026
 
 - PostgreSQL стал базовым application data layer;
