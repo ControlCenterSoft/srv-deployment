@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cmd="${1:-status}"
+CONF=/etc/chrony/conf.d/control-center.conf
+is_ad_dc() {
+  command -v testparm >/dev/null 2>&1 && testparm -s --parameter-name='server role' 2>/dev/null | grep -qi 'active directory domain controller'
+}
+status() {
+  python3 - <<'PY'
+import json,subprocess,shutil
+def run(a):
+    try:return subprocess.check_output(a,text=True,stderr=subprocess.STDOUT).strip()
+    except Exception:return ""
+installed=shutil.which("chronyc") is not None
+print(json.dumps({"installed":installed,"active":run(["systemctl","is-active","chrony.service"])=="active","enabled":run(["systemctl","is-enabled","chrony.service"])=="enabled","tracking":run(["chronyc","tracking"]) if installed else "","sources":run(["chronyc","sources","-n"]) if installed else ""},ensure_ascii=False))
+PY
+}
+install_pkg(){ apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y chrony; systemctl enable --now chrony.service; }
+remove_pkg(){ systemctl disable --now chrony.service 2>/dev/null || true; DEBIAN_FRONTEND=noninteractive apt-get remove -y chrony; }
+ensure_ad_profile() {
+  command -v chronyd >/dev/null || install_pkg
+  install -d -m 0755 /etc/chrony/conf.d
+  signd="$(testparm -s --parameter-name='ntp signd socket directory' 2>/dev/null | xargs || true)"
+  [[ -n "$signd" ]] || signd=/var/lib/samba/ntp_signd
+  cat >"$CONF.tmp" <<EOF
+pool pool.ntp.org iburst
+allow 192.168.10.0/24
+ntpsigndsocket $signd
+makestep 1.0 3
+rtcsync
+EOF
+  chronyd -Q -f "$CONF.tmp" >/dev/null 2>&1 || { rm -f "$CONF.tmp"; echo "chrony validation failed" >&2; exit 1; }
+  mv "$CONF.tmp" "$CONF"
+  systemctl restart chrony.service
+}
+case "$cmd" in
+ status) status ;;
+ install) install_pkg ;;
+ remove) remove_pkg ;;
+ start|stop|restart) systemctl "$cmd" chrony.service ;;
+ enable|disable) systemctl "$cmd" chrony.service ;;
+ step) chronyc makestep ;;
+ ensure-ad-profile) if is_ad_dc; then ensure_ad_profile; else echo "not an AD DC"; fi ;;
+ *) echo "usage: $0 {status|install|remove|start|stop|restart|enable|disable|step|ensure-ad-profile}" >&2; exit 2 ;;
+esac
