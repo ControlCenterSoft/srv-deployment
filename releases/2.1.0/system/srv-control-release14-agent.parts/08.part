@@ -1,0 +1,234 @@
+
+# PXE compatibility layer: common x86/x64 BIOS/UEFI plus UEFI ARM and Secure Boot.
+# The release uses the official signed iPXE server bundle instead of assuming
+# that a distro package contains every firmware binary we need.
+IPXE_VERSION = 'v2.0.0'
+IPXE_ARCHIVE_URL = f'https://github.com/ipxe/ipxe/releases/download/{IPXE_VERSION}/ipxeboot.tar.gz'
+PXE_MEDIA = PXE_ROOT / 'media'
+WIMBOOT_X64_URL = 'https://github.com/ipxe/wimboot/releases/download/v2.9.0/wimboot'
+WIMBOOT_I386_URL = 'https://github.com/ipxe/wimboot/releases/download/v2.9.0/wimboot.i386'
+WIMBOOT_ARM64_URL = 'https://github.com/ipxe/wimboot/releases/download/v2.9.0/wimboot.arm64'
+
+
+def _interface_ipv4(interface: str) -> str:
+    iface = str(interface or '').strip()
+    if not iface or not re.fullmatch(r'[A-Za-z0-9_.:-]+', iface):
+        raise RuntimeError('invalid DHCP/PXE interface')
+    out = run(['ip', '-4', '-o', 'addr', 'show', 'dev', iface, 'scope', 'global'], timeout=20, check=False)
+    for line in out.splitlines():
+        match = re.search(r'\binet\s+([0-9.]+)/', line)
+        if match:
+            value = match.group(1)
+            if value != '0.0.0.0' and not value.startswith('127.'):
+                return value
+    raise RuntimeError(f'interface {iface} has no usable IPv4 address; cannot publish PXE next-server')
+
+
+def _pxe_autoexec() -> str:
+    return (
+        '#!ipxe\n'
+        'isset ${netX/ip} || dhcp || goto failed\n'
+        'isset ${next-server} || goto failed\n'
+        'chain http://${next-server}/pxe/boot.ipxe?mac=${netX/mac}&platform=${platform}&buildarch=${buildarch} || goto failed\n'
+        'exit\n'
+        ':failed\n'
+        'echo SRV PXE automatic chainload failed.\n'
+        'echo MAC=${netX/mac} platform=${platform} buildarch=${buildarch} next-server=${next-server}\n'
+        'ifstat\n'
+        'route\n'
+        'sleep 5\n'
+        'shell\n'
+    )
+
+
+def _download(url: str, target: Path, minimum: int) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    run(['curl', '-fL', '--retry', '3', '--retry-all-errors', '--connect-timeout', '20', '-o', str(target), url], timeout=300)
+    if not target.is_file() or target.stat().st_size < minimum:
+        raise RuntimeError(f'downloaded PXE asset is unexpectedly small: {url}')
+    os.chmod(target, 0o644)
+
+
+def _install_ipxe_bundle() -> None:
+    root = Path(tempfile.mkdtemp(prefix='srvcc-ipxe.', dir='/var/tmp'))
+    try:
+        archive = root / 'ipxeboot.tar.gz'
+        _download(IPXE_ARCHIVE_URL, archive, 250000)
+        extracted = root / 'extract'
+        extracted.mkdir()
+        run(['tar', '-xzf', str(archive), '-C', str(extracted)], timeout=120)
+        source = extracted / 'ipxeboot'
+        if not source.is_dir():
+            directories = [p for p in extracted.iterdir() if p.is_dir()]
+            if len(directories) == 1:
+                source = directories[0]
+        if not source.is_dir():
+            raise RuntimeError('official iPXE server archive has unexpected layout')
+        TFTP_ROOT.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, TFTP_ROOT, dirs_exist_ok=True)
+
+        # util/gensrvimg names directories by CPU architecture, not by build
+        # directory: i386/, x86_64/, arm32/, arm64/ and *-sb for Secure Boot.
+        required = [
+            TFTP_ROOT / 'undionly.kpxe',
+            TFTP_ROOT / 'i386/snponly.efi',
+            TFTP_ROOT / 'x86_64/snponly.efi',
+            TFTP_ROOT / 'x86_64-sb/snponly-shim.efi',
+            TFTP_ROOT / 'x86_64-sb/snponly.efi',
+            TFTP_ROOT / 'arm32/snponly.efi',
+            TFTP_ROOT / 'arm64/snponly.efi',
+            TFTP_ROOT / 'arm64-sb/snponly-shim.efi',
+            TFTP_ROOT / 'arm64-sb/snponly.efi',
+        ]
+        missing = [str(path.relative_to(TFTP_ROOT)) for path in required if not path.is_file()]
+        if missing:
+            raise RuntimeError('official iPXE bundle is missing required firmware files: ' + ', '.join(missing))
+
+        script = _pxe_autoexec()
+        locations = [
+            TFTP_ROOT,
+            TFTP_ROOT / 'i386',
+            TFTP_ROOT / 'x86_64',
+            TFTP_ROOT / 'x86_64-sb',
+            TFTP_ROOT / 'arm32',
+            TFTP_ROOT / 'arm64',
+            TFTP_ROOT / 'arm64-sb',
+        ]
+        for directory in locations:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / 'autoexec.ipxe').write_text(script, encoding='utf-8')
+            os.chmod(directory / 'autoexec.ipxe', 0o644)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def apply_dhcp() -> str:
+    rows = psql_json('SELECT * FROM dhcp_configs WHERE id=1') or []
+    if not rows:
+        raise RuntimeError('DHCP configuration is not defined')
+    c = rows[0]
+    if not c.get('enabled'):
+        subprocess.run(['systemctl', 'disable', '--now', 'dnsmasq.service'], check=False)
+        return 'DHCP configuration saved; service disabled'
+    required = ['interface', 'network', 'netmask', 'range_start', 'range_end', 'gateway']
+    if any(not c.get(key) for key in required):
+        raise RuntimeError('DHCP configuration is incomplete')
+
+    server = _interface_ipv4(str(c['interface']))
+    options = psql_json('SELECT code,value FROM dhcp_options WHERE enabled=true ORDER BY code,id') or []
+    reservations = psql_json('SELECT mac,ip_address,hostname FROM dhcp_reservations WHERE enabled=true ORDER BY ip_address') or []
+    dns = c.get('dns') or []
+    lines = [
+        '# Managed by SRV Control Center 1.4.0',
+        'port=0',
+        'bind-interfaces',
+        f"interface={c['interface']}",
+        'dhcp-authoritative',
+        f"dhcp-range={c['range_start']},{c['range_end']},{c['netmask']},{c.get('lease_time') or '12h'}",
+        f"dhcp-option=option:router,{c['gateway']}",
+    ]
+    if dns:
+        lines.append('dhcp-option=option:dns-server,' + ','.join(str(item) for item in dns))
+    for item in options:
+        value = str(item['value']).replace('\n', '').replace('\r', '')
+        lines.append(f"dhcp-option={int(item['code'])},{value}")
+    for item in reservations:
+        host = (',' + str(item['hostname'])) if item.get('hostname') else ''
+        lines.append(f"dhcp-host={item['mac']},{item['ip_address']}{host}")
+
+    if (TFTP_ROOT / 'undionly.kpxe').is_file():
+        # DHCP option 93 architecture matrix.  Each first-stage request gets
+        # exactly one architecture-specific boot file.  An old PXE ROM which
+        # omits option 93 gets the BIOS fallback; iPXE itself is excluded from
+        # all first-stage rules and receives autoexec.ipxe instead.
+        lines += [
+            'dhcp-vendorclass=set:pxeclient,PXEClient',
+            'dhcp-match=set:ipxe,175',
+            'dhcp-userclass=set:ipxe,iPXE',
+            'dhcp-match=set:bios,option:client-arch,0',
+            'dhcp-match=set:efi32,option:client-arch,6',
+            'dhcp-match=set:efi64,option:client-arch,7',
+            'dhcp-match=set:efi64,option:client-arch,9',
+            'dhcp-match=set:arm32,option:client-arch,10',
+            'dhcp-match=set:arm64,option:client-arch,11',
+            'tag-if=set:pxe-noarch,tag:pxeclient,tag:!bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!ipxe',
+            f'dhcp-boot=tag:!ipxe,tag:bios,undionly.kpxe,,{server}',
+            f'dhcp-boot=tag:!ipxe,tag:efi32,i386/snponly.efi,,{server}',
+            f'dhcp-boot=tag:!ipxe,tag:efi64,x86_64-sb/snponly-shim.efi,,{server}',
+            f'dhcp-boot=tag:!ipxe,tag:arm32,arm32/snponly.efi,,{server}',
+            f'dhcp-boot=tag:!ipxe,tag:arm64,arm64-sb/snponly-shim.efi,,{server}',
+            f'dhcp-boot=tag:pxe-noarch,undionly.kpxe,,{server}',
+            f'dhcp-boot=tag:ipxe,autoexec.ipxe,,{server}',
+        ]
+
+    DHCP_CONF.parent.mkdir(parents=True, exist_ok=True)
+    DHCP_CONF.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    os.chmod(DHCP_CONF, 0o644)
+    run(['dnsmasq', '--test'], timeout=30)
+    run(['systemctl', 'enable', '--now', 'dnsmasq.service'], timeout=30)
+    run(['systemctl', 'restart', 'dnsmasq.service'], timeout=30)
+    return f"DHCP active on {c['interface']} range {c['range_start']}..{c['range_end']} PXE next-server={server}"
+
+
+def ensure_pxe_samba_share() -> dict:
+    if not shutil.which('smbpasswd') or not SMB_CONF.exists():
+        apt_install('samba', 'samba-common-bin')
+    try:
+        run(['id', 'srv-pxe'], timeout=10)
+    except Exception:
+        run(['useradd', '--system', '--no-create-home', '--shell', '/usr/sbin/nologin', 'srv-pxe'], timeout=30)
+    cred = read_json(PXE_CRED, {})
+    password = str(cred.get('password') or '')
+    if not password:
+        password = secrets.token_urlsafe(24)
+        write_json(PXE_CRED, {'username': 'srv-pxe', 'password': password}, 0o600)
+    run(['smbpasswd', '-s', '-a', 'srv-pxe'], input_text=password + '\n' + password + '\n', timeout=30)
+    text_value = SMB_CONF.read_text(encoding='utf-8', errors='replace') if SMB_CONF.exists() else '[global]\nworkgroup = WORKGROUP\n'
+    pattern = re.compile(re.escape(SMB_BEGIN) + r'.*?' + re.escape(SMB_END) + r'\n?', re.S)
+    text_value = pattern.sub('', text_value)
+    share = (
+        f'\n{SMB_BEGIN}\n[PXE$]\n'
+        f'    path = {PXE_MEDIA}\n'
+        '    browseable = no\n    read only = yes\n    guest ok = no\n'
+        '    valid users = srv-pxe\n'
+        f'{SMB_END}\n'
+    )
+    SMB_CONF.write_text(text_value.rstrip() + share, encoding='utf-8')
+    run(['testparm', '-s', str(SMB_CONF)], timeout=30)
+    for unit in ('samba-ad-dc.service', 'smbd.service', 'samba.service'):
+        state = run(['systemctl', 'show', unit, '-p', 'LoadState', '--value'], timeout=10, check=False).strip()
+        if state and state != 'not-found':
+            subprocess.run(['systemctl', 'restart', unit], check=False)
+    return {'username': 'srv-pxe', 'password': password}
+
+
+def install_pxe() -> str:
+    apt_install('tftpd-hpa', 'wimtools', 'curl', 'ca-certificates', 'samba-common-bin')
+    for path in (
+        TFTP_ROOT,
+        PXE_ROOT,
+        PXE_MEDIA,
+        PXE_MEDIA / 'boot',
+        PXE_MEDIA / 'images',
+        PXE_MEDIA / 'isos',
+        PXE_MEDIA / 'software',
+        PXE_ROOT / 'profiles',
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o750 if path == PXE_ROOT / 'profiles' else 0o755)
+
+    _install_ipxe_bundle()
+    _download(WIMBOOT_X64_URL, PXE_MEDIA / 'boot/wimboot', 50000)
+    _download(WIMBOOT_I386_URL, PXE_MEDIA / 'boot/wimboot.i386', 50000)
+    _download(WIMBOOT_ARM64_URL, PXE_MEDIA / 'boot/wimboot.arm64', 50000)
+
+    defaults = Path('/etc/default/tftpd-hpa')
+    defaults.write_text(
+        'TFTP_USERNAME="tftp"\nTFTP_DIRECTORY="/srv/tftp"\nTFTP_ADDRESS=":69"\nTFTP_OPTIONS="--secure"\n',
+        encoding='utf-8',
+    )
+    ensure_pxe_samba_share()
+    run(['systemctl', 'enable', '--now', 'tftpd-hpa.service'], timeout=30)
+    if shutil.which('dnsmasq') and DHCP_CONF.exists():
+        apply_dhcp()
+    return 'PXE Server installed: BIOS, UEFI IA32/x64/ARM32/ARM64, x64/ARM64 Secure Boot chainload, wimboot 2.9.0'

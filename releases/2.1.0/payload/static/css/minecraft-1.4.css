@@ -1,0 +1,152 @@
+.mc132-page {
+    width: min(1640px, calc(100% - 48px));
+}
+
+.mc132-header {
+    margin-bottom: 20px;
+}
+
+.mc132-header-status {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.mc-badge {
+    border-color: rgba(61, 91, 121, .54);
+    background: rgba(15, 29, 43, .82);
+    color: #c9d8e7;
+}
+
+.mc132-summary {
+    gap: 12px;
+}
+
+.mc132-stat {
+    position: relative;
+    overflow: hidden;
+    min-height: 126px;
+    border-color: rgba(61, 91, 121, .48);
+    background: linear-gradient(145deg, rgba(18, 35, 51, .96), rgba(9, 20, 31, .98));
+}
+
+.mc132-stat::after {
+    content: "";
+    position: absolute;
+    inset: auto -36px -44px auto;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(39, 211, 230, .09), transparent 68%);
+}
+
+.mc132-stat > span {
+    color: #7f96aa;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+}
+
+.mc132-stat > strong {
+    color: #f3f8fd;
+}
+
+.mc132-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    gap: 7px;
+    border-color: rgba(61, 91, 121, .48);
+    background: rgba(8, 18, 28, .94);
+    backdrop-filter: blur(12px);
+}
+
+.mc132-tab {
+    border-color: transparent;
+    background: transparent;
+    color: #91a6b9;
+}
+
+.mc132-tab:hover {
+    background: rgba(39, 211, 230, .06);
+    color: #ddecf7;
+}
+
+.mc132-tab.active {
+    border-color: rgba(39, 211, 230, .27);
+    background: linear-gradient(135deg, rgba(39, 211, 230, .14), rgba(61, 156, 255, .11));
+    color: #dffcff;
+}
+
+.mc132-tab-panel,
+.mc132-control-card {
+    border-color: rgba(61, 91, 121, .46);
+    background: linear-gradient(180deg, rgba(15, 29, 43, .96), rgba(9, 19, 30, .98));
+}
+
+.mc132-control-card {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .02);
+}
+
+.mc132-control-card h3,
+.mc132-section-head h2 {
+    color: #f0f7fc;
+}
+
+.mc132-section-head p,
+.mc-note,
+.mc132-details,
+.mc132-stat small {
+    color: #8096aa;
+}
+
+.mc132-inline input,
+.mc-grid input,
+.mc-grid select,
+.player-toolbar input,
+.player-toolbar select {
+    border-color: rgba(61, 91, 121, .56);
+    background: rgba(10, 23, 35, .92);
+    color: var(--text);
+}
+
+.mc132-inline input:focus,
+.mc-grid input:focus,
+.mc-grid select:focus,
+.player-toolbar input:focus,
+.player-toolbar select:focus {
+    outline: none;
+    border-color: rgba(39, 211, 230, .62);
+    box-shadow: 0 0 0 3px rgba(39, 211, 230, .08);
+}
+
+.player-table-wrap {
+    border-color: rgba(61, 91, 121, .50);
+    background: rgba(8, 18, 28, .36);
+}
+
+.player-table th {
+    color: #7990a4;
+}
+
+.player-table td,
+.player-table th {
+    border-color: rgba(61, 91, 121, .34);
+}
+
+.mc132-log {
+    border-color: rgba(61, 91, 121, .48);
+    background: #071019;
+    color: #bfd6e7;
+}
+
+@media (max-width: 720px) {
+    .mc132-page {
+        width: min(100% - 28px, 1640px);
+    }
+
+    .mc132-tabs {
+        position: static;
+    }
+}

@@ -1,0 +1,85 @@
+    image_id=int(payload.get('image_id') or 0); source=Path(str(payload.get('source_path') or ''))
+    kind=str(payload.get('kind') or '')
+    if image_id<=0 or kind not in {'windows','linux'} or not source.is_file(): raise RuntimeError('invalid image preparation request')
+    target_iso=PXE_ROOT/f'isos/{image_id}.iso'; target_iso.parent.mkdir(parents=True,exist_ok=True)
+    if source.resolve()!=target_iso.resolve(): shutil.copy2(source,target_iso)
+    os.chmod(target_iso,0o644)
+    image_dir=PXE_ROOT/f'images/{image_id}'; shutil.rmtree(image_dir,ignore_errors=True); image_dir.mkdir(parents=True,exist_ok=True)
+    mount=_mount_iso(target_iso)
+    metadata={'release':'1.4.0','status':'ready','kind':kind,'iso':f'isos/{image_id}.iso'}
+    try:
+        if kind=='windows':
+            boot_wim=mount/'sources/boot.wim'; install=mount/'sources/install.wim'; install_esd=mount/'sources/install.esd'
+            if not boot_wim.is_file(): raise RuntimeError('Windows ISO does not contain sources/boot.wim')
+            shutil.copy2(boot_wim,image_dir/'boot.wim')
+            source_install=install if install.is_file() else install_esd
+            if not source_install.is_file(): raise RuntimeError('Windows ISO does not contain sources/install.wim or install.esd')
+            ext=source_install.suffix.lower(); shutil.copy2(source_install,image_dir/f'install{ext}')
+            for rel,name in [('boot/BCD','BCD'),('boot/boot.sdi','boot.sdi')]:
+                p=mount/rel
+                if p.is_file(): shutil.copy2(p,image_dir/name)
+            metadata.update({'boot_wim':'boot.wim','install_image':f'install{ext}','editions':_windows_editions(source_install)})
+        else:
+            candidates=[('casper/vmlinuz','casper/initrd','ubuntu'),('install.amd/vmlinuz','install.amd/initrd.gz','debian'),('install.amd/vmlinuz','install.amd/initrd','debian')]
+            found=None
+            for kernel,initrd,flavor in candidates:
+                if (mount/kernel).is_file() and (mount/initrd).is_file(): found=(kernel,initrd,flavor);break
+            if not found: raise RuntimeError('Linux ISO kernel/initrd layout is not supported (expected Ubuntu casper or Debian install.amd)')
+            shutil.copy2(mount/found[0],image_dir/'vmlinuz'); shutil.copy2(mount/found[1],image_dir/'initrd')
+            metadata.update({'kernel':'vmlinuz','initrd':'initrd','flavor':found[2]})
+    finally: _umount(mount)
+    for published in image_dir.iterdir():
+        if published.is_file(): os.chmod(published,0o644)
+    js=json.dumps(metadata,ensure_ascii=False).replace("'","''")
+    psql_exec(f"UPDATE os_images SET source_path={sql_literal(str(target_iso))}, metadata='{js}'::jsonb, enabled=true WHERE id={image_id};")
+    return f'{kind} image #{image_id} prepared and ready'
+
+
+def _server_ip() -> str:
+    rows=psql_json("SELECT gateway FROM dhcp_configs WHERE id=1 AND gateway IS NOT NULL") or []
+    if rows and rows[0].get('gateway'): return str(rows[0]['gateway'])
+    out=run(['ip','-4','-o','addr','show','scope','global'],timeout=20,check=False)
+    private=[]
+    for line in out.splitlines():
+        m=re.search(r'\binet\s+([0-9.]+)/',line)
+        if m:
+            ip=m.group(1)
+            if ip.startswith(('10.','192.168.','172.')): private.append(ip)
+    if private: return private[0]
+    raise RuntimeError('cannot determine LAN address for PXE profile')
+
+
+def _profile_row(profile_id: int) -> dict:
+    rows=psql_json(f"""SELECT p.id,p.computer_name,p.windows_edition,p.locale,p.timezone,p.domain_join,p.domain_name,p.config,
+      i.id image_id,i.kind,i.metadata,d.mac FROM pxe_profiles p JOIN os_images i ON i.id=p.os_image_id JOIN devices d ON d.id=p.device_id WHERE p.id={profile_id}""") or []
+    if not rows: raise RuntimeError('PXE profile not found')
+    return rows[0]
+
+
+def _merged_config(profile_id: int, base: dict) -> dict:
+    rows=psql_json(f"""SELECT c.config FROM pxe_profile_configuration_profiles x JOIN pxe_configuration_profiles c ON c.id=x.configuration_profile_id WHERE x.pxe_profile_id={profile_id} AND c.enabled=true ORDER BY c.id""") or []
+    merged={}
+    for row in rows:
+        if isinstance(row.get('config'),dict): merged.update(row['config'])
+    if isinstance(base,dict): merged.update(base)
+    return merged
+
+
+def _software_commands(profile_id: int, server: str, cred: dict) -> list[str]:
+    rows=psql_json(f"""SELECT DISTINCT s.name,s.package_path,s.install_args FROM pxe_profile_software_groups pg JOIN software_group_members gm ON gm.software_group_id=pg.software_group_id JOIN software_items s ON s.id=gm.software_item_id WHERE pg.pxe_profile_id={profile_id} AND s.enabled=true ORDER BY s.name""") or []
+    commands=[]
+    for row in rows:
+        path=str(row.get('package_path') or '')
+        try: rel=Path(path).resolve().relative_to(PXE_ROOT.resolve())
+        except Exception: continue
+        unc='Z:\\'+str(rel).replace('/','\\'); args=str(row.get('install_args') or '')
+        low=path.lower()
+        if low.endswith('.msi'): commands.append(f'msiexec /i "{unc}" /qn /norestart {args}'.strip())
+        elif low.endswith(('.exe','.cmd','.bat')): commands.append(f'"{unc}" {args}'.strip())
+    return commands
+
+
+def publish_windows(profile: dict, config: dict, target: Path, server: str, cred: dict) -> None:
+    image_id=int(profile['image_id']); meta=profile.get('metadata') or {}; install_name=str(meta.get('install_image') or 'install.wim')
+    editions=meta.get('editions') if isinstance(meta.get('editions'),list) else []; edition=str(profile.get('windows_edition') or '').strip(); index=1
+    for item in editions:

@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+
+
+CONFIG = Path("/var/lib/srv-control/os-update-config.json")
+POLICY = "/usr/local/libexec/srv-control-backup-policy"
+BACKUP = "/usr/local/libexec/srv-control-backup"
+UPDATE = "/usr/local/libexec/srv-control-os-update"
+
+
+def load(path: Path, default: dict) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else dict(default)
+    except Exception:
+        return dict(default)
+
+
+def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(command, check=check)
+
+
+def backup_required() -> bool:
+    result = run([POLICY, "required-for-update"], check=False)
+    if result.returncode not in {0, 1}:
+        raise RuntimeError("backup policy helper failed")
+    return result.returncode == 0
+
+
+def main() -> int:
+    config = load(CONFIG, {"mode": "manual", "interval_hours": 24})
+    if config.get("mode") != "automatic":
+        return 0
+    if backup_required():
+        run([BACKUP, "create", "--actor", "system", "--reason", "pre-os-update"])
+    run([UPDATE])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

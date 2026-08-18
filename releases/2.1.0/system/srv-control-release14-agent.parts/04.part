@@ -1,0 +1,82 @@
+        # cloud-init accepts YAML; generate minimal YAML without PyYAML dependency.
+        (seed/'user-data').write_text('#cloud-config\n'+json.dumps(user_data,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+        (seed/'meta-data').write_text(f'instance-id: srv-pxe-{profile["id"]}\nlocal-hostname: {profile["computer_name"]}\n',encoding='utf-8')
+        args=f'ip=dhcp url=http://${{next-server}}/pxe/files/isos/{image_id}.iso autoinstall ds=nocloud-net;s=http://${{next-server}}/pxe/files/profiles/{profile["id"]}/seed/ ---'
+    else:
+        preseed=f'''d-i debian-installer/locale string en_US\nd-i keyboard-configuration/xkb-keymap select us\nd-i netcfg/get_hostname string {profile['computer_name']}\nd-i passwd/user-fullname string {user}\nd-i passwd/username string {user}\nd-i passwd/user-password-crypted password {password_hash}\nd-i clock-setup/utc boolean true\nd-i partman-auto/method string regular\nd-i partman-auto/choose_recipe select atomic\nd-i partman/confirm boolean true\nd-i partman/confirm_nooverwrite boolean true\nd-i pkgsel/include string openssh-server curl\nd-i finish-install/reboot_in_progress note\nd-i preseed/late_command string in-target sh -c 'curl -fsS -X POST http://{server}/pxe/report/{profile['id']}/{token}/success || true'\n'''
+        (target/'preseed.cfg').write_text(preseed,encoding='utf-8')
+        args=f'auto=true priority=critical interface=auto preseed/url=http://${{next-server}}/pxe/files/profiles/{profile["id"]}/preseed.cfg ---'
+    base='http://${next-server}/pxe/files'
+    (target/'boot.ipxe').write_text(f'#!ipxe\nkernel {base}/images/{image_id}/vmlinuz {args}\ninitrd {base}/images/{image_id}/initrd\nboot\n',encoding='utf-8')
+
+
+def publish_profile(payload: dict) -> str:
+    profile_id=int(payload.get('profile_id') or 0); profile=_profile_row(profile_id); target=PXE_ROOT/f'profiles/{profile_id}'; shutil.rmtree(target,ignore_errors=True); target.mkdir(parents=True,exist_ok=True); os.chmod(target,0o755)
+    config=_merged_config(profile_id, profile.get('config') if isinstance(profile.get('config'),dict) else {})
+    server=_server_ip(); cred=ensure_pxe_samba_share()
+    try:
+        if profile['kind']=='windows': publish_windows(profile,config,target,server,cred)
+        else: publish_linux(profile,config,target,server)
+        psql_exec(f"UPDATE pxe_profiles SET status='authorized',install_authorized=true,authorized_at=now(),updated_at=now() WHERE id={profile_id};")
+    except Exception:
+        psql_exec(f"UPDATE pxe_profiles SET status='failed',install_authorized=false,last_result='publish-failed',updated_at=now() WHERE id={profile_id};")
+        raise
+    return f"PXE profile #{profile_id} published and authorized exactly once"
+
+
+def prune_backups() -> str:
+    cfg=read_json(BACKUP_CONFIG,{}); limit=int(cfg.get('max_copies') or 0)
+    if limit<=0: return 'backup retention unlimited'
+    metas=[]
+    for p in BACKUP_DIR.glob('*.json'):
+        data=read_json(p,{})
+        if data.get('archive'):
+            metas.append((str(data.get('created_at') or ''),p,data))
+    metas.sort(reverse=True)
+    removed=0
+    for _,meta,data in metas[limit:]:
+        archive=BACKUP_DIR/str(data.get('archive') or '')
+        archive.unlink(missing_ok=True); meta.unlink(missing_ok=True); removed+=1
+    return f'backup retention max={limit}; removed={removed}'
+
+
+def apply_backup_retention(payload: dict) -> str:
+    limit=int(payload.get('max_copies') or 0)
+    if limit<0 or limit>10000: raise RuntimeError('invalid max_copies')
+    cfg=read_json(BACKUP_CONFIG,{})
+    cfg['schema_version']=max(int(cfg.get('schema_version') or 1),2); cfg['max_copies']=limit
+    write_json(BACKUP_CONFIG,cfg,0o640)
+    return prune_backups()
+
+
+def _yaml_quote(v) -> str:
+    return json.dumps(str(v))
+
+
+def _safe_secret(value: object, label: str) -> str:
+    text_value=str(value or '')
+    if not text_value or any(ch in text_value for ch in '\r\n\x00'):
+        raise RuntimeError(f'invalid {label}')
+    return text_value
+
+
+def render_netplan(config: dict) -> str:
+    wan=config.get('wan') or {}; lan=config.get('lan') or {}; wifi=config.get('wifi') or {}; wm=str(wan.get('mode') or 'dhcp')
+    if wm not in {'dhcp','static','pppoe','l2tp'}: raise RuntimeError(f'unsupported WAN mode: {wm}')
+    lines=['network:','  version: 2','  renderer: networkd','  ethernets:']
+    wi=str(wan.get('interface') or '').strip(); li=str(lan.get('interface') or '').strip()
+    if not wi or not li or wi==li: raise RuntimeError('WAN and LAN interfaces must be different')
+    lines += [f'    {wi}:']
+    if wm=='dhcp': lines += ['      dhcp4: true']
+    elif wm=='static':
+        addr=str(wan.get('address') or ''); gw=str(wan.get('gateway') or ''); dns=wan.get('dns') if isinstance(wan.get('dns'),list) else []
+        if not addr or not gw: raise RuntimeError('static WAN requires address and gateway')
+        lines += [f'      addresses: [{_yaml_quote(addr)}]', '      routes:', '        - to: default', f'          via: {_yaml_quote(gw)}']
+        if dns: lines += ['      nameservers:', '        addresses: ['+', '.join(_yaml_quote(x) for x in dns)+']']
+    else:
+        lines += ['      dhcp4: false','      optional: true']
+    mode=str(wifi.get('mode') or 'disabled')
+    bridged = mode in {'ap','repeater'}
+    if bridged:
+        lines += [f'    {li}:','      dhcp4: false','      optional: true','  bridges:','    br0:',f'      interfaces: [{li}]',f'      addresses: [{_yaml_quote(lan.get("address"))}]','      dhcp4: false','      parameters:','        stp: false','        forward-delay: 0']
+    else:

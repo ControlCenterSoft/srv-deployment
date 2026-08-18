@@ -1,0 +1,530 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import html
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+import zipfile
+
+STATE_DIR = Path('/var/lib/srv-control')
+BACKUP_DIR = STATE_DIR / 'minecraft-backups' / 'legacy'
+OFFICIAL_PAGE = 'https://www.minecraft.net/en-us/download/server/bedrock'
+DOWNLOAD_RE = re.compile(r'https://(?:www\.)?minecraft\.net/bedrockdedicatedserver/bin-linux/bedrock-server-([0-9]+(?:\.[0-9]+){2,4})\.zip', re.I)
+EXCLUDES = {'worlds','server.properties','allowlist.json','permissions.json','whitelist.json','logs','backups','.runtime-backups'}
+
+
+def out(payload: dict, code: int = 0) -> int:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return code
+
+
+def run(cmd: list[str], *, timeout: int = 120, check: bool = True) -> str:
+    p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    text = p.stdout or ''
+    if check and p.returncode != 0:
+        raise RuntimeError(text[-4000:] or f'command failed: {cmd}')
+    return text
+
+
+def proc_pids() -> list[int]:
+    found: list[int] = []
+    for item in Path('/proc').iterdir():
+        if not item.name.isdigit():
+            continue
+        try:
+            if (item / 'comm').read_text(encoding='utf-8', errors='ignore').strip() == 'bedrock_server':
+                found.append(int(item.name))
+        except Exception:
+            pass
+    return sorted(found)
+
+
+def runtime_for_pid(pid: int) -> Path | None:
+    try:
+        path = Path(os.readlink(f'/proc/{pid}/cwd')).resolve()
+        if (path / 'bedrock_server').is_file():
+            return path
+    except Exception:
+        pass
+    return None
+
+
+def candidate_runtimes() -> list[Path]:
+    values: list[Path] = []
+    for pid in proc_pids():
+        path = runtime_for_pid(pid)
+        if path and path not in values:
+            values.append(path)
+    for raw in ('/opt/minecraft-bedrock','/opt/minecraft','/srv/minecraft','/var/lib/minecraft'):
+        path = Path(raw)
+        if (path / 'bedrock_server').is_file() and path not in values:
+            values.append(path)
+    return values
+
+
+def runtime() -> tuple[Path, int | None]:
+    pids = proc_pids()
+    for pid in pids:
+        path = runtime_for_pid(pid)
+        if path:
+            return path, pid
+    values = candidate_runtimes()
+    if values:
+        return values[0], None
+    raise RuntimeError('Bedrock runtime was not found')
+
+
+def unit_for_pid(pid: int | None) -> str | None:
+    if not pid:
+        return None
+    try:
+        for line in Path(f'/proc/{pid}/cgroup').read_text(encoding='utf-8', errors='ignore').splitlines():
+            tail = line.rsplit('/', 1)[-1]
+            if tail.endswith('.service'):
+                return tail
+    except Exception:
+        pass
+    return None
+
+
+def read_props(path: Path) -> tuple[list[str], dict[str, str]]:
+    lines = path.read_text(encoding='utf-8', errors='replace').splitlines() if path.is_file() else []
+    values: dict[str, str] = {}
+    for line in lines:
+        s = line.strip()
+        if s and not s.startswith('#') and '=' in s:
+            k, v = s.split('=', 1)
+            values[k.strip()] = v.strip()
+    return lines, values
+
+
+def write_props(path: Path, changes: dict[str, object]) -> None:
+    lines, current = read_props(path)
+    clean: dict[str, str] = {}
+    for key, value in changes.items():
+        key = str(key).strip()
+        if not key or any(ch in key for ch in '\r\n='):
+            raise RuntimeError(f'invalid property key: {key}')
+        text = str(value).lower() if isinstance(value, bool) else str(value)
+        if any(ch in text for ch in '\r\n\x00'):
+            raise RuntimeError(f'invalid property value: {key}')
+        clean[key] = text
+    output: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        s = line.strip()
+        if s and not s.startswith('#') and '=' in line:
+            key = line.split('=', 1)[0].strip()
+            if key in clean:
+                output.append(f'{key}={clean[key]}')
+                seen.add(key)
+                continue
+        output.append(line)
+    for key, value in clean.items():
+        if key not in seen:
+            output.append(f'{key}={value}')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stat = path.stat() if path.exists() else None
+    fd, tmp = tempfile.mkstemp(prefix='.server.properties.', dir=str(path.parent))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as h:
+            h.write('\n'.join(output).rstrip() + '\n')
+            h.flush(); os.fsync(h.fileno())
+        if stat:
+            os.chmod(tmp, stat.st_mode & 0o777)
+            os.chown(tmp, stat.st_uid, stat.st_gid)
+        else:
+            os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
+    finally:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+
+
+def udp_listening(port: int) -> bool:
+    text = run(['ss','-H','-lun'], timeout=20, check=False)
+    return any(f':{port} ' in line or line.rstrip().endswith(f':{port}') for line in text.splitlines())
+
+
+def service_action(action: str) -> str:
+    rt, pid = runtime()
+    unit = unit_for_pid(pid)
+    if unit:
+        if action == 'start':
+            run(['systemctl','start',unit], timeout=120)
+        elif action == 'stop':
+            run(['systemctl','stop',unit], timeout=120)
+        elif action == 'restart':
+            run(['systemctl','restart',unit], timeout=180)
+        else:
+            raise RuntimeError('invalid service action')
+        return unit
+    if action == 'stop' and pid:
+        os.kill(pid, signal.SIGTERM)
+        return 'process'
+    if action == 'restart' and pid:
+        raise RuntimeError('Bedrock process is running outside a discoverable systemd service; safe restart is unavailable')
+    raise RuntimeError('Bedrock systemd service was not discovered')
+
+
+def status_payload() -> dict:
+    rt, pid = runtime()
+    _, p = read_props(rt / 'server.properties')
+    port = int(p.get('server-port') or 19132)
+    unit = unit_for_pid(pid)
+    active = pid is not None
+    rss = None
+    started = None
+    if pid:
+        try:
+            for line in Path(f'/proc/{pid}/status').read_text().splitlines():
+                if line.startswith('VmRSS:'):
+                    rss = int(line.split()[1]) * 1024
+                    break
+        except Exception:
+            pass
+        started = run(['ps','-p',str(pid),'-o','lstart='], timeout=10, check=False).strip() or None
+    level = p.get('level-name') or None
+    worlds = rt / 'worlds'
+    world_exists = bool(level and (worlds / level).is_dir()) if worlds.is_dir() else False
+    return {
+        'ok': True,
+        'active': active,
+        'service': unit or 'legacy-process',
+        'main_pid': pid,
+        'runtime': str(rt),
+        'port': port,
+        'port_listening': udp_listening(port),
+        'server_name': p.get('server-name'),
+        'level_name': level,
+        'world_exists': world_exists,
+        'gamemode': p.get('gamemode'),
+        'difficulty': p.get('difficulty'),
+        'max_players': int(p.get('max-players') or 0) or None,
+        'version': detect_version(rt),
+        'memory_bytes': rss,
+        'memory_human': f'{rss / (1024*1024):.1f} MiB' if rss else None,
+        'started': started,
+        'healthy': bool(active and udp_listening(port) and level and world_exists),
+    }
+
+
+def detect_version(rt: Path) -> str | None:
+    for name in ('version.txt','.version','bedrock.version'):
+        path = rt / name
+        if path.is_file():
+            text = path.read_text(encoding='utf-8', errors='ignore').strip()
+            m = re.search(r'\d+(?:\.\d+){2,4}', text)
+            if m: return m.group(0)
+    for name in ('server.log','latest.log'):
+        path = rt / name
+        if path.is_file():
+            text = path.read_text(encoding='utf-8', errors='ignore')[-200000:]
+            m = re.search(r'(?:Version|version)[: ]+v?(\d+(?:\.\d+){2,4})', text)
+            if m: return m.group(1)
+    return None
+
+
+def backup(reason: str = 'manual') -> dict:
+    rt, _ = runtime()
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    name = f'{stamp}-{reason}.tar.gz'
+    target = BACKUP_DIR / name
+    members = [n for n in ('worlds','server.properties','allowlist.json','permissions.json','whitelist.json') if (rt / n).exists()]
+    with tarfile.open(target, 'w:gz') as tar:
+        for name0 in members:
+            tar.add(rt / name0, arcname=name0, recursive=True)
+    os.chmod(target, 0o600)
+    return {'ok': True, 'backup': target.name, 'path': str(target), 'size': target.stat().st_size, 'created_at': datetime.now(timezone.utc).isoformat()}
+
+
+def official_package() -> tuple[str, str]:
+    req = urllib.request.Request(OFFICIAL_PAGE, headers={'User-Agent':'Control-Center/2.0'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read(8*1024*1024).decode('utf-8', errors='replace')
+    normalized = html.unescape(raw).replace('\\u002F','/').replace('\\/','/')
+    found = [(m.group(1),m.group(0)) for m in DOWNLOAD_RE.finditer(normalized)]
+    if not found:
+        raise RuntimeError('official Minecraft page did not expose a Linux Bedrock package URL')
+    found.sort(key=lambda item: tuple(int(x) for x in item[0].split('.')))
+    return found[-1]
+
+
+def update_runtime() -> dict:
+    rt, pid = runtime()
+    unit = unit_for_pid(pid)
+    if not unit:
+        raise RuntimeError('safe Bedrock update requires a discoverable systemd service')
+    safety = backup('pre-update')
+    latest, url = official_package()
+    runtime_backup = Path(tempfile.mkdtemp(prefix='bedrock-runtime.', dir='/var/tmp'))
+    try:
+        for child in rt.iterdir():
+            if child.name in EXCLUDES:
+                continue
+            dest = runtime_backup / child.name
+            if child.is_dir(): shutil.copytree(child, dest)
+            elif child.is_file(): shutil.copy2(child, dest)
+        with tempfile.TemporaryDirectory(prefix='bedrock-download.', dir='/var/tmp') as td:
+            archive = Path(td) / 'bedrock.zip'
+            req = urllib.request.Request(url, headers={'User-Agent':'Control-Center/2.0'})
+            with urllib.request.urlopen(req, timeout=90) as resp, archive.open('wb') as dst:
+                shutil.copyfileobj(resp, dst, length=4*1024*1024)
+            if archive.stat().st_size < 10*1024*1024:
+                raise RuntimeError('downloaded Bedrock archive is unexpectedly small')
+            extracted = Path(td) / 'extracted'; extracted.mkdir()
+            with zipfile.ZipFile(archive) as package:
+                for member in package.infolist():
+                    p = Path(member.filename)
+                    if p.is_absolute() or '..' in p.parts:
+                        raise RuntimeError('unsafe path in Bedrock package')
+                package.extractall(extracted)
+            if not (extracted / 'bedrock_server').is_file():
+                raise RuntimeError('Bedrock package does not contain bedrock_server')
+            run(['systemctl','stop',unit], timeout=120)
+            try:
+                for child in list(rt.iterdir()):
+                    if child.name in EXCLUDES: continue
+                    if child.is_dir(): shutil.rmtree(child)
+                    else: child.unlink()
+                for child in extracted.iterdir():
+                    if child.name in EXCLUDES: continue
+                    dest = rt / child.name
+                    if child.is_dir(): shutil.copytree(child, dest)
+                    else: shutil.copy2(child, dest)
+                os.chmod(rt / 'bedrock_server', 0o750)
+                run(['systemctl','start',unit], timeout=120)
+                time.sleep(4)
+                if not status_payload().get('healthy'):
+                    raise RuntimeError('updated Bedrock did not become healthy')
+            except Exception:
+                run(['systemctl','stop',unit], timeout=60, check=False)
+                for child in list(rt.iterdir()):
+                    if child.name in EXCLUDES: continue
+                    if child.is_dir(): shutil.rmtree(child)
+                    else: child.unlink()
+                for child in runtime_backup.iterdir():
+                    dest = rt / child.name
+                    if child.is_dir(): shutil.copytree(child, dest)
+                    else: shutil.copy2(child, dest)
+                run(['systemctl','start',unit], timeout=120, check=False)
+                raise
+    finally:
+        shutil.rmtree(runtime_backup, ignore_errors=True)
+    return {'ok': True, 'version': latest, 'backup': safety.get('backup')}
+
+
+def worlds_list() -> dict:
+    rt, _ = runtime(); _, p = read_props(rt / 'server.properties'); active = p.get('level-name')
+    root = rt / 'worlds'; items = []
+    if root.is_dir():
+        for child in sorted(root.iterdir(), key=lambda x: x.name.casefold()):
+            if child.is_dir() and not child.is_symlink():
+                size = sum(f.stat().st_size for f in child.rglob('*') if f.is_file())
+                items.append({'name':child.name,'active':child.name == active,'size':size,'path':str(child)})
+    return {'ok':True,'active_world':active,'worlds':items}
+
+
+def validate_world(name: str) -> str:
+    name = name.strip()
+    if not name or name in {'.','..'} or '/' in name or '\\' in name or '\x00' in name:
+        raise RuntimeError('invalid world name')
+    return name
+
+
+def world_action(args: list[str]) -> dict:
+    if not args: raise RuntimeError('world operation is required')
+    op = args[0]; rt, pid = runtime(); root = rt / 'worlds'; root.mkdir(exist_ok=True)
+    if op == 'list': return worlds_list()
+    if len(args) < 2: raise RuntimeError('world name is required')
+    name = validate_world(args[1]); source = root / name
+    if not source.is_dir(): raise RuntimeError('world not found')
+    if op == 'activate':
+        backup('pre-world-switch'); write_props(rt / 'server.properties', {'level-name':name}); service_action('restart')
+        return {'ok':True,'active_world':name}
+    if op == 'clone':
+        if len(args) < 3: raise RuntimeError('new world name is required')
+        new = validate_world(args[2]); target = root / new
+        if target.exists(): raise RuntimeError('target world already exists')
+        shutil.copytree(source, target); return {'ok':True,'name':new}
+    if op == 'rename':
+        if len(args) < 3: raise RuntimeError('new world name is required')
+        _, p = read_props(rt / 'server.properties')
+        if p.get('level-name') == name: raise RuntimeError('active world cannot be renamed; activate another world first')
+        new = validate_world(args[2]); target = root / new
+        if target.exists(): raise RuntimeError('target world already exists')
+        source.rename(target); return {'ok':True,'name':new}
+    if op == 'delete':
+        confirm = args[2] if len(args) > 2 else ''
+        _, p = read_props(rt / 'server.properties')
+        if p.get('level-name') == name: raise RuntimeError('active world cannot be deleted')
+        if confirm not in {name,'DELETE'}: raise RuntimeError('delete confirmation mismatch')
+        backup('pre-world-delete'); shutil.rmtree(source); return {'ok':True,'deleted':name}
+    raise RuntimeError('unsupported world operation')
+
+
+def json_file(path: Path, default):
+    try: return json.loads(path.read_text(encoding='utf-8'))
+    except Exception: return default
+
+
+def write_json(path: Path, value) -> None:
+    stat = path.stat() if path.exists() else None
+    fd, tmp = tempfile.mkstemp(prefix='.'+path.name+'.', dir=str(path.parent))
+    try:
+        with os.fdopen(fd,'w',encoding='utf-8') as h:
+            json.dump(value,h,ensure_ascii=False,indent=2); h.write('\n'); h.flush(); os.fsync(h.fileno())
+        if stat: os.chmod(tmp, stat.st_mode & 0o777); os.chown(tmp,stat.st_uid,stat.st_gid)
+        else: os.chmod(tmp,0o640)
+        os.replace(tmp,path)
+    finally:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+
+
+def players_request(request: dict) -> dict:
+    action = str(request.get('action') or ''); rt, _ = runtime(); allow_path = rt/'allowlist.json'; perm_path=rt/'permissions.json'
+    allow = json_file(allow_path, []); perms = json_file(perm_path, [])
+    if not isinstance(allow,list): allow=[]
+    if not isinstance(perms,list): perms=[]
+    if action == 'list':
+        return {'ok':True,'online_count':0,'online':[],'allowlist':allow,'permissions':perms}
+    if action == 'settings-set':
+        write_props(rt/'server.properties', {'allow-list':'true' if request.get('allow_list_enabled') else 'false','default-player-permission-level':request.get('default_permission') or 'member'})
+        return {'ok':True}
+    if action == 'allow-add':
+        name=str(request.get('name') or '').strip(); xuid=str(request.get('xuid') or '').strip()
+        if not name: raise RuntimeError('player name is required')
+        allow=[x for x in allow if not (isinstance(x,dict) and str(x.get('name') or '').casefold()==name.casefold())]
+        allow.append({'ignoresPlayerLimit':bool(request.get('ignores_player_limit')),'name':name,'xuid':xuid}); write_json(allow_path,allow); return {'ok':True}
+    if action == 'allow-remove':
+        key=str(request.get('key') or '').strip(); allow=[x for x in allow if not (isinstance(x,dict) and key in {str(x.get('name') or ''),str(x.get('xuid') or '')})]; write_json(allow_path,allow); return {'ok':True}
+    if action == 'permission-set':
+        xuid=str(request.get('xuid') or '').strip(); level=str(request.get('permission') or 'member')
+        if not xuid: raise RuntimeError('XUID is required')
+        perms=[x for x in perms if not (isinstance(x,dict) and str(x.get('xuid') or '')==xuid)]; perms.append({'permission':level,'xuid':xuid}); write_json(perm_path,perms); return {'ok':True}
+    if action == 'permission-remove':
+        xuid=str(request.get('xuid') or '').strip(); perms=[x for x in perms if not (isinstance(x,dict) and str(x.get('xuid') or '')==xuid)]; write_json(perm_path,perms); return {'ok':True}
+    if action == 'kick': raise RuntimeError('live Bedrock command channel is unavailable for the discovered legacy process')
+    raise RuntimeError('unsupported player operation')
+
+
+def backups_list() -> dict:
+    BACKUP_DIR.mkdir(parents=True,exist_ok=True); rows=[]
+    for p in sorted(BACKUP_DIR.glob('*.tar.gz'), reverse=True):
+        rows.append({'name':p.name,'size':p.stat().st_size,'created_at':datetime.fromtimestamp(p.stat().st_mtime,timezone.utc).isoformat()})
+    return {'ok':True,'backups':rows}
+
+
+def safe_backup_name(name: str) -> Path:
+    if Path(name).name != name or not name.endswith('.tar.gz'): raise RuntimeError('invalid backup name')
+    p=(BACKUP_DIR/name).resolve(); root=BACKUP_DIR.resolve()
+    if p.parent != root or not p.is_file(): raise RuntimeError('backup not found')
+    return p
+
+
+def restore_action(args: list[str]) -> dict:
+    if not args: raise RuntimeError('restore operation required')
+    op=args[0]
+    if op=='list': return backups_list()
+    if len(args)<2: raise RuntimeError('backup name required')
+    p=safe_backup_name(args[1])
+    if op=='inspect':
+        with tarfile.open(p,'r:gz') as t: names=t.getnames()
+        return {'ok':True,'name':p.name,'size':p.stat().st_size,'members':names[:500]}
+    if op=='delete':
+        confirm=args[2] if len(args)>2 else ''
+        if confirm not in {p.name,'DELETE'}: raise RuntimeError('delete confirmation mismatch')
+        p.unlink(); return {'ok':True,'deleted':p.name}
+    if op=='restore':
+        rt,_=runtime(); safety=backup('pre-restore'); unit=unit_for_pid(runtime()[1])
+        if not unit: raise RuntimeError('safe restore requires a discoverable systemd service')
+        with tempfile.TemporaryDirectory(prefix='minecraft-restore.',dir='/var/tmp') as td:
+            target=Path(td)
+            with tarfile.open(p,'r:gz') as t:
+                for m in t.getmembers():
+                    dest=(target/m.name).resolve()
+                    if target.resolve()!=dest and target.resolve() not in dest.parents: raise RuntimeError('unsafe backup member')
+                    if m.issym() or m.islnk(): raise RuntimeError('backup links are not allowed')
+                t.extractall(target, filter='data')
+            run(['systemctl','stop',unit],timeout=120)
+            try:
+                for name in ('worlds','server.properties','allowlist.json','permissions.json','whitelist.json'):
+                    src=target/name
+                    if not src.exists(): continue
+                    dst=rt/name
+                    if dst.is_dir(): shutil.rmtree(dst)
+                    elif dst.exists(): dst.unlink()
+                    if src.is_dir(): shutil.copytree(src,dst)
+                    else: shutil.copy2(src,dst)
+            finally:
+                run(['systemctl','start',unit],timeout=120,check=False)
+        return {'ok':True,'restored':p.name,'safety_backup':safety.get('backup')}
+    raise RuntimeError('unsupported restore operation')
+
+
+def control(args: list[str]) -> dict:
+    if not args: raise RuntimeError('control operation required')
+    op=args[0]
+    if op=='status': return status_payload()
+    if op=='properties-get':
+        rt,_=runtime(); _,p=read_props(rt/'server.properties'); return {'ok':True,'properties':p}
+    if op=='properties-set':
+        payload=json.loads(sys.stdin.read() or '{}'); changes=payload.get('changes') if isinstance(payload,dict) else None
+        if not isinstance(changes,dict) or not changes: raise RuntimeError('changes object required')
+        rt,pid=runtime(); write_props(rt/'server.properties',changes)
+        if pid and unit_for_pid(pid): service_action('restart')
+        return {'ok':True,'properties':read_props(rt/'server.properties')[1]}
+    if op=='service':
+        if len(args)<2: raise RuntimeError('service action required')
+        unit=service_action(args[1]); return {'ok':True,'service':unit,'action':args[1]}
+    if op=='backup': return backup('manual')
+    if op=='update': return update_runtime()
+    if op=='updater':
+        installed=detect_version(runtime()[0]); latest=None
+        try: latest,_=official_package()
+        except Exception: pass
+        enabled=run(['systemctl','is-enabled','minecraft-update.timer'],timeout=10,check=False).strip() in {'enabled','enabled-runtime'}
+        active=run(['systemctl','is-active','minecraft-update.timer'],timeout=10,check=False).strip()=='active'
+        return {'ok':True,'installed_version':installed,'latest_version':latest,'update_available':bool(latest and latest!=installed),'timer_enabled':enabled,'timer_active':active,'schedule':'automatic' if enabled else 'manual'}
+    if op=='logs':
+        limit=int(args[1]) if len(args)>1 else 150; rt,pid=runtime(); unit=unit_for_pid(pid)
+        text=run(['journalctl','-u',unit,'-n',str(limit),'--no-pager'],timeout=30,check=False) if unit else ''
+        return {'ok':True,'logs':text.splitlines()[-limit:]}
+    raise RuntimeError('unsupported control operation')
+
+
+def live_request(request: dict) -> dict:
+    action=str(request.get('action') or '')
+    if action in {'status','list'}:
+        return {'ok':True,'available':False,'connected':False,'players':[],'online_count':0,'detail':'Legacy Bedrock process has no managed command socket'}
+    raise RuntimeError('live Bedrock command channel is unavailable for the discovered legacy process')
+
+
+def main() -> int:
+    role=Path(sys.argv[0]).name
+    try:
+        if role=='srv-control-minecraft': result=control(sys.argv[1:])
+        elif role=='srv-control-minecraft-worlds': result=world_action(sys.argv[1:])
+        elif role=='srv-control-minecraft-restore': result=restore_action(sys.argv[1:])
+        elif role=='srv-control-minecraft-players': result=players_request(json.loads(sys.stdin.read() or '{}'))
+        elif role=='srv-control-minecraft-live': result=live_request(json.loads(sys.stdin.read() or '{}'))
+        else: raise RuntimeError(f'unsupported helper role: {role}')
+        return out(result,0)
+    except Exception as exc:
+        return out({'ok':False,'error':str(exc)[-4000:]},1)
+
+if __name__=='__main__':
+    raise SystemExit(main())
