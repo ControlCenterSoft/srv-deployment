@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+STATE=/var/lib/control-center
+REQ="$STATE/license-pending.json"
+OUT="$STATE/license.json"
+PUB=/etc/control-center/license-public.pem
+[[ -f "$REQ" ]] || exit 0
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; rm -f "$REQ"' EXIT
+python3 - "$REQ" "$TMP" <<'PY'
+import json,sys,base64,pathlib
+r=json.load(open(sys.argv[1])); t=pathlib.Path(sys.argv[2])
+p=str(r.get('payload','')); s=str(r.get('signature',''))
+def dec(x): return base64.urlsafe_b64decode(x+'='*(-len(x)%4))
+(t/'payload.json').write_bytes(dec(p)); (t/'sig.bin').write_bytes(dec(s))
+PY
+openssl dgst -sha256 -verify "$PUB" -signature "$TMP/sig.bin" "$TMP/payload.json" >/dev/null || exit 1
+python3 - "$TMP/payload.json" "$OUT" <<'PY'
+import json,sys,hashlib,time,pathlib
+p=json.load(open(sys.argv[1])); mid=pathlib.Path('/etc/machine-id').read_text().strip(); device=hashlib.sha256(mid.encode()).hexdigest()[:24]
+if p.get('edition')!='Professional' or p.get('device_id')!=device: raise SystemExit(2)
+exp=p.get('expires_at')
+if exp and int(exp)<int(time.time()): raise SystemExit(3)
+out={'edition':'Professional','activated':True,'license_id':p.get('license_id',''),'device_id':device,'expires_at':exp,'activated_at':int(time.time())}
+open(sys.argv[2],'w').write(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
+PY
+chmod 0644 "$OUT"
+chown root:root "$OUT"
