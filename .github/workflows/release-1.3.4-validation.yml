@@ -49,19 +49,22 @@ jobs:
         run: |
           python3 - <<'PY'
           import pathlib,re
-          source=(pathlib.Path('releases/1.3.3/preflight.sh').read_text())
+          source=pathlib.Path('releases/1.3.4/preflight.sh').read_text()
+          assert 'current < (1, 2, 0) or current > (1, 3, 0)' in source
           pattern=r'if current < \(1,\s*2,\s*0\) or current > \(1,\s*3,\s*0\):'
           patched,count=re.subn(pattern,'if current < (1, 2, 0) or current > (1, 3, 4):',source,count=1)
           assert count == 1
           assert 'current < (1, 2, 0) or current > (1, 3, 4)' in patched
-          assert 'current < (1,2,0)' not in source
-          print('1.3.3 spacing regression reproduced and 1.3.4 matcher succeeds')
+          print('1.3.3 spacing defect reproduced; 1.3.4 matcher succeeds')
           PY
       - name: Patch invariants
         run: |
           set -euxo pipefail
           grep -q 're.subn' releases/1.3.4/preflight-1.3.4.sh
-          grep -q '../1.3.3' releases/1.3.4/apply-1.3.4.sh
+          grep -q 'apply-1.3.3.sh' releases/1.3.4/apply-1.3.4.sh
           grep -q "data\['version'\]='1.3.4'" releases/1.3.4/apply-1.3.4.sh
-          grep -q 'session.key missing after deployment' releases/1.3.3/acceptance-1.3.3.sh
-          grep -q 'minecraft-update.timer is not active' releases/1.3.3/acceptance-1.3.3.sh
+          grep -q 'acceptance-1.3.3.sh' releases/1.3.4/acceptance-1.3.4.sh
+          grep -q 'session.key missing after deployment' releases/1.3.4/acceptance-1.3.3.sh
+          grep -q 'minecraft-update.timer is not active' releases/1.3.4/acceptance-1.3.3.sh
+          test "$(git rev-parse HEAD:releases/1.3.4/payload)" = "$(git rev-parse HEAD:releases/1.3.3/payload)"
+          test "$(git rev-parse HEAD:releases/1.3.4/system)" = "$(git rev-parse HEAD:releases/1.3.3/system)"
