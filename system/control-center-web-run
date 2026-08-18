@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ENV_FILE=/etc/control-center/web.env
+[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
+
+PORT="${CONTROL_CENTER_PORT:-8080}"
+SSL="${CONTROL_CENTER_SSL:-0}"
+CERT="${CONTROL_CENTER_CERT:-/etc/control-center/tls/server.crt}"
+KEY="${CONTROL_CENTER_KEY:-/etc/control-center/tls/server.key}"
+
+[[ "$PORT" =~ ^[0-9]+$ ]] || { echo 'Invalid CONTROL_CENTER_PORT' >&2; exit 2; }
+(( PORT >= 1 && PORT <= 65535 )) || { echo 'CONTROL_CENTER_PORT out of range' >&2; exit 2; }
+
+ARGS=(
+  /opt/control-center/venv/bin/gunicorn
+  --workers 2
+  --threads 2
+  --timeout 30
+  --bind "0.0.0.0:${PORT}"
+  --access-logfile -
+  --error-logfile -
+)
+
+if [[ "$SSL" == 1 || "$SSL" == true ]]; then
+  [[ -r "$CERT" && -r "$KEY" ]] || { echo 'SSL certificate/key are not readable' >&2; exit 3; }
+  ARGS+=(--certfile "$CERT" --keyfile "$KEY")
+fi
+
+ARGS+=(wsgi:app)
+exec "${ARGS[@]}"
