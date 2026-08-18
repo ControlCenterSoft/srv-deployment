@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+STATE=/var/lib/control-center
+PENDING="$STATE/network-pending.json"
+CURRENT="$STATE/network-config.json"
+STATUS="$STATE/network-status.json"
+NETPLAN=/etc/netplan/90-control-center.yaml
+BACKUP="$STATE/90-control-center.yaml.rollback"
+[[ -s "$PENDING" ]] || exit 0
+status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
+import json,sys,time
+p,state,msg=sys.argv[1:]
+open(p,'w').write(json.dumps({'state':state,'message':msg,'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
+PY
+chown control-center:control-center "$STATUS" 2>/dev/null || true
+}
+status applying 'Применение сетевой конфигурации…'
+[[ -f "$NETPLAN" ]] && cp -a "$NETPLAN" "$BACKUP" || rm -f "$BACKUP"
+python3 - "$PENDING" "$NETPLAN" <<'PY'
+import json,sys,ipaddress
+src,out=sys.argv[1:]
+cfg=json.load(open(src))
+lines=['network:','  version: 2','  renderer: networkd','  ethernets:']
+for role in ('wan','lan'):
+    c=cfg[role]; name=c['interface']; lines += [f'    {name}:','      dhcp6: false','      optional: true']
+    if c['method']=='dhcp':
+        lines += ['      dhcp4: true']
+        if role=='lan': lines += ['      dhcp4-overrides:','        use-routes: false']
+    else:
+        ip=ipaddress.IPv4Address(c['ip']); prefix=int(c['mask']); lines += ['      dhcp4: false',f'      addresses: [{ip}/{prefix}]']
+        if c.get('gateway'):
+            lines += ['      routes:','        - to: default',f"          via: {c['gateway']}"]
+            if role=='lan': lines += ['          metric: 500']
+        dns=c.get('dns') or []
+        if dns: lines += ['      nameservers:', '        addresses: ['+', '.join(dns)+']']
+open(out,'w').write('\n'.join(lines)+'\n')
+PY
+chmod 600 "$NETPLAN"
+if netplan generate && netplan apply; then
+  cp "$PENDING" "$CURRENT"; rm -f "$PENDING"; chown control-center:control-center "$CURRENT"; status applied 'Сетевая конфигурация применена'; exit 0
+fi
+if [[ -f "$BACKUP" ]]; then cp -a "$BACKUP" "$NETPLAN"; else rm -f "$NETPLAN"; fi
+netplan generate || true
+netplan apply || true
+status rollback 'Ошибка применения. Предыдущая конфигурация восстановлена.'
+exit 1
