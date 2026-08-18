@@ -122,11 +122,11 @@ jobs:
           grep -Fq 'legacy minecraft-update.timer remains enabled' "$acceptance"
           grep -Fq 'conflicting multi-instance Minecraft timer remains enabled' "$acceptance"
 
-      - name: Validate 2.1.1 manifest shape
+      - name: Validate locked 2.1.1 manifest
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json,pathlib,re
+          import hashlib,json,pathlib,re
           root=pathlib.Path('releases/2.1.1')
           manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
           assert manifest.get('release_id') == manifest.get('release_version') == '2.1.1',manifest
@@ -135,5 +135,7 @@ jobs:
               item=manifest['scripts'][stage]
               assert item['path'] == f'{stage}-2.1.1.sh',item
               assert re.fullmatch(r'[0-9a-f]{64}',item['sha256']),item
-          print('2.1.1 MANIFEST SHAPE PASS')
+              digest=hashlib.sha256((root/item['path']).read_bytes()).hexdigest()
+              assert digest == item['sha256'],(stage,digest,item['sha256'])
+          print('LOCKED 2.1.1 MANIFEST PASS')
           PY
