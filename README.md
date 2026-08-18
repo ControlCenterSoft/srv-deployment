@@ -1,51 +1,102 @@
 # Control Center 1.0.5
 
-## Что нового
+Control Center — web-панель управления Linux-сервером. Текущая production-линия: **1.0.5**.
 
-- две редакции: **Home** и **Professional**;
-- Home используется по умолчанию и остается бесплатной редакцией;
-- Professional активируется подписанным ключом, привязанным к ID устройства;
-- Web UI показывает текущую редакцию, версию, ID устройства и состояние лицензии;
-- приватный ключ активации не хранится в репозитории: в продукт включен только публичный ключ проверки;
-- в Настройки добавлены обновления ОС и пакетов: автоматический режим с интервалом в минутах и ручной запуск;
-- обновления ОС выполняются отдельным root systemd worker, Web UI root-доступ не получает.
+## Редакции
 
-## Professional activation
+- **Home** — редакция по умолчанию, без активации.
+- **Professional** — активируемая редакция с криптографически подписанной лицензией, привязанной к ID сервера.
 
-Запрос активации содержит `payload` и `signature`. Root helper проверяет RSA/SHA-256 подпись публичным ключом `/etc/control-center/license-public.pem`, сверяет `device_id` с текущим сервером и только после этого сохраняет Professional-лицензию в `/var/lib/control-center/license.json`.
+Текущая редакция, версия, ID устройства и состояние лицензии отображаются в **Настройки**.
 
-По умолчанию редакция — Home. Поддерживается срок действия Professional-лицензии через `expires_at`.
+## Возможности 1.0.5
 
-## Обновления
+- dashboard: CPU, RAM, Top-3 процессов, заполнение хранилищ, WAN RX/TX;
+- WAN/LAN: назначение интерфейсов, DHCP/Static, проверка IP/маски/шлюза/DNS, Netplan apply/rollback;
+- Маркет: установка/удаление DHCP Server (`dnsmasq`);
+- динамический пункт меню DHCP после установки модуля;
+- DHCP: диапазон, маска, шлюз, DNS, срок аренды, проверка и rollback;
+- RBAC: просмотр локальных Linux-пользователей и групп;
+- обновление Control Center: production-канал, интервал 5–10080 минут, rollback приложения;
+- обновление ОС/пакетов: ручное или автоматическое, интервал 60–10080 минут;
+- Home/Professional и механизм активации Professional.
 
-### Control Center
+## Архитектура привилегий
 
-Автоматическое обновление Control Center сохраняет существующую логику production-канала и интервал в минутах.
+Web UI работает от отдельной системной УЗ `control-center` без root-доступа. Привилегированные операции выполняются отдельными systemd helpers.
 
-### ОС и пакеты
+Подтверждённая Professional-лицензия хранится в защищённом каталоге:
 
-Настройки: `/var/lib/control-center/os-update-settings.json`.
+```text
+/var/lib/control-center-license/license.json
+```
 
-- автоматическое обновление можно включить/выключить;
-- интервал: 60–10080 минут;
-- кнопка **Обновить сейчас** запускает ручное обновление;
-- worker выполняет `apt-get update` и `apt-get -y upgrade`;
-- результат и требование перезагрузки записываются в `/var/lib/control-center/os-update-status.json`.
+Каталог принадлежит `root:root`; Web-процесс имеет только чтение. Приватный ключ издателя **не хранится в GitHub и не устанавливается на клиентский сервер**.
 
-## Службы 1.0.5
+## Обновления пакетов
 
-- `control-center.service`
-- `control-center-update.timer`
-- `control-center-os-update.timer`
-- `control-center-license-apply.path`
-- `control-center-network-apply.path`
-- `control-center-market-apply.path`
-- `control-center-dhcp-apply.path`
+Системный worker выполняет:
+
+```bash
+apt-get update
+apt-get -y upgrade --with-new-pkgs
+```
+
+Он не выполняет upgrade Ubuntu на следующий релиз и не перезагружает сервер автоматически. При необходимости перезагрузки это отражается в статусе.
+
+Пакетные операции Control Center используют общий lock `/run/control-center-apt.lock`, чтобы APT не запускался параллельно из установщика, Маркета и системного updater.
 
 ## Установка
 
 ```bash
+git clone --depth 1 --branch release/1.0.5 https://github.com/filosoff31/srv-deployment.git
+cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Web UI: `http://SERVER_IP:8080`
+После установки:
+
+```text
+http://SERVER_IP:8080
+```
+
+Проверка:
+
+```bash
+cat /opt/control-center/VERSION
+curl -fsS http://127.0.0.1:8080/api/health && echo
+systemctl status control-center --no-pager
+```
+
+## Документация
+
+- `docs/INSTALL.md` — установка, обновление существующей установки и удаление;
+- `docs/UPDATE.md` — обновление самого Control Center;
+- `docs/OS_UPDATES.md` — обновление ОС и системных пакетов;
+- `docs/LICENSING.md` — Home/Professional и выпуск/активация лицензий;
+- `docs/NETWORK.md` — WAN/LAN и Netplan;
+- `docs/DHCP.md` — установка и настройка DHCP Server;
+- `docs/SECURITY.md` — модель привилегий, защита лицензии и известные ограничения;
+- `docs/TROUBLESHOOTING.md` — диагностика компонентов.
+
+## Важное ограничение безопасности
+
+В 1.0.5 ещё нет полноценной встроенной аутентификации Web UI. Порт `8080` необходимо ограничивать доверенной административной LAN/VPN/firewall и **не публиковать напрямую в Интернет**. Подробности: `docs/SECURITY.md`.
+
+## Удаление
+
+Полностью:
+
+```bash
+sudo bash install/uninstall.sh
+```
+
+С сохранением состояния и лицензии:
+
+```bash
+sudo bash install/uninstall.sh --keep-data
+```
+
+## Исправления текущего аудита
+
+В рамках проверки 1.0.5 исправлены: защищённое root-only хранение Professional-лицензии, валидная пара ключей издателя, ошибка проверки `APP_VERSION` в updater, rollback DHCP-конфигурации, восстановление сохранённых WAN/LAN значений в Web UI, одновременное отображение RX/TX на WAN-графике, общий APT lock и полное удаление всех новых services/helpers.
