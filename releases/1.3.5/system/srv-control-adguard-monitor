@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+
+STATUS_FILE = Path("/var/lib/srv-control/adguard-vpn-status.json")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def binary_path() -> str | None:
+    binary = shutil.which("adguardvpn-cli")
+    if binary:
+        return binary
+    path = Path("/opt/adguardvpn_cli/adguardvpn-cli")
+    return str(path) if path.exists() else None
+
+
+def run(command: list[str], timeout: int = 8) -> tuple[int, str]:
+    completed = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": "/root",
+        },
+    )
+    return completed.returncode, (completed.stdout or "").strip()
+
+
+def parse_config(text: str) -> dict:
+    result = {
+        "mode": None,
+        "socks_host": None,
+        "socks_port": None,
+        "update_channel": None,
+    }
+    for raw in text.splitlines():
+        if ":" not in raw:
+            continue
+        key, value = raw.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "mode":
+            result["mode"] = value.lower()
+        elif key == "socks host":
+            result["socks_host"] = value
+        elif key == "socks port":
+            try:
+                result["socks_port"] = int(value)
+            except ValueError:
+                pass
+        elif key == "update channel":
+            result["update_channel"] = value
+    return result
+
+
+def classify_status(code: int, text: str) -> str:
+    lower = text.lower()
+    if "disconnected" in lower or "vpn is disconnected" in lower:
+        return "disconnected"
+    if "connected" in lower or "vpn active" in lower:
+        return "connected"
+    if "log in" in lower or "login" in lower or "not logged" in lower:
+        return "login-required"
+    if code != 0:
+        return "error"
+    return "unknown"
+
+
+def write(payload: dict) -> None:
+    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, STATUS_FILE)
+
+
+def main() -> int:
+    binary = binary_path()
+    if not binary:
+        write(
+            {
+                "schema_version": 1,
+                "installed": False,
+                "state": "not-installed",
+                "checked_at": now(),
+            }
+        )
+        return 0
+
+    version_code, version_text = run([binary, "--version"])
+    status_code, status_text = run([binary, "status"])
+    config_code, config_text = run([binary, "config", "show"])
+    config = parse_config(config_text if config_code == 0 else "")
+
+    detail = status_text[-1200:] or None
+    payload = {
+        "schema_version": 1,
+        "installed": True,
+        "binary": binary,
+        "version": version_text[-300:] if version_code == 0 else None,
+        "state": classify_status(status_code, status_text),
+        "detail": detail,
+        "checked_at": now(),
+        **config,
+    }
+    write(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

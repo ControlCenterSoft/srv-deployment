@@ -1,0 +1,110 @@
+name: Control Center 1.3.5 validation
+
+on:
+  pull_request:
+    paths:
+      - 'deployment.json'
+      - 'releases/1.3.5/**'
+      - 'tools/validate-upgrade-contract.py'
+      - '.github/workflows/release-1.3.5-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-1-3-5:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Shell syntax
+        run: |
+          set -euxo pipefail
+          bash -n releases/1.3.5/preflight-1.3.5.sh
+          bash -n releases/1.3.5/apply-1.3.5.sh
+          bash -n releases/1.3.5/acceptance-1.3.5.sh
+          bash -n releases/1.3.5/rollback-1.3.5.sh
+
+      - name: Manifest and stage hashes
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('releases/1.3.5')
+          manifest=json.loads((root/'manifest.json').read_text())
+          assert manifest['release_id']=='1.3.5'
+          assert manifest['release_version']=='1.3.5'
+          for stage,entry in manifest['scripts'].items():
+              actual=hashlib.sha256((root/entry['path']).read_bytes()).hexdigest()
+              print(stage,actual)
+              assert actual == entry['sha256'], (stage,actual,entry['sha256'])
+          deployment=json.loads(pathlib.Path('deployment.json').read_text())
+          assert deployment['release_id']=='1.3.5'
+          assert deployment['release_path']=='releases/1.3.5'
+          PY
+
+      - name: Upgrade compatibility contract
+        run: |
+          set -euxo pipefail
+          python3 tools/validate-upgrade-contract.py \
+            releases/1.3.5/manifest.json \
+            --require-patch-line \
+            --require-version 1.2.0 \
+            --require-version 1.3.0 \
+            --require-version 1.3.1 \
+            --require-version 1.3.2 \
+            --require-version 1.3.3 \
+            --require-version 1.3.4
+
+      - name: Current production upgrade path
+        run: |
+          set -euxo pipefail
+          git fetch origin server-state:refs/remotes/origin/server-state
+          git show origin/server-state:diagnostics/latest/release.json > /tmp/current-release.json
+          cat /tmp/current-release.json
+          python3 tools/validate-upgrade-contract.py \
+            releases/1.3.5/manifest.json \
+            --server-state-release /tmp/current-release.json
+
+      - name: Repair preflight contract
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('releases/1.3.5/preflight-1.3.5.sh').read_text()
+          assert 'current > (1, 3, 5)' in p
+          assert 'systemctl cat minecraft-update.service' not in p
+          assert '[[ -x /usr/local/sbin/srv-control-minecraft ]]' not in p
+          assert 'repair payload missing' in p
+          for v in [(1,2,0),(1,3,0),(1,3,1),(1,3,2),(1,3,3),(1,3,4),(1,3,5)]:
+              assert not (v < (1,2,0) or v > (1,3,5)), v
+          for v in [(1,1,9),(1,3,6),(2,0,0)]:
+              assert v < (1,2,0) or v > (1,3,5), v
+          print('repair preflight accepts broken installed updater and all supported source versions')
+          PY
+
+      - name: Apply and acceptance recovery contract
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          apply=Path('releases/1.3.5/apply-1.3.5.sh').read_text()
+          acceptance=Path('releases/1.3.5/acceptance-1.3.5.sh').read_text()
+          assert 'systemctl enable --now minecraft-update.timer' in apply
+          assert 'systemctl enable --now srvcc-github-agent.timer' in apply
+          assert "data['version']='1.3.5'" in apply
+          assert 'systemctl is-enabled --quiet minecraft-update.timer' in acceptance
+          assert 'systemctl is-active --quiet minecraft-update.timer' in acceptance
+          assert 'systemctl is-enabled --quiet srvcc-github-agent.timer' in acceptance
+          assert 'systemctl is-active --quiet srvcc-github-agent.timer' in acceptance
+          assert "data.get('version') == '1.3.5'" in acceptance
+          print('apply/acceptance recovery contract PASS')
+          PY
+
+      - name: Frozen 1.3.4 unchanged
+        run: |
+          set -euxo pipefail
+          git diff --exit-code origin/main -- releases/1.3.4
