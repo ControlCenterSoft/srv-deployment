@@ -1,108 +1,89 @@
-# Control Center 1.0.5
+# Control Center 1.0.6
 
-Control Center — web-панель управления Linux-сервером. Текущая production-линия: **1.0.5**.
+Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.6**.
 
 ## Редакции
 
 - **Home** — редакция по умолчанию, без активации.
-- **Professional** — активируемая редакция с криптографически подписанной лицензией, привязанной к ID сервера.
+- **Professional** — активируемая RSA/SHA-256 подписанной лицензией, привязанной к ID сервера.
 
-Текущая редакция, версия, ID устройства и состояние лицензии отображаются в **Настройки**.
+## Возможности 1.0.6
 
-## Возможности 1.0.5
-
-- dashboard: CPU, RAM, Top-3 процессов, заполнение хранилищ, WAN RX/TX;
-- WAN/LAN: назначение интерфейсов, DHCP/Static, проверка IP/маски/шлюза/DNS, Netplan apply/rollback;
-- Маркет: установка/удаление DHCP Server (`dnsmasq`);
-- динамический пункт меню DHCP после установки модуля;
-- DHCP: диапазон, маска, шлюз, DNS, срок аренды, проверка и rollback;
+- Система: CPU/RAM-графики, Top-3 процессов, хранилища, WAN RX/TX;
+- Сети: WAN/LAN и **полный перечень интерфейсов** с ролью, типом, состоянием, IPv4, шлюзом, DNS, MAC, MTU и скоростью;
+- загрузка уже применённых WAN/LAN параметров из protected state и фактического Control Center Netplan;
+- Маркет: установка/удаление DHCP Server;
+- DHCP: загрузка существующей конфигурации из protected state и `control-center-dhcp.conf`;
+- DHCP additional options: код 1–254 + значение, просмотр, добавление и удаление;
+- статус `control-center-dhcp-server.service` и проверка `dnsmasq --test` из Web UI;
 - RBAC: просмотр локальных Linux-пользователей и групп;
-- обновление Control Center: production-канал, интервал 5–10080 минут, rollback приложения;
-- обновление ОС/пакетов: ручное или автоматическое, интервал 60–10080 минут;
-- Home/Professional и механизм активации Professional.
+- общий **центр уведомлений**: сеть, Маркет, DHCP, лицензия, обновления Control Center и ОС;
+- колокольчик: непрочитанная ошибка — красный, непрочитанные события без ошибок — зелёный, всё прочитано — нейтральный;
+- увеличенная типографика и семантические SVG-ярлычки меню;
+- полностью переработанная мобильная верстка с off-canvas sidebar;
+- обновление Control Center и отдельное обновление ОС/пакетов;
+- production Gunicorn WSGI, CSP без `unsafe-inline`.
 
-## Архитектура привилегий
+## Источники параметров
 
-Web UI работает от отдельной системной УЗ `control-center` без root-доступа. Привилегированные операции выполняются отдельными systemd helpers.
-
-State разделён по уровню доверия:
+Control Center 1.0.6 различает запросы Web UI и фактически применённое состояние:
 
 ```text
-/var/lib/control-center          # Web-writable requests/settings/status
-/var/lib/control-center-root     # root-only rollback state, mode 0700
-/var/lib/control-center-license  # root-owned подтверждённая лицензия
+/var/lib/control-center          # настройки и pending requests
+/var/lib/control-center-system   # applied config/status/module ownership
+/var/lib/control-center-root     # root-only rollback
+/var/lib/control-center-license  # подтверждённая Professional license
 ```
 
-Network и DHCP root helpers **повторно валидируют pending JSON** перед привилегированным применением и не полагаются только на Web/API-валидацию. Web service не имеет доступа к root rollback state и имеет только чтение подтверждённой лицензии.
+Дополнительно Web UI только читает:
 
-Приватный ключ издателя **не хранится в GitHub и не устанавливается на клиентский сервер**.
-
-## Обновления пакетов
-
-Системный worker выполняет:
-
-```bash
-apt-get update
-apt-get -y upgrade --with-new-pkgs
+```text
+/etc/netplan/90-control-center.yaml
+/etc/dnsmasq.d/control-center-dhcp.conf
+/sys/class/net
+ip / resolvectl / systemctl
 ```
 
-Он не выполняет upgrade Ubuntu на следующий релиз и не перезагружает сервер автоматически. При необходимости перезагрузки это отражается в статусе.
+Это позволяет после перезапуска или обновления показывать не пустые формы, а уже применённые параметры и live-состояние.
 
-Пакетные операции Control Center используют общий lock `/run/control-center-apt.lock`, чтобы APT не запускался параллельно из установщика, Маркета и системного updater.
+## DHCP additional options
+
+Основные поля управляют стандартными параметрами сети. Дополнительные numeric DHCP options можно добавлять отдельно. Options `1`, `3`, `6`, `51` зарезервированы за основными полями Control Center и не допускаются в дополнительном списке.
 
 ## Установка
 
 ```bash
-git clone --depth 1 --branch release/1.0.5 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.6 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
 
-После установки:
+Web UI:
 
 ```text
 http://SERVER_IP:8080
 ```
 
-Проверка:
+## Acceptance
 
 ```bash
-cat /opt/control-center/VERSION
-curl -fsS http://127.0.0.1:8080/api/health && echo
-systemctl status control-center --no-pager
+sudo bash scripts/acceptance-1.0.6.sh
 ```
+
+Проверяются API/version/build, Gunicorn/CSP, network inventory, protected state, Netplan, notification API и DHCP status/config check при установленном модуле.
 
 ## Документация
 
-- `docs/README.md` — индекс документации;
-- `docs/INSTALL.md` — установка, обновление существующей установки и удаление;
-- `docs/UPDATE.md` — обновление самого Control Center;
-- `docs/OS_UPDATES.md` — обновление ОС и системных пакетов;
-- `docs/LICENSING.md` — Home/Professional и выпуск/активация лицензий;
-- `docs/NETWORK.md` — WAN/LAN и Netplan;
-- `docs/DHCP.md` — установка и настройка DHCP Server;
-- `docs/SECURITY.md` — модель привилегий, zero-trust helpers и известные ограничения;
-- `docs/TROUBLESHOOTING.md` — диагностика компонентов;
-- `docs/AUDIT-1.0.5.md` — результаты аудита и acceptance checklist.
+- `docs/README.md` — индекс;
+- `docs/INSTALL.md` — установка/обновление/удаление;
+- `docs/NETWORK.md` — WAN/LAN и перечень интерфейсов;
+- `docs/DHCP.md` — DHCP, additional options, status и config check;
+- `docs/NOTIFICATIONS.md` — центр уведомлений;
+- `docs/UI.md` — типографика, меню и мобильная верстка;
+- `docs/SECURITY.md` — модель доверия и ограничения;
+- `docs/TROUBLESHOOTING.md` — диагностика;
+- `releases/1.0.6/README.md` — release notes.
 
-## Важное ограничение безопасности
+## Ограничение безопасности
 
-В 1.0.5 ещё нет полноценной встроенной аутентификации Web UI. Порт `8080` необходимо ограничивать доверенной административной LAN/VPN/firewall и **не публиковать напрямую в Интернет**. Подробности: `docs/SECURITY.md`.
-
-## Удаление
-
-Полностью:
-
-```bash
-sudo bash install/uninstall.sh
-```
-
-С сохранением Web-state, root rollback-state и лицензии:
-
-```bash
-sudo bash install/uninstall.sh --keep-data
-```
-
-## Исправления текущего аудита
-
-В рамках проверки 1.0.5 исправлены: защищённое root-only хранение Professional-лицензии и rollback state, повторная root-валидация network/DHCP requests, валидная пара ключей издателя, ошибка проверки `APP_VERSION` в updater, rollback DHCP-конфигурации, восстановление сохранённых WAN/LAN значений в Web UI, одновременное отображение RX/TX на WAN-графике, общий APT lock, полное удаление всех новых services/helpers, устаревшая документация и кэширование публичного bootstrap.
+В 1.0.6 ещё нет полноценной встроенной аутентификации Web UI. TCP/8080 необходимо ограничивать доверенной административной LAN/VPN/firewall и не публиковать напрямую в Интернет.

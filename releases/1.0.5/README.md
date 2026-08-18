@@ -10,27 +10,29 @@
 4. Отдельные настройки обновления ОС и пакетов: manual/automatic + интервал.
 5. Сохранены функции 1.0.4: новый интерфейс, DHCP в Маркете, динамическое меню DHCP.
 
-## Исправления после полного аудита
+## Исправления полного аудита
 
-- подтверждённая лицензия перенесена из Web-writable состояния в `/var/lib/control-center-license` (`root:root`);
-- root rollback state перенесён в `/var/lib/control-center-root` (`root:root`, `0700`) и закрыт от Web service;
-- network/DHCP root helpers повторно валидируют pending requests, не доверяя Web-writable JSON;
-- публичный ключ заменён на ключ от реальной RSA-пары издателя, приватный ключ не хранится в GitHub;
-- updater больше не зависит от точного количества пробелов в строке `APP_VERSION`;
-- `APP_VERSION` в 1.0.5 совместим со старым updater 1.0.4;
-- DHCP helper получил атомарное применение и rollback предыдущей конфигурации;
-- DHCP gateway запрещён внутри выдаваемого диапазона;
-- WAN-график одновременно рисует RX и TX;
-- раздел Сети снова заполняет форму сохранёнными WAN/LAN параметрами;
+- state разделён на Web-writable, protected system, root-only rollback и protected license;
+- подтверждённая лицензия: `/var/lib/control-center-license`, `root:control-center`, каталог `0750`, файл `0640`;
+- DHCP ownership и applied/status state вынесены в `/var/lib/control-center-system`;
+- network/DHCP root helpers повторно валидируют pending requests;
+- рабочая RSA signing pair сформирована; в GitHub хранится только public key;
+- updater исправлен для разных форматов строки `APP_VERSION`, rollback защищён root-only;
+- DHCP получил dotted IPv4 netmask, atomic apply/rollback и отдельный `control-center-dhcp-server.service`;
+- внешний существующий `dnsmasq` не захватывается и не удаляется Control Center;
+- WAN chart одновременно отображает RX/TX, форма WAN/LAN восстанавливает saved state;
+- Web UI переведён с Flask development server на Gunicorn `wsgi:app`;
+- добавлены CSP/nosniff/frame protection, same-origin browser writes и request-size limit;
+- динамический HTML экранируется, JSON writes атомарны для нескольких workers;
 - APT-операции сериализованы общим `/run/control-center-apt.lock`;
-- `uninstall.sh` удаляет все services/path/timers/helpers 1.0.5;
-- системное обновление использует `upgrade --with-new-pkgs`;
-- документация и сайт синхронизированы с 1.0.5;
-- public `/install.sh` получил `Cache-Control: no-store` для защиты от устаревшего bootstrap;
-- добавлены GitHub Actions проверки release и сайта.
+- OS updater использует `upgrade --with-new-pkgs` и сообщает `reboot_required`;
+- `uninstall.sh` покрывает все компоненты и корректно сохраняет service identity при `--keep-data`;
+- публичный сайт и документация синхронизированы с 1.0.5;
+- public `/install.sh` получил `Cache-Control: no-store`;
+- добавлены GitHub Actions validation workflows и `scripts/acceptance-1.0.5.sh`.
 
 Полный отчёт: `docs/AUDIT-1.0.5.md`.
 
 ## Известное ограничение
 
-В 1.0.5 отсутствует полноценная встроенная аутентификация Web UI. TCP/8080 должен быть доступен только из доверенной административной сети/VPN.
+В 1.0.5 отсутствует полноценная встроенная аутентификация Web UI. TCP/8080 должен быть доступен только из доверенной административной сети/VPN/firewall. Same-origin и CSP не заменяют authentication/authorization.

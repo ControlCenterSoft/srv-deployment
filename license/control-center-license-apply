@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 STATE=/var/lib/control-center
+SYSTEM_STATE=/var/lib/control-center-system
 LICENSE_DIR=/var/lib/control-center-license
 REQ="$STATE/license-pending.json"
-STATUS="$STATE/license-status.json"
+STATUS="$SYSTEM_STATE/license-status.json"
+STATUS_LINK="$STATE/license-status.json"
 OUT="$LICENSE_DIR/license.json"
 PUB=/etc/control-center/license-public.pem
 [[ -f "$REQ" ]] || exit 0
-mkdir -p "$LICENSE_DIR"
-chown root:root "$LICENSE_DIR"
-chmod 0755 "$LICENSE_DIR"
+install -d -o root -g control-center -m 0750 "$SYSTEM_STATE" "$LICENSE_DIR"
 TMP=$(mktemp -d)
 cleanup(){ rm -rf "$TMP"; rm -f "$REQ"; }
 trap cleanup EXIT
@@ -18,7 +18,8 @@ write_status(){
 import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='ok','state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
-  chown control-center:control-center "$STATUS" 2>/dev/null || true
+  chown root:control-center "$STATUS"; chmod 0640 "$STATUS"
+  rm -f "$STATUS_LINK"; ln -s "$STATUS" "$STATUS_LINK"; chown -h control-center:control-center "$STATUS_LINK" 2>/dev/null || true
 }
 if ! python3 - "$REQ" "$TMP" <<'PY'
 import json,sys,base64,pathlib
@@ -47,6 +48,6 @@ out={'edition':'Professional','activated':True,'license_id':lid,'device_id':devi
 pathlib.Path(sys.argv[2]).write_text(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
 PY
 then write_status error 'Лицензия не подходит для этого сервера или истекла'; exit 1; fi
-chown root:root "$OUT"
-chmod 0644 "$OUT"
+chown root:control-center "$OUT"
+chmod 0640 "$OUT"
 write_status ok 'Professional активирована'

@@ -1,24 +1,34 @@
 # Обновление ОС и пакетов
 
-Control Center 1.0.5 имеет отдельный механизм обновления системных пакетов Ubuntu/Debian. Он не связан с обновлением самого Control Center.
+Control Center 1.0.6 имеет отдельный механизм обновления системных пакетов Ubuntu/Debian. Он не связан с обновлением самого Control Center.
 
 ## Web UI
 
 Раздел **Настройки → Обновления ОС и пакетов** позволяет:
 
 - включить/выключить автоматические обновления;
-- задать интервал от 60 до 10080 минут;
-- выполнить ручной запуск кнопкой **Обновить сейчас**.
+- задать интервал 60–10080 минут;
+- выполнить ручной запуск кнопкой **Обновить сейчас**;
+- увидеть последний protected status, который также попадает в общий центр уведомлений.
 
-По умолчанию автоматическое обновление ОС выключено, интервал — 1440 минут.
+По умолчанию автоматический режим выключен, интервал — 1440 минут.
 
-## Файлы
+## State
+
+Web-writable настройки и ручной trigger:
 
 ```text
 /var/lib/control-center/os-update-settings.json
-/var/lib/control-center/os-update-status.json
 /var/lib/control-center/os-update-now
 ```
+
+Защищённый результат root worker:
+
+```text
+/var/lib/control-center-system/os-update-status.json
+```
+
+Этот результат используется одновременно разделом Настройки и колокольчиком уведомлений.
 
 ## Systemd
 
@@ -28,45 +38,32 @@ control-center-os-update.service
 /usr/local/sbin/control-center-os-update
 ```
 
-Timer просыпается раз в минуту. Реальное обновление выполняется только по истечении заданного интервала либо после ручного запроса.
+Timer просыпается раз в минуту. Реальное обновление выполняется только после заданного интервала либо manual trigger.
 
 ## Пакетная операция
-
-Worker выполняет:
 
 ```bash
 apt-get update
 apt-get -y upgrade --with-new-pkgs
 ```
 
-Это обновляет установленные пакеты и позволяет установить новые зависимости, необходимые обновлениям. Механизм **не выполняет переход Ubuntu на новый релиз** (например, 26.04 → следующий выпуск) и не запускает автоматическую перезагрузку.
-
-Если после обновления существует `/var/run/reboot-required`, Web UI показывает, что серверу требуется перезагрузка.
+Механизм не выполняет переход Ubuntu на следующий релиз и не перезагружает сервер автоматически. Наличие `/var/run/reboot-required` отображается в Web UI.
 
 ## Защита от конфликтов APT
-
-Все пакетные операции Control Center используют общий lock:
 
 ```text
 /run/control-center-apt.lock
 ```
 
-Это предотвращает одновременный запуск APT при обновлении ОС, установке Control Center и установке/удалении пакетов из Маркета.
+Этот lock сериализует installer, OS/package updater и пакетные операции Маркета.
 
-## Ручная диагностика
+## Диагностика
 
 ```bash
 systemctl status control-center-os-update.timer --no-pager
 systemctl status control-center-os-update.service --no-pager
 journalctl -u control-center-os-update.service -n 200 --no-pager
 cat /var/lib/control-center/os-update-settings.json
-cat /var/lib/control-center/os-update-status.json
+sudo cat /var/lib/control-center-system/os-update-status.json
+curl -fsS http://127.0.0.1:8080/api/notifications | python3 -m json.tool
 ```
-
-Ручной запуск worker:
-
-```bash
-sudo systemctl start control-center-os-update.service
-```
-
-Если автоматический режим выключен и маркер ручного запуска отсутствует, прямой запуск service корректно завершится без обновления.

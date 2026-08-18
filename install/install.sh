@@ -4,10 +4,11 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR=/opt/control-center
 STATE_DIR=/var/lib/control-center
+SYSTEM_STATE_DIR=/var/lib/control-center-system
 ROOT_STATE_DIR=/var/lib/control-center-root
 LICENSE_DIR=/var/lib/control-center-license
 SERVICE_USER=control-center
-VERSION=1.0.5
+VERSION=1.0.6
 APT_LOCK=/run/control-center-apt.lock
 exec 8>"$APT_LOCK"
 flock -w 900 8 || { echo 'Менеджер пакетов занят. Повторите установку позже.'; exit 1; }
@@ -15,14 +16,50 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y python3 python3-venv iproute2 ca-certificates curl git util-linux netplan.io procps openssl
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"; fi
-install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$APP_DIR" "$STATE_DIR" "$STATE_DIR/modules"
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$APP_DIR" "$STATE_DIR"
+install -d -o root -g "$SERVICE_USER" -m 0750 "$SYSTEM_STATE_DIR" "$SYSTEM_STATE_DIR/modules" "$LICENSE_DIR"
 install -d -o root -g root -m 0700 "$ROOT_STATE_DIR"
-install -d -o root -g root -m 0755 "$LICENSE_DIR" /etc/control-center
-# 1.0.5 pre-audit stored license state in a web-writable directory. Never trust or migrate it.
+install -d -o root -g root -m 0755 /etc/control-center
+
+for name in network-config.json dhcp-config.json; do
+  old="$STATE_DIR/$name"; new="$SYSTEM_STATE_DIR/$name"
+  if [[ ! -e "$new" && -f "$old" && ! -L "$old" ]]; then
+    cp -- "$old" "$new"
+    chown root:"$SERVICE_USER" "$new"; chmod 0640 "$new"
+  fi
+done
+
+if [[ ! -f "$SYSTEM_STATE_DIR/modules/dhcp.json" && -f "$STATE_DIR/modules/dhcp.json" && ! -L "$STATE_DIR/modules/dhcp.json" ]] \
+   && dpkg-query -W -f='${Status}' dnsmasq 2>/dev/null | grep -q 'install ok installed' \
+   && [[ -f /etc/dnsmasq.d/control-center-dhcp.conf ]] \
+   && dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf >/dev/null 2>&1; then
+  configured=false; grep -q '^dhcp-range=' /etc/dnsmasq.d/control-center-dhcp.conf && configured=true
+  printf '{"installed":true,"package":"dnsmasq","package_owned":false,"configured":%s}\n' "$configured" >"$SYSTEM_STATE_DIR/modules/dhcp.json"
+  chown root:"$SERVICE_USER" "$SYSTEM_STATE_DIR/modules/dhcp.json"; chmod 0640 "$SYSTEM_STATE_DIR/modules/dhcp.json"
+fi
+
 rm -f "$STATE_DIR/license.json"
-[[ -f "$STATE_DIR/update-settings.json" ]] || printf '%s\n' '{"automatic_updates":true,"interval_minutes":60,"channel":"production"}' >"$STATE_DIR/update-settings.json"
-[[ -f "$STATE_DIR/os-update-settings.json" ]] || printf '%s\n' '{"automatic_updates":false,"interval_minutes":1440}' >"$STATE_DIR/os-update-settings.json"
-chown "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR/update-settings.json" "$STATE_DIR/os-update-settings.json"
+rm -rf "$STATE_DIR"/rollback-* "$STATE_DIR/90-control-center.yaml.rollback" "$STATE_DIR/control-center-dhcp.conf.rollback"
+rm -f "$STATE_DIR/network-pending.json" "$STATE_DIR/market-pending.json" "$STATE_DIR/dhcp-pending.json" "$STATE_DIR/license-pending.json" "$STATE_DIR/os-update-now"
+
+[[ -f "$STATE_DIR/update-settings.json" && ! -L "$STATE_DIR/update-settings.json" ]] || { rm -f "$STATE_DIR/update-settings.json"; printf '%s\n' '{"automatic_updates":true,"interval_minutes":60,"channel":"production"}' >"$STATE_DIR/update-settings.json"; }
+[[ -f "$STATE_DIR/os-update-settings.json" && ! -L "$STATE_DIR/os-update-settings.json" ]] || { rm -f "$STATE_DIR/os-update-settings.json"; printf '%s\n' '{"automatic_updates":false,"interval_minutes":1440}' >"$STATE_DIR/os-update-settings.json"; }
+chown "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR" "$STATE_DIR/update-settings.json" "$STATE_DIR/os-update-settings.json"
+chmod 0640 "$STATE_DIR/update-settings.json" "$STATE_DIR/os-update-settings.json"
+
+rm -rf "$STATE_DIR/modules"; ln -s "$SYSTEM_STATE_DIR/modules" "$STATE_DIR/modules"
+for name in update-status.json os-update-status.json license-status.json network-config.json network-status.json market-status.json dhcp-config.json dhcp-status.json; do
+  rm -f "$STATE_DIR/$name"
+  ln -s "$SYSTEM_STATE_DIR/$name" "$STATE_DIR/$name"
+done
+chown -h "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR/modules" "$STATE_DIR"/*.json 2>/dev/null || true
+chown -R root:"$SERVICE_USER" "$SYSTEM_STATE_DIR" "$LICENSE_DIR"
+find "$SYSTEM_STATE_DIR" -type d -exec chmod 0750 {} +
+find "$SYSTEM_STATE_DIR" -type f -exec chmod 0640 {} +
+chmod 0750 "$LICENSE_DIR"
+if [[ -f "$LICENSE_DIR/license.json" ]]; then chown root:"$SERVICE_USER" "$LICENSE_DIR/license.json"; chmod 0640 "$LICENSE_DIR/license.json"; fi
+if [[ -f /etc/netplan/90-control-center.yaml ]]; then chown root:"$SERVICE_USER" /etc/netplan/90-control-center.yaml; chmod 0640 /etc/netplan/90-control-center.yaml; fi
+
 systemctl stop control-center 2>/dev/null || true
 rm -rf "$APP_DIR/app" "$APP_DIR/venv"
 cp -a "$ROOT_DIR/app" "$APP_DIR/app"
@@ -48,10 +85,8 @@ Type=simple
 User=control-center
 Group=control-center
 WorkingDirectory=/opt/control-center/app
-Environment=CONTROL_CENTER_HOST=0.0.0.0
-Environment=CONTROL_CENTER_PORT=8080
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/control-center/venv/bin/python /opt/control-center/app/main.py
+ExecStart=/opt/control-center/venv/bin/gunicorn --workers 2 --threads 2 --timeout 30 --bind 0.0.0.0:8080 --access-logfile - --error-logfile - wsgi:app
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -64,7 +99,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center
-ReadOnlyPaths=/var/lib/control-center-license
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
 InaccessiblePaths=/var/lib/control-center-root
 [Install]
 WantedBy=multi-user.target
@@ -100,6 +135,23 @@ Description=Control Center Market request watcher
 [Path]
 PathExists=/var/lib/control-center/market-pending.json
 Unit=control-center-market-apply.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-dhcp-server.service <<'UNIT'
+[Unit]
+Description=Control Center DHCP Server
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/dnsmasq.d/control-center-dhcp.conf
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -181,9 +233,28 @@ WantedBy=timers.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now control-center control-center-network-apply.path control-center-market-apply.path control-center-dhcp-apply.path control-center-license-apply.path control-center-update.timer control-center-os-update.timer
+if [[ -f "$SYSTEM_STATE_DIR/modules/dhcp.json" ]] && python3 - "$SYSTEM_STATE_DIR/modules/dhcp.json" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except:raise SystemExit(1)
+raise SystemExit(0 if j.get('installed') else 1)
+PY
+then
+  systemctl disable --now dnsmasq.service >/dev/null 2>&1 || true
+  if command -v dnsmasq >/dev/null 2>&1 && grep -q '^dhcp-range=' /etc/dnsmasq.d/control-center-dhcp.conf 2>/dev/null && dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf >/dev/null 2>&1; then
+    systemctl enable --now control-center-dhcp-server.service
+  fi
+fi
 sleep 1
-curl -fsS http://127.0.0.1:8080/api/health >/dev/null
+HEALTH="$(curl -fsS http://127.0.0.1:8080/api/health)"
+python3 - "$HEALTH" "$VERSION" <<'PY'
+import json,sys
+j=json.loads(sys.argv[1]); expected=sys.argv[2]
+assert j.get('status')=='ok' and j.get('version')==expected, j
+PY
 echo "Control Center $VERSION установлен."
+echo 'Web UI: Gunicorn production WSGI, порт 8080.'
+echo 'State: Web requests / protected system state / root rollback / protected license.'
 echo 'Редакция по умолчанию: Home. Professional активируется подписанной лицензией.'
 echo 'Обновления Control Center и ОС/пакетов доступны в Настройки.'
 echo 'Откройте: http://SERVER_IP:8080'

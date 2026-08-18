@@ -3,12 +3,14 @@ set -Eeuo pipefail
 REPO_URL="https://github.com/filosoff31/srv-deployment.git"
 DEPLOYMENT_URL="https://raw.githubusercontent.com/filosoff31/srv-deployment/main/deployment.json"
 STATE_DIR="/var/lib/control-center"
+SYSTEM_STATE="/var/lib/control-center-system"
 ROOT_STATE="/var/lib/control-center-root"
 SETTINGS="$STATE_DIR/update-settings.json"
-STATUS="$STATE_DIR/update-status.json"
+STATUS="$SYSTEM_STATE/update-status.json"
 VERSION_FILE="/opt/control-center/VERSION"
 LOCK_FILE="/run/control-center-update.lock"
 mkdir -p "$STATE_DIR"
+install -d -o root -g control-center -m 0750 "$SYSTEM_STATE"
 install -d -o root -g root -m 0700 "$ROOT_STATE"
 exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
@@ -19,7 +21,7 @@ data={'last_check':int(time.time()),'result':result,'message':msg}
 if latest:data['latest_version']=latest
 open(p,'w').write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
 PY
-chown control-center:control-center "$STATUS" 2>/dev/null || true; }
+chown root:control-center "$STATUS"; chmod 0640 "$STATUS"; }
 [[ -f "$SETTINGS" ]] || printf '%s\n' '{"automatic_updates":true,"interval_minutes":60,"channel":"production"}' >"$SETTINGS"
 readarray -t cfg < <(python3 - "$SETTINGS" "$STATUS" <<'PY'
 import json,sys

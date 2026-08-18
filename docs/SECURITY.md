@@ -1,49 +1,67 @@
-# Безопасность Control Center 1.0.5
+# Безопасность Control Center 1.0.6
 
 ## Разделение привилегий
 
-Основной Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные действия выполняются отдельными systemd workers:
+Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные действия выполняются отдельными systemd workers: сеть, Market/DHCP, лицензирование, обновление Control Center и обновление ОС/пакетов.
 
-- применение сети;
-- установка/удаление DHCP;
-- применение DHCP-конфигурации;
-- проверка Professional-лицензии;
-- обновление Control Center;
-- обновление ОС и пакетов.
+Web UI создаёт pending requests в Web-writable state, но root helpers не доверяют им и повторно валидируют критичные параметры перед применением.
 
-Web UI формирует JSON-запросы в `/var/lib/control-center`, но **root helpers не считают эти файлы доверенными**. Сетевой и DHCP helpers повторно проверяют интерфейсы, типы значений, IPv4, маски, шлюзы, DNS, диапазоны и другие ограничения уже непосредственно перед привилегированным применением. Это защищает от обхода Web/API-валидации при компрометации Web-процесса.
-
-## Разделение state
+## State
 
 ```text
-/var/lib/control-center
+/var/lib/control-center          # Web-writable settings + pending requests
+/var/lib/control-center-system   # root:control-center applied state/status/modules
+/var/lib/control-center-root     # root:root 0700 rollback
+/var/lib/control-center-license  # root:control-center validated license
 ```
 
-Web-writable состояние: настройки UI, pending requests и публичные статусы.
+## Read-only live configuration
+
+Для выполнения требования 1.0.6 «показывать уже настроенные параметры» Web service получает только чтение Control Center-managed конфигураций:
 
 ```text
-/var/lib/control-center-root
+/etc/netplan/90-control-center.yaml
+/etc/dnsmasq.d/control-center-dhcp.conf
 ```
 
-Root-only (`0700`) состояние: rollback-копии приложения, Netplan и DHCP. Web service получает `InaccessiblePaths=/var/lib/control-center-root`.
+Netplan-файл хранится как `root:control-center 0640`. Изменение этих файлов по-прежнему возможно только через root helpers.
+
+## Production Web runtime
+
+Web UI запускается Gunicorn через `wsgi:app`. WSGI layer включает:
+
+- `Content-Security-Policy`;
+- `X-Content-Type-Options: nosniff`;
+- `X-Frame-Options: DENY`;
+- `Referrer-Policy`;
+- `Permissions-Policy`;
+- `Cross-Origin-Opener-Policy`;
+- `Cache-Control: no-store` для HTML/API;
+- same-origin проверку browser write requests;
+- лимит request body 64 KiB;
+- атомарные JSON writes для нескольких Gunicorn workers.
+
+В 1.0.6 JavaScript вынесен в `/static/app.js`. CSP теперь использует:
 
 ```text
-/var/lib/control-center-license
+script-src 'self'
 ```
 
-Root-owned каталог подтверждённой Professional-лицензии. Web service получает только чтение.
+и больше не требует `unsafe-inline`.
 
-Таким образом, Web-процесс не может подменить rollback-копию приложения или подтверждённую лицензию.
+## XSS
 
-## Лицензирование
+Все системные/пользовательские строки, которые вставляются в динамический HTML, проходят HTML escaping в `app.js`.
 
-Professional-лицензия проверяется RSA/SHA-256. Root helper проверяет подпись, `edition`, `device_id`, `license_id` и срок действия перед записью `/var/lib/control-center-license/license.json`.
+## DHCP additional options
 
-Приватный ключ издателя никогда не должен храниться в GitHub или на сервере клиента.
+Дополнительные DHCP options проходят двойную проверку Web API + root helper. Ограничены numeric codes `1..254`, максимум 32 записей; запрещены управляющие символы и дублирование. Options `1`, `3`, `6`, `51` управляются основными полями и не могут быть добавлены повторно.
 
-## Systemd hardening
+## Уведомления
 
-`control-center.service` использует, в частности:
+`/api/notifications` только агрегирует protected status files и фактический DHCP service state. Read/unread хранится в localStorage браузера и не влияет на server-side состояние.
+
+## Systemd hardening Web UI
 
 ```text
 NoNewPrivileges=true
@@ -56,35 +74,21 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center
-ReadOnlyPaths=/var/lib/control-center-license
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
 InaccessiblePaths=/var/lib/control-center-root
 ```
 
-## APT/dpkg
+## Известное ограничение 1.0.6
 
-Установщик, OS/package updater и Маркет используют общий `/run/control-center-apt.lock`, чтобы внутренние пакетные операции Control Center не выполнялись одновременно.
+Встроенная Web-аутентификация пока отсутствует. Same-origin/CSP/systemd hardening не заменяют authentication/authorization. TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть.
 
-## Известное ограничение 1.0.5
+Рекомендуется разрешать доступ только из административной LAN/VPN/firewall или через reverse proxy с аутентификацией.
 
-В текущей линии ещё **нет полноценной аутентификации Web UI**. Поэтому TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть. До появления встроенной аутентификации доступ должен ограничиваться доверенной административной LAN/VPN и внешним firewall/reverse proxy с аутентификацией.
-
-Особенно важно ограничить доступ, потому что Web UI может создавать запросы на изменение сети, установку DHCP и обновление системных пакетов.
-
-## Рекомендации
-
-- разрешать TCP/8080 только с административных адресов;
-- не публиковать порт через WAN/NAT;
-- использовать VPN для удалённого администрирования;
-- регулярно проверять `journalctl` для привилегированных workers;
-- хранить приватный ключ Professional offline и в зашифрованном хранилище;
-- делать резервную копию сетевой конфигурации до удалённых изменений;
-- не изменять вручную root-only state.
-
-## Проверка прав
+## Проверка
 
 ```bash
-id control-center
+sudo bash scripts/acceptance-1.0.6.sh
 systemctl cat control-center
-ls -ld /var/lib/control-center /var/lib/control-center-root /var/lib/control-center-license
-ls -l /var/lib/control-center-license 2>/dev/null || true
+ls -l /etc/netplan/90-control-center.yaml 2>/dev/null || true
+ls -ld /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root /var/lib/control-center-license
 ```

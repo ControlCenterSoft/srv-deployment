@@ -13,7 +13,7 @@ Professional активируется криптографически подп�
 Control Center вычисляет ID устройства как первые 24 hex-символа SHA-256 от `/etc/machine-id`. ID отображается в **Настройки → Редакция Control Center** и через:
 
 ```bash
-curl -fsS http://127.0.0.1:8080/api/license
+curl -fsS http://127.0.0.1:8080/api/license | python3 -m json.tool
 ```
 
 ### Формат payload
@@ -28,11 +28,15 @@ curl -fsS http://127.0.0.1:8080/api/license
 }
 ```
 
-`expires_at` необязателен. Если он задан, используется Unix timestamp и лицензия перестаёт считаться активной после указанного времени.
+`expires_at` необязателен. Если он задан, используется Unix timestamp; после его истечения Control Center снова сообщает редакцию Home.
 
 ### Подпись
 
-Payload подписывается RSA/SHA-256 приватным ключом издателя. Сервер содержит только публичный ключ `/etc/control-center/license-public.pem`.
+Payload подписывается RSA/SHA-256 приватным ключом издателя. Клиентский сервер содержит только публичный ключ:
+
+```text
+/etc/control-center/license-public.pem
+```
 
 Приватный ключ **нельзя** помещать в GitHub, установочный пакет, Web UI или сервер клиента.
 
@@ -47,20 +51,41 @@ python3 license/issue-license.py \
   --license-id CUSTOMER-001
 ```
 
-Утилита вернёт `payload` и `signature`. Их необходимо вставить в **Настройки → Активация Professional**.
+Утилита возвращает `payload` и `signature`. Их нужно вставить в **Настройки → Активация Professional**.
 
 ### Проверка на сервере
 
-Web UI создаёт `/var/lib/control-center/license-pending.json`. Затем root helper `control-center-license-apply`:
+Web UI создаёт только запрос:
+
+```text
+/var/lib/control-center/license-pending.json
+```
+
+Далее root helper `control-center-license-apply`:
 
 1. декодирует payload и signature;
 2. проверяет RSA/SHA-256 подпись;
 3. проверяет `edition=Professional`;
 4. сверяет `device_id`;
-5. проверяет срок действия;
+5. проверяет `license_id` и срок действия;
 6. сохраняет подтверждённую лицензию в `/var/lib/control-center-license/license.json`.
 
-Каталог `/var/lib/control-center-license` принадлежит `root:root`; Web-процесс имеет только доступ на чтение. Результат активации записывается в `/var/lib/control-center/license-status.json`.
+Подтверждённая лицензия находится вне Web-writable state. Ожидаемые права:
+
+```text
+/var/lib/control-center-license             root:control-center 0750
+/var/lib/control-center-license/license.json root:control-center 0640
+```
+
+Web service может прочитать лицензию как член группы `control-center`, но не может её изменить.
+
+Результат активации хранится в защищённом system-state:
+
+```text
+/var/lib/control-center-system/license-status.json
+```
+
+Для совместимости Web UI видит его через read-only ссылку `/var/lib/control-center/license-status.json`.
 
 ### Диагностика
 
@@ -68,9 +93,11 @@ Web UI создаёт `/var/lib/control-center/license-pending.json`. Затем
 curl -fsS http://127.0.0.1:8080/api/license | python3 -m json.tool
 systemctl status control-center-license-apply.path --no-pager
 journalctl -u control-center-license-apply.service -n 100 --no-pager
-cat /var/lib/control-center/license-status.json
-ls -ld /var/lib/control-center-license
-ls -l /var/lib/control-center-license/license.json
+sudo cat /var/lib/control-center-system/license-status.json
+sudo ls -ld /var/lib/control-center-license
+sudo ls -l /var/lib/control-center-license/license.json 2>/dev/null || true
 ```
 
-Ожидаемые права подтверждённой лицензии: владелец `root:root`, файл не должен быть доступен Web-пользователю на запись.
+## Перенос лицензии
+
+Professional-лицензия привязана к `device_id`. Копирование файла лицензии на сервер с другим `/etc/machine-id` не активирует Professional. При замене сервера следует получить новый device ID и выпустить новую лицензию.

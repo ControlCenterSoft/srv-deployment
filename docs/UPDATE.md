@@ -1,18 +1,27 @@
-# Обновление Control Center 1.0.5
+# Обновление Control Center 1.0.6
 
 ## Архитектура
 
-Web UI не запускает root-команды. Раздел **Настройки** записывает разрешённые параметры в `/var/lib/control-center/update-settings.json`. Привилегированную проверку и установку выполняет `control-center-update.service`, который запускается `control-center-update.timer`.
+Web UI не запускает root-команды. Раздел **Настройки** хранит разрешённые параметры в `/var/lib/control-center/update-settings.json`. Проверку и установку выполняет `control-center-update.service`, запускаемый `control-center-update.timer`.
+
+Результат worker хранится в защищённом state:
+
+```text
+/var/lib/control-center-system/update-status.json
+```
+
+Rollback приложения:
+
+```text
+/var/lib/control-center-root/rollback-<version>-<timestamp>/
+```
 
 ## Настройки
 
-В Web UI доступны:
-
-- включить/выключить автоматическое обновление Control Center;
-- вручную задать интервал от **5 до 10080 минут**;
-- выполнить проверку доступной production-версии вручную.
-
-Формат настроек:
+- автоматическое обновление on/off;
+- интервал 5–10080 минут;
+- production channel;
+- ручная проверка доступного релиза.
 
 ```json
 {
@@ -22,26 +31,41 @@ Web UI не запускает root-команды. Раздел **Настро�
 }
 ```
 
-Timer запускает лёгкий worker раз в минуту. GitHub проверяется только когда истёк `interval_minutes`.
+Timer запускает лёгкий worker раз в минуту, но обращение к metadata выполняется только после истечения выбранного интервала.
 
-## Алгоритм
+## Metadata 1.0.6
 
-1. Получить `deployment.json` из `main`.
-2. Проверить production-канал и формат версии.
-3. Сравнить версию с `/opt/control-center/VERSION` через `dpkg --compare-versions`.
+`deployment.json` содержит и семантическую версию, и идентификатор сборки:
+
+```json
+{
+  "release": "1.0.6",
+  "build": "20260818.1",
+  "channel": "production",
+  "release_branch": "release/1.0.6"
+}
+```
+
+Текущий updater принимает решение о переходе между релизами по semver `release`; `build` отображается в UI/API для точной идентификации установленной сборки.
+
+## Алгоритм обновления
+
+1. Получить production `deployment.json` из `main`.
+2. Проверить канал и формат версии.
+3. Сравнить `release` с `/opt/control-center/VERSION` через `dpkg --compare-versions`.
 4. Клонировать `release/<version>`.
-5. Проверить наличие `install/install.sh` и `app/main.py`.
-6. Проверить соответствие `APP_VERSION` версии релиза.
-7. Создать rollback-копию текущего приложения.
-8. Запустить установщик нового релиза.
-9. Установщик выполняет health-check `http://127.0.0.1:8080/api/health`.
-10. При ошибке восстановить предыдущую версию приложения и systemd unit.
+5. Проверить обязательные payload-файлы.
+6. Сверить `APP_VERSION` с metadata.
+7. Создать root-only rollback-копию.
+8. Запустить installer нового релиза.
+9. Installer выполняет health-check и проверяет, что API сообщает ожидаемую версию.
+10. При ошибке восстановить предыдущие приложение и systemd unit.
 
-## Исправление аудита 1.0.5
+## Переход 1.0.5 → 1.0.6
 
-В раннем updater использовался слишком жёсткий шаблон `APP_VERSION = ...`. Из-за различий в пробелах корректная версия могла быть отклонена. В исправленной 1.0.5 проверка допускает любое количество пробелов вокруг `=`.
+1.0.6 создана непосредственно от аудированной `release/1.0.5`, поэтому сохраняет protected-state, licensing, DHCP ownership/runtime и rollback архитектуру 1.0.5.
 
-Для перехода с установки, где старый updater уже отклоняет 1.0.5, выполните один ручной запуск актуального bootstrap/install. После этого последующие обновления используют исправленный updater.
+После обновления существующие применённые сетевые и DHCP параметры сохраняются и дополнительно считываются из фактических Control Center-managed Netplan/dnsmasq файлов.
 
 ## Диагностика
 
@@ -50,17 +74,12 @@ systemctl status control-center-update.timer --no-pager
 systemctl status control-center-update.service --no-pager
 journalctl -u control-center-update.service -n 200 --no-pager
 cat /var/lib/control-center/update-settings.json
-cat /var/lib/control-center/update-status.json
+sudo cat /var/lib/control-center-system/update-status.json
 cat /opt/control-center/VERSION
-```
-
-Ручной запуск root-worker:
-
-```bash
-sudo systemctl start control-center-update.service
-sudo journalctl -u control-center-update.service -n 100 --no-pager
+curl -fsS http://127.0.0.1:8080/api/health | python3 -m json.tool
+sudo ls -ld /var/lib/control-center-root/rollback-* 2>/dev/null || true
 ```
 
 ## Важно
 
-Обновление Control Center и обновление системных пакетов — разные механизмы. Системные APT-обновления описаны в `docs/OS_UPDATES.md`.
+Обновление Control Center и обновление системных пакетов — независимые механизмы. Обновление ОС/пакетов описано в `docs/OS_UPDATES.md`.

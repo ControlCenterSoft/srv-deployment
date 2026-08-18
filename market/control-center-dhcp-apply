@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 STATE=/var/lib/control-center
+SYSTEM_STATE=/var/lib/control-center-system
 ROOT_STATE=/var/lib/control-center-root
 PENDING="$STATE/dhcp-pending.json"
-CONFIG="$STATE/dhcp-config.json"
-STATUS="$STATE/dhcp-status.json"
+CONFIG="$SYSTEM_STATE/dhcp-config.json"
+STATUS="$SYSTEM_STATE/dhcp-status.json"
+MODULE_STATE="$SYSTEM_STATE/modules/dhcp.json"
 TARGET=/etc/dnsmasq.d/control-center-dhcp.conf
 BACKUP="$ROOT_STATE/control-center-dhcp.conf.rollback"
+RUNTIME=control-center-dhcp-server.service
 [[ -s "$PENDING" ]] || exit 0
+install -d -o root -g control-center -m 0750 "$SYSTEM_STATE" "$SYSTEM_STATE/modules"
 install -d -o root -g root -m 0700 "$ROOT_STATE"
 status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
 import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='applied','state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
-chown control-center:control-center "$STATUS" 2>/dev/null || true; }
+chown root:control-center "$STATUS"; chmod 0640 "$STATUS"; }
+if [[ ! -f "$MODULE_STATE" ]] || ! python3 - "$MODULE_STATE" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except:raise SystemExit(1)
+raise SystemExit(0 if j.get('installed') and j.get('package')=='dnsmasq' else 1)
+PY
+then
+  rm -f "$PENDING"
+  status rejected 'DHCP Server не зарегистрирован как управляемый модуль Control Center.'
+  exit 1
+fi
 status applying 'Проверка и применение DHCP конфигурации…'
+WAS_ACTIVE=0
+systemctl is-active --quiet "$RUNTIME" && WAS_ACTIVE=1 || true
 [[ -f "$TARGET" ]] && cp -a "$TARGET" "$BACKUP" || rm -f "$BACKUP"
 TMP=$(mktemp /etc/dnsmasq.d/control-center-dhcp.conf.XXXXXX)
 cleanup(){ rm -f "$TMP"; }
@@ -47,14 +64,29 @@ for item in dns:
 try: lease=int(j.get('lease_minutes'))
 except Exception: raise SystemExit('invalid lease')
 if not 10<=lease<=10080: raise SystemExit('invalid lease range')
-text=f"""port=0
-bind-dynamic
-interface={iface}
-dhcp-range={start},{end},{prefix},{lease}m
-dhcp-option=option:router,{gateway}
-dhcp-option=option:dns-server,{','.join(clean_dns)}
-"""
-out.write_text(text)
+raw_extra=j.get('extra_options',[])
+if not isinstance(raw_extra,list) or len(raw_extra)>32: raise SystemExit('invalid extra options')
+managed={1,3,6,51}; seen=set(); extra=[]
+for item in raw_extra:
+    if not isinstance(item,dict): raise SystemExit('invalid extra option')
+    try: code=int(item.get('code'))
+    except Exception: raise SystemExit('invalid extra option code')
+    value=str(item.get('value','')).strip()
+    if not 1<=code<=254 or code in managed or code in seen: raise SystemExit('invalid or duplicate extra option code')
+    if not value or len(value)>512 or any(ord(c)<32 for c in value): raise SystemExit('invalid extra option value')
+    seen.add(code); extra.append((code,value))
+netmask=str(net.netmask)
+lines=[
+    'port=0',
+    'bind-dynamic',
+    f'interface={iface}',
+    f'dhcp-range={start},{end},{netmask},{lease}m',
+    f'dhcp-option=option:router,{gateway}',
+    f"dhcp-option=option:dns-server,{','.join(clean_dns)}",
+]
+for code,value in sorted(extra):
+    lines.append(f'dhcp-option={code},{value}')
+out.write_text('\n'.join(lines)+'\n')
 PY
 then
   rm -f "$PENDING"
@@ -63,14 +95,28 @@ then
 fi
 chmod 0644 "$TMP"
 mv "$TMP" "$TARGET"
-if dnsmasq --test >/tmp/control-center-dhcp-test.log 2>&1 && systemctl restart dnsmasq; then
-  mv "$PENDING" "$CONFIG"
-  chown control-center:control-center "$CONFIG" 2>/dev/null || true
-  status applied 'DHCP конфигурация применена'
-  exit 0
+if dnsmasq --test --conf-file="$TARGET" >/tmp/control-center-dhcp-test.log 2>&1; then
+  systemctl enable "$RUNTIME" >/dev/null
+  if systemctl restart "$RUNTIME"; then
+    cp "$PENDING" "$CONFIG"
+    rm -f "$PENDING"
+    chown root:control-center "$CONFIG"; chmod 0640 "$CONFIG"
+    python3 - "$MODULE_STATE" <<'PY'
+import json,sys
+p=sys.argv[1]; j=json.load(open(p)); j['configured']=True
+open(p,'w').write(json.dumps(j,ensure_ascii=False,indent=2)+'\n')
+PY
+    chown root:control-center "$MODULE_STATE"; chmod 0640 "$MODULE_STATE"
+    status applied 'DHCP конфигурация применена'
+    exit 0
+  fi
 fi
 if [[ -f "$BACKUP" ]]; then cp -a "$BACKUP" "$TARGET"; else rm -f "$TARGET"; fi
-dnsmasq --test >/dev/null 2>&1 && systemctl restart dnsmasq 2>/dev/null || true
+if [[ "$WAS_ACTIVE" == 1 && -f "$TARGET" ]]; then
+  dnsmasq --test --conf-file="$TARGET" >/dev/null 2>&1 && systemctl restart "$RUNTIME" 2>/dev/null || true
+else
+  systemctl disable --now "$RUNTIME" >/dev/null 2>&1 || true
+fi
 rm -f "$PENDING"
 status rollback 'Ошибка применения DHCP. Предыдущая конфигурация восстановлена.'
 exit 1
