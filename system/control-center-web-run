@@ -23,6 +23,7 @@ ARGS=(
   --bind "0.0.0.0:${PORT}"
   --access-logfile -
   --error-logfile -
+  --no-control-socket
 )
 
 if [[ "$SSL" == 1 || "$SSL" == true ]]; then
