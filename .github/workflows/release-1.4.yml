@@ -23,16 +23,20 @@ jobs:
           python3 releases/1.4.0/tests/pxe_contract.py
           python3 releases/1.4.0/tests/pxe_transport_contract.py
           python3 releases/1.4.0/tests/pxe_lifecycle_contract.py
+          python3 releases/1.4.0/tests/pxe_backup_contract.py
           cat releases/1.4.0/payload/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > /tmp/release14-core.py
           cat releases/1.4.0/payload/app/routers/release14.parts/{00,01,02,03}.part > /tmp/release14-router.py
-          cat releases/1.4.0/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > /tmp/release14-agent.py
+          cat releases/1.4.0/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11}.part \
+              releases/1.4.0/system/srv-control-release14-agent.parts/11a.inc \
+              releases/1.4.0/system/srv-control-release14-agent.parts/12.part > /tmp/release14-agent.py
           python3 -m py_compile \
             releases/1.4.0/payload/app/main.py \
             /tmp/release14-core.py \
             /tmp/release14-router.py \
             releases/1.4.0/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py \
             /tmp/release14-agent.py \
-            releases/1.4.0/system/srv-control-pxe-probe
+            releases/1.4.0/system/srv-control-pxe-probe \
+            releases/1.4.0/system/srv-control-backup
           for f in releases/1.4.0/payload/static/js/*.js; do node --check "$f"; done
 
       - name: Verify pinned upstream PXE boot assets
@@ -94,7 +98,7 @@ jobs:
           assert 'private PXE profile leaked through static media root' in acceptance
           assert 'srv-control-pxe-probe --json' in acceptance
           apply=Path('releases/1.4.0/apply.sh').read_text()
-          assert "{00,01,02,03,04,05,06,07,08,09,10,11,12}.part" in apply
+          assert 'srv-control-release14-agent.parts/11a.inc' in apply
           assert 'srv-control-pxe-probe' in apply
           rollback=Path('releases/1.4.0/rollback.sh').read_text()
           assert 'srv-control-pxe-probe' in rollback
@@ -105,4 +109,8 @@ jobs:
           assert "02:00:00:FE:ED:01" in probe
           lifecycle=Path('releases/1.4.0/tests/pxe_lifecycle_contract.py').read_text()
           assert 'stale-report rejection' in lifecycle
+          transport=Path('releases/1.4.0/tests/pxe_transport_contract.py').read_text()
+          assert '11a.inc' in transport
+          backup=Path('releases/1.4.0/tests/pxe_backup_contract.py').read_text()
+          assert 'revoke-active-authorizations' in backup
           PY
