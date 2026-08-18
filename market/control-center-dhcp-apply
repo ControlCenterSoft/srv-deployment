@@ -47,10 +47,11 @@ for item in dns:
 try: lease=int(j.get('lease_minutes'))
 except Exception: raise SystemExit('invalid lease')
 if not 10<=lease<=10080: raise SystemExit('invalid lease range')
+netmask=str(net.netmask)
 text=f"""port=0
 bind-dynamic
 interface={iface}
-dhcp-range={start},{end},{prefix},{lease}m
+dhcp-range={start},{end},{netmask},{lease}m
 dhcp-option=option:router,{gateway}
 dhcp-option=option:dns-server,{','.join(clean_dns)}
 """
