@@ -1,0 +1,51 @@
+name: Control Center 2.0 bootstrap validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/bootstrap-control-center-2.0.sh'
+      - '.github/workflows/bootstrap-2.0-validation.yml'
+      - 'deployment.json'
+      - 'releases/2.0.0/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/bootstrap-control-center-2.0.sh'
+      - '.github/workflows/bootstrap-2.0-validation.yml'
+      - 'deployment.json'
+      - 'releases/2.0.0/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate bootstrap shell and target
+        run: |
+          set -euo pipefail
+          bash -n tools/bootstrap-control-center-2.0.sh
+          python3 - <<'PY'
+          import json, pathlib
+          dep=json.loads(pathlib.Path('deployment.json').read_text(encoding='utf-8'))
+          assert dep.get('enabled') is True, dep
+          assert dep.get('channel') == 'production', dep
+          assert dep.get('release_id') == '2.0.0', dep
+          assert dep.get('release_path') == 'releases/2.0.0', dep
+          text=pathlib.Path('tools/bootstrap-control-center-2.0.sh').read_text(encoding='utf-8')
+          required=(
+              'bash "$TMP_ROOT/repo/deploy/deploy.sh" "$PROJECT" "$REMOTE_SHA"',
+              'systemctl reset-failed srvcc-github-agent.service',
+              'systemctl enable --now srvcc-github-agent.timer',
+              'systemctl is-enabled --quiet srvcc-github-agent.timer',
+              'systemctl is-active --quiet srvcc-github-agent.timer',
+              "assert data.get('schema_version') == 4",
+              "urlopen('http://127.0.0.1:8876/api/v1/health'",
+          )
+          for item in required:
+              assert item in text, item
+          print('BOOTSTRAP 2.0 CONTRACT PASS')
+          PY
