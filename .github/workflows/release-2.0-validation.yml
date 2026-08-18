@@ -50,7 +50,8 @@ jobs:
             releases/2.0.0/system/srvcc-update-controller \
             releases/2.0.0/system/srv-control-backup-policy \
             releases/2.0.0/system/srv-control-os-auto-update \
-            releases/2.0.0/system/srv-control-minecraft-repair
+            releases/2.0.0/system/srv-control-minecraft-repair \
+            releases/2.0.0/system/srv-control-pxe-probe
           python3 -m compileall -q releases/2.0.0/payload/app
 
       - name: Validate JavaScript
@@ -116,6 +117,24 @@ jobs:
           grep -Fq 'OnUnitInactiveSec=${INTERVAL_MINUTES}min' "$configurator"
           grep -Fq 'systemctl reset-failed "$SERVICE"' "$configurator"
           grep -Fq 'systemctl is-active --quiet srvcc-github-agent.timer' "$apply"
+
+      - name: Validate carried-forward DHCP and PXE contracts
+        run: |
+          set -euo pipefail
+          main='releases/2.0.0/payload/app/main.py'
+          apply='releases/2.0.0/apply-2.0.0.sh'
+          shell='releases/2.0.0/payload/templates/shell.html'
+          grep -Fq 'release14_router' "$main"
+          grep -Fq "PUBLIC_PREFIXES = ('/static/', '/pxe/')" "$main"
+          grep -Fq 'release14.parts/{00,01,02,03,04,05,06,07}.part' "$apply"
+          grep -Fq 'srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11}.part' "$apply"
+          grep -Fq '/ui/module/dhcp' "$shell"
+          grep -Fq '/ui/module/pxe-windows' "$shell"
+          grep -Fq '/ui/module/pxe-linux' "$shell"
+          python3 releases/2.0.0/tests/pxe_contract.py
+          python3 releases/2.0.0/tests/pxe_lifecycle_contract.py
+          python3 releases/2.0.0/tests/pxe_transport_contract.py
+          python3 releases/2.0.0/tests/pxe_backup_contract.py
 
       - name: Validate Minecraft health-first repair and rollback safety
         run: |
