@@ -18,11 +18,8 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then useradd --system --home "$APP_DIR"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$APP_DIR" "$STATE_DIR" "$STATE_DIR/modules"
 install -d -o root -g root -m 0700 "$ROOT_STATE_DIR"
 install -d -o root -g root -m 0755 "$LICENSE_DIR" /etc/control-center
-# Never trust state created by the pre-audit 1.0.5 licensing design.
 rm -f "$STATE_DIR/license.json"
-# Root-sensitive rollback data must not remain in Web-writable state from older builds.
 rm -rf "$STATE_DIR"/rollback-* "$STATE_DIR/90-control-center.yaml.rollback" "$STATE_DIR/control-center-dhcp.conf.rollback"
-# Never replay stale privileged requests after install/update.
 rm -f "$STATE_DIR/network-pending.json" "$STATE_DIR/market-pending.json" "$STATE_DIR/dhcp-pending.json" "$STATE_DIR/license-pending.json" "$STATE_DIR/os-update-now"
 [[ -f "$STATE_DIR/update-settings.json" ]] || printf '%s\n' '{"automatic_updates":true,"interval_minutes":60,"channel":"production"}' >"$STATE_DIR/update-settings.json"
 [[ -f "$STATE_DIR/os-update-settings.json" ]] || printf '%s\n' '{"automatic_updates":false,"interval_minutes":1440}' >"$STATE_DIR/os-update-settings.json"
@@ -53,7 +50,7 @@ User=control-center
 Group=control-center
 WorkingDirectory=/opt/control-center/app
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/control-center/venv/bin/gunicorn --workers 2 --threads 2 --timeout 30 --bind 0.0.0.0:8080 --access-logfile - --error-logfile - main:app
+ExecStart=/opt/control-center/venv/bin/gunicorn --workers 2 --threads 2 --timeout 30 --bind 0.0.0.0:8080 --access-logfile - --error-logfile - wsgi:app
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -102,6 +99,23 @@ Description=Control Center Market request watcher
 [Path]
 PathExists=/var/lib/control-center/market-pending.json
 Unit=control-center-market-apply.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-dhcp-server.service <<'UNIT'
+[Unit]
+Description=Control Center DHCP Server
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/dnsmasq.d/control-center-dhcp.conf
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -183,6 +197,18 @@ WantedBy=timers.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now control-center control-center-network-apply.path control-center-market-apply.path control-center-dhcp-apply.path control-center-license-apply.path control-center-update.timer control-center-os-update.timer
+if [[ -f "$STATE_DIR/modules/dhcp.json" ]] && python3 - "$STATE_DIR/modules/dhcp.json" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except:raise SystemExit(1)
+raise SystemExit(0 if j.get('installed') else 1)
+PY
+then
+  systemctl disable --now dnsmasq.service >/dev/null 2>&1 || true
+  if command -v dnsmasq >/dev/null 2>&1 && grep -q '^dhcp-range=' /etc/dnsmasq.d/control-center-dhcp.conf 2>/dev/null && dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf >/dev/null 2>&1; then
+    systemctl enable --now control-center-dhcp-server.service
+  fi
+fi
 sleep 1
 curl -fsS http://127.0.0.1:8080/api/health >/dev/null
 echo "Control Center $VERSION установлен."
