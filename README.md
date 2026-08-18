@@ -1,67 +1,59 @@
-# Control Center 1.0.5
+# Control Center 1.0.6
 
-Control Center — web-панель управления Linux-сервером. Текущая production-линия: **1.0.5**.
+Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.6**.
 
 ## Редакции
 
 - **Home** — редакция по умолчанию, без активации.
-- **Professional** — активируемая редакция с RSA/SHA-256 подписанной лицензией, привязанной к ID сервера.
+- **Professional** — активируемая RSA/SHA-256 подписанной лицензией, привязанной к ID сервера.
 
-Текущая редакция, версия, ID устройства и состояние лицензии отображаются в **Настройки**.
+## Возможности 1.0.6
 
-## Возможности 1.0.5
-
-- dashboard: CPU, RAM, Top-3 процессов, заполнение хранилищ, WAN RX/TX;
-- WAN/LAN: назначение интерфейсов, DHCP/Static, проверка IP/маски/шлюза/DNS, Netplan apply/rollback;
-- Маркет: установка/удаление DHCP Server (`dnsmasq`) с защищённым ownership-state;
-- отдельный runtime `control-center-dhcp-server.service` и динамический пункт меню DHCP;
-- DHCP: диапазон, маска, шлюз, DNS, срок аренды, двойная проверка и rollback;
+- Система: CPU/RAM-графики, Top-3 процессов, хранилища, WAN RX/TX;
+- Сети: WAN/LAN и **полный перечень интерфейсов** с ролью, типом, состоянием, IPv4, шлюзом, DNS, MAC, MTU и скоростью;
+- загрузка уже применённых WAN/LAN параметров из protected state и фактического Control Center Netplan;
+- Маркет: установка/удаление DHCP Server;
+- DHCP: загрузка существующей конфигурации из protected state и `control-center-dhcp.conf`;
+- DHCP additional options: код 1–254 + значение, просмотр, добавление и удаление;
+- статус `control-center-dhcp-server.service` и проверка `dnsmasq --test` из Web UI;
 - RBAC: просмотр локальных Linux-пользователей и групп;
-- обновление Control Center: production-канал, интервал 5–10080 минут, root-only rollback;
-- обновление ОС/пакетов: ручное или автоматическое, интервал 60–10080 минут;
-- Home/Professional и механизм активации Professional;
-- production WSGI через Gunicorn и HTTP security headers.
+- общий **центр уведомлений**: сеть, Маркет, DHCP, лицензия, обновления Control Center и ОС;
+- колокольчик: непрочитанная ошибка — красный, непрочитанные события без ошибок — зелёный, всё прочитано — нейтральный;
+- увеличенная типографика и семантические SVG-ярлычки меню;
+- полностью переработанная мобильная верстка с off-canvas sidebar;
+- обновление Control Center и отдельное обновление ОС/пакетов;
+- production Gunicorn WSGI, CSP без `unsafe-inline`.
 
-## Архитектура состояния и привилегий
+## Источники параметров
 
-Web UI работает от отдельной системной УЗ `control-center` без root-доступа. Привилегированные операции выполняются отдельными systemd helpers.
+Control Center 1.0.6 различает запросы Web UI и фактически применённое состояние:
 
 ```text
-/var/lib/control-center          # Web-writable settings + pending requests
-/var/lib/control-center-system   # root:control-center applied state/status/modules
-/var/lib/control-center-root     # root:root 0700 rollback state
-/var/lib/control-center-license  # root:control-center validated license
+/var/lib/control-center          # настройки и pending requests
+/var/lib/control-center-system   # applied config/status/module ownership
+/var/lib/control-center-root     # root-only rollback
+/var/lib/control-center-license  # подтверждённая Professional license
 ```
 
-Network/DHCP root helpers повторно валидируют pending JSON непосредственно перед применением. Ownership DHCP-модуля, применённые конфигурации и root-worker statuses находятся вне Web-writable state.
+Дополнительно Web UI только читает:
 
-Web service получает только чтение `/var/lib/control-center-system` и `/var/lib/control-center-license`, а `/var/lib/control-center-root` для него полностью недоступен.
-
-Приватный ключ Professional **не хранится в GitHub и не устанавливается на клиентский сервер**.
-
-## Web runtime и защита
-
-Production Web UI запускается Gunicorn через `wsgi:app`. WSGI layer добавляет CSP/nosniff/frame protection, same-origin проверку browser write requests, request-size limit и collision-safe atomic JSON writes для нескольких workers. Динамические значения в `innerHTML` экранируются.
-
-В 1.0.5 пока нет полноценной встроенной аутентификации Web UI. Поэтому TCP/8080 должен быть доступен только из доверенной административной LAN/VPN/firewall и **не должен публиковаться напрямую в Интернет**.
-
-## DHCP ownership
-
-Control Center не захватывает уже установленный внешним способом `dnsmasq`. Новый модуль запускается отдельным `control-center-dhcp-server.service`; дистрибутивный `dnsmasq.service` не используется как managed runtime. Пакет удаляется только если защищённый system-state подтверждает `package_owned=true`.
-
-## Обновления пакетов
-
-```bash
-apt-get update
-apt-get -y upgrade --with-new-pkgs
+```text
+/etc/netplan/90-control-center.yaml
+/etc/dnsmasq.d/control-center-dhcp.conf
+/sys/class/net
+ip / resolvectl / systemctl
 ```
 
-OS updater не выполняет upgrade Ubuntu на следующий релиз и не перезагружает сервер автоматически. Внутренние пакетные операции Control Center сериализованы через `/run/control-center-apt.lock`.
+Это позволяет после перезапуска или обновления показывать не пустые формы, а уже применённые параметры и live-состояние.
+
+## DHCP additional options
+
+Основные поля управляют стандартными параметрами сети. Дополнительные numeric DHCP options можно добавлять отдельно. Options `1`, `3`, `6`, `51` зарезервированы за основными полями Control Center и не допускаются в дополнительном списке.
 
 ## Установка
 
 ```bash
-git clone --depth 1 --branch release/1.0.5 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.6 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
@@ -72,41 +64,26 @@ Web UI:
 http://SERVER_IP:8080
 ```
 
-## Acceptance после установки
+## Acceptance
 
 ```bash
-sudo bash scripts/acceptance-1.0.5.sh
+sudo bash scripts/acceptance-1.0.6.sh
 ```
 
-Скрипт не изменяет конфигурацию и проверяет версию/API, HTTP headers, Gunicorn, systemd units, protected state, Professional public key, Netplan и managed DHCP (если он настроен).
+Проверяются API/version/build, Gunicorn/CSP, network inventory, protected state, Netplan, notification API и DHCP status/config check при установленном модуле.
 
 ## Документация
 
 - `docs/README.md` — индекс;
-- `docs/INSTALL.md` — установка/переустановка/удаление;
-- `docs/UPDATE.md` — обновление Control Center;
-- `docs/OS_UPDATES.md` — обновление ОС и пакетов;
-- `docs/LICENSING.md` — Home/Professional и активация;
-- `docs/NETWORK.md` — WAN/LAN и Netplan;
-- `docs/DHCP.md` — DHCP lifecycle;
+- `docs/INSTALL.md` — установка/обновление/удаление;
+- `docs/NETWORK.md` — WAN/LAN и перечень интерфейсов;
+- `docs/DHCP.md` — DHCP, additional options, status и config check;
+- `docs/NOTIFICATIONS.md` — центр уведомлений;
+- `docs/UI.md` — типографика, меню и мобильная верстка;
 - `docs/SECURITY.md` — модель доверия и ограничения;
 - `docs/TROUBLESHOOTING.md` — диагностика;
-- `docs/AUDIT-1.0.5.md` — полный отчёт аудита.
+- `releases/1.0.6/README.md` — release notes.
 
-## Удаление
+## Ограничение безопасности
 
-Полностью:
-
-```bash
-sudo bash install/uninstall.sh
-```
-
-С сохранением Web/system/root/license state и служебной УЗ:
-
-```bash
-sudo bash install/uninstall.sh --keep-data
-```
-
-## Аудит 1.0.5
-
-Полный аудит исправил: хранение лицензии и ownership модулей, trust boundaries pending/system/root state, updater version parser, DHCP netmask/rollback/runtime ownership, гонки APT и JSON writes, WAN chart, восстановление сетевой формы, XSS-экранирование, production WSGI, security headers, uninstall lifecycle, stale website/bootstrap caching и устаревшую документацию. Для предотвращения регрессий добавлены GitHub Actions validation workflows и серверный acceptance script.
+В 1.0.6 ещё нет полноценной встроенной аутентификации Web UI. TCP/8080 необходимо ограничивать доверенной административной LAN/VPN/firewall и не публиковать напрямую в Интернет.
