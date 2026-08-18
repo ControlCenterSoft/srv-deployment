@@ -145,6 +145,16 @@ async function dhcp(){
     if(d.status?.message)$('#dhcpMessage').textContent=d.status.message;
   }catch(e){ if(e.message.includes('не установлен')){tab('market');return;} $('#dhcpMessage').textContent=e.message; }
 }
+async function refreshDhcpRuntime(){
+  if(!$('#dhcp')?.classList.contains('active')) return;
+  try{
+    const d=await api('/api/dhcp/config');
+    setDhcpService(d.service);
+    if(d.status?.message) $('#dhcpMessage').textContent=d.status.message;
+  }catch(e){
+    if(e.message.includes('не установлен')){ $('#dhcpNav')?.classList.add('hidden'); filterNav(); }
+  }
+}
 $('#saveDhcp')?.addEventListener('click',async()=>{const p={interface:$('#dhcpInterface').value,range_start:$('#dhcpStart').value,range_end:$('#dhcpEnd').value,mask:$('#dhcpMask').value,gateway:$('#dhcpGateway').value,dns:$('#dhcpDns').value,lease_minutes:+$('#dhcpLease').value,extra_options:dhcpOptions};try{const d=await api('/api/dhcp/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});$('#dhcpMessage').textContent=d.message;setTimeout(dhcp,1700);setTimeout(loadNotifications,1900);}catch(e){$('#dhcpMessage').textContent=e.message;}});
 $('#checkDhcp')?.addEventListener('click',async()=>{const out=$('#dhcpCheckOutput');out.classList.remove('hidden');out.textContent='Проверка…';try{const d=await api('/api/dhcp/check',{method:'POST'});out.textContent=d.message+(d.output?'\n\n'+d.output:'');$('#dhcpMessage').textContent=d.message;}catch(e){out.textContent=e.message;$('#dhcpMessage').textContent=e.message;}loadNotifications();});
 
@@ -189,5 +199,5 @@ $('#markNotificationsRead')?.addEventListener('click',()=>{const s=readSet();not
 function load(t){({system,networks,market,dhcp,rbac,settings}[t]||(()=>{}))();}
 market();system();settings();loadNotifications();
 setInterval(()=>{if($('#system')?.classList.contains('active'))system();},3000);
-setInterval(()=>{if($('#dhcp')?.classList.contains('active'))dhcp();},6000);
+setInterval(refreshDhcpRuntime,6000);
 setInterval(loadNotifications,5000);
