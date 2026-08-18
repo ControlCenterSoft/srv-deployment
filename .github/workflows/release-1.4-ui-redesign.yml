@@ -182,6 +182,8 @@ jobs:
           done
           grep -Fq '.main-nav.open' releases/1.4.0/payload/static/css/shell.css
           grep -Fq '.nav-backdrop.open' releases/1.4.0/payload/static/css/shell.css
+          grep -Fq 'cc-responsive-table' releases/1.4.0/payload/static/js/ui-1.4.js
+          grep -Fq 'data-cc-label' releases/1.4.0/payload/static/js/ui-1.4.js
 
       - name: Validate interaction safety and accessibility contracts
         run: |
@@ -194,8 +196,16 @@ jobs:
           grep -Fq 'ArrowDown' releases/1.4.0/payload/static/js/shell.js
           grep -Fq 'mobileMenuButton' releases/1.4.0/payload/static/js/shell.js
           grep -Fq 'window.ControlCenterUI' releases/1.4.0/payload/static/js/ui-1.4.js
+          grep -Fq 'focusableElements' releases/1.4.0/payload/static/js/ui-1.4.js
+          grep -Fq 'requireText' releases/1.4.0/payload/static/js/ui-1.4.js
           grep -Fq 'ui.confirm' releases/1.4.0/payload/static/js/services.js
           grep -Fq 'ui.confirm' releases/1.4.0/payload/static/js/access.js
+          grep -Fq 'confirmAction' releases/1.4.0/payload/static/js/system.js
+          grep -Fq 'requireText: "REBOOT"' releases/1.4.0/payload/static/js/system.js
+          grep -Fq 'confirmAction' releases/1.4.0/payload/static/js/minecraft.js
+          grep -Fq 'promptAction' releases/1.4.0/payload/static/js/minecraft.js
+          grep -Fq 'requireText:name' releases/1.4.0/payload/static/js/minecraft.js
+          grep -Fq 'aria-selected' releases/1.4.0/payload/static/js/minecraft.js
           grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/services.js
           grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/access.js
 
