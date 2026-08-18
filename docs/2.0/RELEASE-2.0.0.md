@@ -1,57 +1,49 @@
 # Control Center 2.0.0
 
-## Status
+## Статус
 
-2.0.0 is staged in `release/2.0.0` and must remain non-production until all release gates pass. The accepted production deployment remains 1.3.8 during staging.
+2.0.0 готовится в `release/2.0.0`. До прохождения всех release gates production pointer остаётся на опубликованной версии 1.3.8.
 
-## Major changes
+## Интерфейс
 
-### Interface
+Веб-интерфейс переведён на единую оболочку Control Center: левая навигация, верхняя строка состояния, адаптивный workspace, поиск, общие состояния загрузки/ошибок и согласованные модули. В навигацию 2.0 включены DHCP, PXE Windows и PXE Linux вместе с существующими сетью, доменом, сетевыми ресурсами, Minecraft, загрузками, AdGuard VPN, сервисами, пользователями и системой.
 
-The web interface is rebuilt around the approved Control Center design: left navigation, top status bar, redesigned dashboard, consistent dark workspace surfaces, responsive mobile navigation, shared modal/toast interactions, keyboard navigation, accessibility states, responsive tables, loading skeletons and consistent object editors.
+## Обновления
 
-The redesign covers login, dashboard, network, services, system/update center, domain and access, network shares, RBAC, AdGuard VPN, downloads and Minecraft Bedrock management.
+Старый механизм заменён транзакционным `srvcc-update-controller` с отдельными timestamp полями `last_check_at`, `last_update_attempt_at` и `last_successful_update_at`. Failed fingerprint не применяется автоматически бесконечно, но timer продолжает проверки. После service rotation автоматический timer повторно проверяется на enabled/active.
 
-### Product updater
+В интерфейсе используются подписи **Автоматическое обновление**, **Последняя проверка обновления** и **Последнее успешное обновление**. Историческое успешное время сохраняется и не заменяется простой проверкой или неудачной попыткой.
 
-The legacy updater is replaced by `srvcc-update-controller`, while the established unit/API names remain compatible. The new status schema separately tracks:
+## Резервные копии
 
-- last update check;
-- last update attempt;
-- last successful accepted update;
-- transaction id and stage;
-- failed/blocked release fingerprint.
+Добавлены выбор нескольких архивов и массовое удаление. Административная операция проходит через CSRF/RBAC и privileged action queue.
 
-A release fingerprint that failed automatic application is not repeatedly applied on every timer invocation. Checks continue and the timer remains active. A changed release fingerprint can be considered again.
+Исправлена ошибка 1.x, при которой apply мог создать pre-release backup даже при выключенном `backup_before_update`. В 2.0 пользовательский backup создаётся только при строгом boolean `true`. Приватный rollback snapshot остаётся обязательной частью транзакции и не считается пользовательским backup.
 
-### Backups
+## Minecraft Bedrock
 
-The System page gains multi-select and bulk deletion of backups. Bulk deletion reuses the existing privileged system action queue and does not bypass CSRF or administrator checks.
+Добавлен health-first repair. Исправный сервер не трогается. Для неисправного сервера сначала создаётся safety backup, затем выполняются repair/update/restart через проверенный single-server management path. Новый recovery world допускается только если обычное восстановление не помогло и safety backup успешно создан.
 
-The pre-update backup policy is made authoritative. In the 1.x path, release apply could create a pre-release backup even when the outer updater had correctly read `backup_before_update=false`. 2.0 removes that unconditional user-visible backup from apply. A private rollback snapshot is still created because it is part of the deployment transaction, not the configured backup schedule.
+## DHCP/PXE carry-forward
 
-### Minecraft Bedrock
+Неопубликованная 1.4 работа по DHCP/PXE перенесена в 2.0 без возврата старого backup worker. Перенесены migration, backend/core, PXE agent/probe, UI assets и contract tests. 2.0 installer собирает split-sources, устанавливает units, создаёт PXE directories и применяет Alembic migration.
 
-2.0 introduces a health-first repair flow. It verifies service activity, the Bedrock UDP listener and active-world information. A healthy server is left unchanged. If unhealthy, 2.0 attempts a safety backup, update/reinstall through the proven server management path and restart. Only if the server remains unhealthy and a safety backup exists may a replacement recovery world be selected.
+DHCP/PXE router подключается после основного 2.0 UI router: поэтому новая оболочка и модули 2.0 остаются приоритетными, а перенесённый код добавляет отсутствующие DHCP/PXE страницы и API. PXE boot media публично доступно только через `/pxe/files`; приватные profiles не публикуются.
 
-## Update-center text
+PXE installation запрещена без профиля и отдельного одноразового authorization.
 
-The System workspace displays:
+## Совместимость и история 1.x
 
-- `Автоматическое обновление` — current configured mode/timer state;
-- `Последняя проверка обновления` — discovery/check timestamp;
-- `Последнее успешное обновление` — last transaction that reached accepted success.
+Текущий `main` и неопубликованная история 1.4 сохранены в ancestry 2.0. Прямое наложение конфликтующего дерева 1.4 не выполняется: нужная функциональность мигрируется выборочно. Опубликованные ветки 1.x сохраняются как frozen history.
 
-The historical successful timestamp is preserved during migration rather than overwritten by a check or failed attempt.
+## Release gates
 
-## Required release gates
+Перед production activation обязательны:
 
-Before production activation:
-
-1. `main` must be an ancestor of the 2.0 release head so all published 1.x work is carried forward.
-2. Manifest hashes must match the exact release scripts.
-3. Shell, Python and JavaScript validation must pass.
-4. UI, updater, backup and Minecraft regression contracts must pass.
-5. Upgrade from the actual 1.3.8 production state must pass preflight/apply/acceptance/rollback simulation.
-6. Production server must complete the 1.3.8 → 2.0.0 transaction and publish fresh `server-state` proving the new version and service health.
-7. Only after successful real-server acceptance may obsolete unpublished 1.x branches be removed.
+1. успешный `Control Center 2.0 validation`;
+2. shell/Python/JavaScript checks;
+3. updater/backup/Minecraft/DHCP/PXE contracts;
+4. simulation перехода 1.3.8 → 2.0.0 и rollback;
+5. реальная транзакция на production server;
+6. свежий `server-state`, подтверждающий 2.0.0 и health;
+7. только после этого — удаление obsolete unpublished 1.x development branches.
