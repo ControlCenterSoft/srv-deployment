@@ -24,7 +24,7 @@ jobs:
 
       - name: Python syntax
         run: |
-          python -m py_compile app/main.py license/issue-license.py
+          python -m py_compile app/main.py app/wsgi.py license/issue-license.py
 
       - name: Bash syntax
         run: |
@@ -78,6 +78,12 @@ jobs:
           assert re.search(rf'^VERSION={re.escape(version)}$', installer, re.M), 'installer VERSION mismatch'
           assert '/var/lib/control-center-root' in installer, 'protected root state missing from installer'
           assert 'InaccessiblePaths=/var/lib/control-center-root' in installer, 'Web service root-state isolation missing'
+          assert '/gunicorn ' in installer and 'wsgi:app' in installer, 'Gunicorn WSGI is not configured'
+          assert 'control-center-dhcp-server.service' in installer, 'dedicated DHCP runtime missing'
+
+          requirements=(root/'requirements.txt').read_text()
+          assert re.search(r'^gunicorn>=26\.0,<27\.0$', requirements, re.M), 'Gunicorn dependency mismatch'
+          assert (root/'app/requirements.txt').read_text()==requirements, 'requirements files diverged'
 
           updater = (root/'update/control-center-update').read_text()
           assert "^APP_VERSION[[:space:]]*=" in updater, 'updater APP_VERSION parser regressed'
@@ -85,9 +91,15 @@ jobs:
 
           network = (root/'network/control-center-network-apply').read_text()
           dhcp = (root/'market/control-center-dhcp-apply').read_text()
+          market = (root/'market/control-center-market-apply').read_text()
           assert '/var/lib/control-center-root' in network
           assert '/var/lib/control-center-root' in dhcp
           assert 'net.netmask' in dhcp, 'dnsmasq IPv4 netmask conversion missing'
+          assert '--conf-file="$TARGET"' in dhcp, 'dnsmasq config test is not explicit'
+          assert 'установленный вне Control Center' in market, 'pre-existing dnsmasq protection missing'
+
+          wsgi=(root/'app/wsgi.py').read_text()
+          assert 'Content-Security-Policy' in wsgi and 'X-Frame-Options' in wsgi
 
           readme = (root/'README.md').read_text()
           assert f'Control Center {version}' in readme
