@@ -2,12 +2,12 @@
   "schema_version": 1,
   "release_id": "1.3.4",
   "release_version": "1.3.4",
-  "description": "SRV Control Center 1.3.4 fixes the 1.3.3 preflight patch-anchor failure while preserving the proven 1.3.3 payload and rollback behavior.",
+  "description": "SRV Control Center 1.3.4 repairs production preflight so the proven 1.3.3 payload can be applied even when the pre-update Minecraft updater runtime is unhealthy.",
   "upgrade_from": ">=1.2.0,<1.3.4",
   "scripts": {
     "preflight": {
       "path": "preflight-1.3.4.sh",
-      "sha256": "d939fcb55a6264f270185e9ef96dd74d962e60d43a3812fda461456a1fe10ef9"
+      "sha256": "b32bb6a05ed90db12de4259220280b2912ce49146fb83916928d4f542dcf7bea"
     },
     "apply": {
       "path": "apply-1.3.4.sh",
