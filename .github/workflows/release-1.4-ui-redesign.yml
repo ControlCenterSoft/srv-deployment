@@ -24,6 +24,7 @@ jobs:
           set -euo pipefail
           root='releases/1.4.0/payload'
           for f in \
+            templates/login.html \
             templates/shell.html \
             templates/dashboard.html \
             templates/internet.html \
@@ -31,6 +32,7 @@ jobs:
             templates/system.html \
             templates/samba.html \
             templates/shares.html \
+            static/css/login.css \
             static/css/shell.css \
             static/css/module.css \
             static/css/dashboard-1.4.css \
@@ -38,6 +40,7 @@ jobs:
             static/css/service-pages.css \
             static/css/system-1.1.css \
             static/css/samba-1.3.css \
+            static/js/login.js \
             static/js/shell.js \
             static/js/dashboard.js \
             static/js/internet.js \
@@ -53,6 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in \
+            releases/1.4.0/payload/templates/login.html \
             releases/1.4.0/payload/templates/shell.html \
             releases/1.4.0/payload/templates/dashboard.html \
             releases/1.4.0/payload/templates/internet.html \
@@ -67,6 +71,7 @@ jobs:
             fi
           done
           grep -Fq '>CONTROL CENTER<' releases/1.4.0/payload/templates/shell.html
+          grep -Fq 'Вход в систему' releases/1.4.0/payload/templates/login.html
           grep -Fq 'Обзор системы' releases/1.4.0/payload/templates/dashboard.html
           grep -Fq 'Домен и доступ' releases/1.4.0/payload/templates/samba.html
           grep -Fq 'Сетевые ресурсы' releases/1.4.0/payload/templates/shares.html
@@ -75,6 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in \
+            releases/1.4.0/payload/static/js/login.js \
             releases/1.4.0/payload/static/js/shell.js \
             releases/1.4.0/payload/static/js/dashboard.js \
             releases/1.4.0/payload/static/js/internet.js \
@@ -94,6 +100,7 @@ jobs:
 
           root = Path('releases/1.4.0/payload')
           contracts = {
+              'templates/login.html': {'loginForm','loginUsername','loginPassword','loginError'},
               'templates/shell.html': {
                   'mainMenu','moduleFrame','globalSearch','backendHealthDot','backendHealth',
                   'releaseVersion','githubSync','sessionUser','logoutButton','refreshButton'
@@ -139,6 +146,7 @@ jobs:
       - name: Validate responsive design contracts
         run: |
           set -euo pipefail
+          grep -Fq '@media' releases/1.4.0/payload/static/css/login.css
           grep -Fq '@media' releases/1.4.0/payload/static/css/shell.css
           grep -Fq '@media' releases/1.4.0/payload/static/css/dashboard-1.4.css
           grep -Fq '@media' releases/1.4.0/payload/static/css/network.css
