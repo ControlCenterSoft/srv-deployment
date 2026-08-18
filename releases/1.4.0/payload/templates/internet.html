@@ -3,16 +3,16 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Сеть — SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/module.css">
-    <link rel="stylesheet" href="/static/css/network.css">
+    <title>Сеть — Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui2">
+    <link rel="stylesheet" href="/static/css/network.css?v=1.4.0-ui2">
 </head>
 <body>
-<div class="page">
+<div class="page network-page">
     <header class="page-header">
         <div>
             <h1>Сеть</h1>
-            <p>Текущая топология, проверка связности и валидация параметров WAN/LAN.</p>
+            <p>WAN, LAN, DNS, VPN, диагностика связности и безопасная проверка будущей конфигурации.</p>
         </div>
         <div class="live-status">
             <span class="live-dot" id="networkLiveDot"></span>
@@ -20,43 +20,79 @@
         </div>
     </header>
 
-    <section class="summary-grid">
-        <div class="panel">
-            <div class="panel-title">Маршрут по умолчанию</div>
-            <div class="stat-row"><span>WAN-интерфейс</span><strong id="networkWan">—</strong></div>
-            <div class="stat-row"><span>Шлюз</span><strong id="networkGateway">—</strong></div>
-            <div class="stat-row"><span>Метрика</span><strong id="networkMetric">—</strong></div>
-        </div>
-        <div class="panel">
-            <div class="panel-title">LAN и DNS</div>
-            <div class="stat-row"><span>LAN-кандидаты</span><strong id="networkLan">—</strong></div>
-            <div class="stat-row"><span>DNS</span><strong id="networkDns">—</strong></div>
-            <div class="stat-row"><span>VPN-интерфейсы</span><strong id="networkVpn">—</strong></div>
-        </div>
+    <section class="network-summary-grid" aria-label="Сводка сети">
+        <article class="network-summary-card accent-green">
+            <div class="summary-symbol">◎</div>
+            <div class="summary-data">
+                <span>WAN</span>
+                <strong id="networkWan">—</strong>
+                <small>основной маршрут</small>
+            </div>
+        </article>
+        <article class="network-summary-card accent-blue">
+            <div class="summary-symbol">↗</div>
+            <div class="summary-data">
+                <span>Шлюз</span>
+                <strong id="networkGateway">—</strong>
+                <small>метрика <b id="networkMetric">—</b></small>
+            </div>
+        </article>
+        <article class="network-summary-card accent-cyan">
+            <div class="summary-symbol">⌘</div>
+            <div class="summary-data">
+                <span>LAN</span>
+                <strong id="networkLan">—</strong>
+                <small>локальная сеть</small>
+            </div>
+        </article>
+        <article class="network-summary-card accent-purple">
+            <div class="summary-symbol">◇</div>
+            <div class="summary-data">
+                <span>VPN</span>
+                <strong id="networkVpn">—</strong>
+                <small>туннельные интерфейсы</small>
+            </div>
+        </article>
     </section>
 
-    <section class="panel">
-        <div class="panel-title">Проверка связности</div>
-        <div class="stat-row"><span>Результат</span><strong id="diagnosticsSummary">—</strong></div>
-        <div class="stat-row"><span>Проверено</span><strong id="diagnosticsCheckedAt">—</strong></div>
-        <div class="service-grid" id="diagnosticsGrid"></div>
-    </section>
+    <section class="network-main-grid">
+        <article class="panel topology-panel">
+            <div class="panel-heading">
+                <div>
+                    <h2>Топология</h2>
+                    <p>Текущие интерфейсы и их состояние.</p>
+                </div>
+                <span class="dns-chip">DNS: <strong id="networkDns">—</strong></span>
+            </div>
+            <div class="service-grid network-interface-grid" id="networkInterfaces"></div>
+        </article>
 
-    <section class="panel">
-        <div class="panel-title">Интерфейсы</div>
-        <div class="service-grid" id="networkInterfaces"></div>
+        <article class="panel diagnostics-panel">
+            <div class="panel-heading">
+                <div>
+                    <h2>Диагностика</h2>
+                    <p>Маршрут, DNS и внешний HTTPS.</p>
+                </div>
+                <div class="diagnostics-meta">
+                    <strong id="diagnosticsSummary">—</strong>
+                    <span id="diagnosticsCheckedAt">—</span>
+                </div>
+            </div>
+            <div class="service-grid diagnostics-grid" id="diagnosticsGrid"></div>
+        </article>
     </section>
 
     <section class="panel network-plan-panel">
         <div class="panel-title-row">
             <div>
                 <div class="panel-title">Проверка параметров WAN/LAN</div>
-                <p class="panel-note">Проверяет выбранные интерфейсы, LAN CIDR, DHCP-пул и DNS. Проверка не изменяет сетевую конфигурацию сервера.</p>
+                <p class="panel-note">Control Center валидирует схему до применения. На этом шаге настройки сервера не изменяются.</p>
             </div>
-            <span class="plan-badge">Проверка</span>
+            <span class="plan-badge">Без применения</span>
         </div>
 
         <form id="networkPlanForm" class="network-plan-form">
+            <div class="planner-section-title">Интерфейсы</div>
             <div class="form-grid">
                 <label class="form-field">
                     <span>Режим WAN</span>
@@ -73,9 +109,14 @@
                     <select id="planLanInterface"></select>
                 </label>
                 <label class="form-field">
-                    <span>LAN-адрес</span>
+                    <span>LAN-адрес / CIDR</span>
                     <input id="planLanAddress" type="text" value="192.168.10.1/24" placeholder="192.168.10.1/24">
                 </label>
+            </div>
+
+            <div class="planner-divider"></div>
+            <div class="planner-section-title">DHCP и DNS</div>
+            <div class="form-grid">
                 <label class="form-field">
                     <span>DHCP</span>
                     <select id="planDhcpEnabled">
@@ -92,7 +133,7 @@
                     <input id="planDhcpEnd" type="text" value="192.168.10.240">
                 </label>
                 <label class="form-field">
-                    <span>DNS</span>
+                    <span>Режим DNS</span>
                     <select id="planDnsMode">
                         <option value="automatic">Автоматически</option>
                         <option value="custom">Вручную</option>
@@ -104,13 +145,19 @@
                 </label>
             </div>
             <div class="form-actions">
-                <button class="action-button" type="submit">Проверить параметры</button>
+                <button class="action-button" type="submit">Проверить конфигурацию</button>
+                <span class="planner-hint">Изменения не применяются без отдельного подтверждения.</span>
             </div>
         </form>
     </section>
 
-    <section class="panel" id="networkPlanResultPanel" hidden>
-        <div class="panel-title">Результат проверки</div>
+    <section class="panel plan-result-panel" id="networkPlanResultPanel" hidden>
+        <div class="panel-heading">
+            <div>
+                <h2>Результат проверки</h2>
+                <p>Предварительная проверка будущей сетевой схемы.</p>
+            </div>
+        </div>
         <div id="networkPlanStatus" class="plan-status"></div>
         <div id="networkPlanMessages" class="plan-messages"></div>
         <div class="plan-columns single-column">
@@ -121,6 +168,6 @@
         </div>
     </section>
 </div>
-<script src="/static/js/internet.js"></script>
+<script src="/static/js/internet.js?v=1.4.0-ui2"></script>
 </body>
 </html>
