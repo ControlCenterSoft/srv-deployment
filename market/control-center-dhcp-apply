@@ -1,21 +1,34 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 STATE=/var/lib/control-center
+SYSTEM_STATE=/var/lib/control-center-system
 ROOT_STATE=/var/lib/control-center-root
 PENDING="$STATE/dhcp-pending.json"
-CONFIG="$STATE/dhcp-config.json"
-STATUS="$STATE/dhcp-status.json"
-MODULE_STATE="$STATE/modules/dhcp.json"
+CONFIG="$SYSTEM_STATE/dhcp-config.json"
+STATUS="$SYSTEM_STATE/dhcp-status.json"
+MODULE_STATE="$SYSTEM_STATE/modules/dhcp.json"
 TARGET=/etc/dnsmasq.d/control-center-dhcp.conf
 BACKUP="$ROOT_STATE/control-center-dhcp.conf.rollback"
 RUNTIME=control-center-dhcp-server.service
 [[ -s "$PENDING" ]] || exit 0
+install -d -o root -g control-center -m 0750 "$SYSTEM_STATE" "$SYSTEM_STATE/modules"
 install -d -o root -g root -m 0700 "$ROOT_STATE"
 status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
 import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='applied','state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
-chown control-center:control-center "$STATUS" 2>/dev/null || true; }
+chown root:control-center "$STATUS"; chmod 0640 "$STATUS"; }
+if [[ ! -f "$MODULE_STATE" ]] || ! python3 - "$MODULE_STATE" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except:raise SystemExit(1)
+raise SystemExit(0 if j.get('installed') and j.get('package')=='dnsmasq' else 1)
+PY
+then
+  rm -f "$PENDING"
+  status rejected 'DHCP Server не зарегистрирован как управляемый модуль Control Center.'
+  exit 1
+fi
 status applying 'Проверка и применение DHCP конфигурации…'
 WAS_ACTIVE=0
 systemctl is-active --quiet "$RUNTIME" && WAS_ACTIVE=1 || true
@@ -71,19 +84,15 @@ mv "$TMP" "$TARGET"
 if dnsmasq --test --conf-file="$TARGET" >/tmp/control-center-dhcp-test.log 2>&1; then
   systemctl enable "$RUNTIME" >/dev/null
   if systemctl restart "$RUNTIME"; then
-    mv "$PENDING" "$CONFIG"
-    chown control-center:control-center "$CONFIG" 2>/dev/null || true
-    if [[ -f "$MODULE_STATE" ]]; then
-      python3 - "$MODULE_STATE" <<'PY'
+    cp "$PENDING" "$CONFIG"
+    rm -f "$PENDING"
+    chown root:control-center "$CONFIG"; chmod 0640 "$CONFIG"
+    python3 - "$MODULE_STATE" <<'PY'
 import json,sys
-p=sys.argv[1]
-try:j=json.load(open(p))
-except:j={}
-j.update({'installed':True,'package':'dnsmasq','package_owned':j.get('package_owned',True),'configured':True})
+p=sys.argv[1]; j=json.load(open(p)); j['configured']=True
 open(p,'w').write(json.dumps(j,ensure_ascii=False,indent=2)+'\n')
 PY
-      chown control-center:control-center "$MODULE_STATE" 2>/dev/null || true
-    fi
+    chown root:control-center "$MODULE_STATE"; chmod 0640 "$MODULE_STATE"
     status applied 'DHCP конфигурация применена'
     exit 0
   fi
