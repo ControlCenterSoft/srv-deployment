@@ -16,7 +16,8 @@ WEB_CONFIG = Path('/var/lib/control-center-system/web-config.json')
 
 def _runtime_port():
     try:
-        return int(os.getenv('CONTROL_CENTER_PORT', '8080'))
+        port = int(os.getenv('CONTROL_CENTER_PORT', '8080'))
+        return port if 1024 <= port <= 65535 else 8080
     except Exception:
         return 8080
 
@@ -34,11 +35,11 @@ def _port_available(port):
         s.close()
 
 
-def _db_or_error():
+def _db_health():
     try:
         return database.health(), None
     except Exception as exc:
-        return None, (jsonify(ok=False, error=f'PostgreSQL недоступен: {exc}'), 503)
+        return None, str(exc)
 
 
 def _sync_runtime(main):
@@ -67,11 +68,8 @@ def _sync_runtime(main):
 
 
 def _extra_notifications(main):
-    items = []
     item = main._status_notification('web', 'Web-панель', WEB_STATUS)
-    if item:
-        items.append(item)
-    return items
+    return [item] if item else []
 
 
 def register(app, main):
@@ -84,18 +82,14 @@ def register(app, main):
         pass
 
     def health_107():
-        try:
-            database.health()
-            db_state = 'ok'
-        except Exception:
-            db_state = 'degraded'
+        _, db_error = _db_health()
         return jsonify(
             status='ok',
             product='Control Center',
             version=main.APP_VERSION,
             build=main.APP_BUILD,
             edition=main._license_info()['edition'],
-            database=db_state,
+            database='degraded' if db_error else 'ok',
         )
 
     def notifications_107():
@@ -117,9 +111,9 @@ def register(app, main):
             return jsonify(items=raw, count=len(raw), unread=len(raw), generated_at=int(time.time()), persistence='degraded')
 
     def mark_notifications_107():
-        _, error = _db_or_error()
-        if error:
-            return error
+        _, db_error = _db_health()
+        if db_error:
+            return jsonify(ok=False, error=f'PostgreSQL недоступен: {db_error}'), 503
         body = request.get_json(silent=True) or {}
         try:
             if body.get('all') is True:
@@ -145,17 +139,34 @@ def register(app, main):
             return jsonify(ok=False, error=str(exc), cluster_ready=True), 503
 
     def web_settings_107():
-        _, error = _db_or_error()
-        if error:
-            return error
         runtime = _runtime_port()
+        status = main._read_json(WEB_STATUS, {})
+        config = main._read_json(WEB_CONFIG, {})
+        _, db_error = _db_health()
+        if db_error:
+            if request.method == 'POST':
+                return jsonify(ok=False, error=f'PostgreSQL недоступен: {db_error}'), 503
+            fallback_port = config.get('port', runtime)
+            try:
+                fallback_port = int(fallback_port)
+            except Exception:
+                fallback_port = runtime
+            return jsonify(
+                port=fallback_port,
+                runtime_port=runtime,
+                pending_port=None,
+                status=status,
+                config=config,
+                min_port=1024,
+                max_port=65535,
+                persistence='degraded',
+                database_error=db_error,
+            )
         current = database.get_setting('web.port', runtime)
         try:
             current = int(current)
         except Exception:
             current = runtime
-        status = main._read_json(WEB_STATUS, {})
-        config = main._read_json(WEB_CONFIG, {})
         if request.method == 'GET':
             return jsonify(
                 port=current,
@@ -165,6 +176,7 @@ def register(app, main):
                 config=config,
                 min_port=1024,
                 max_port=65535,
+                persistence='postgresql',
             )
         body = request.get_json(silent=True) or {}
         try:
@@ -199,14 +211,15 @@ def register(app, main):
         ), 202
 
     def update_settings_107():
-        _, error = _db_or_error()
-        if error and request.method == 'POST':
-            return error
         fallback = main._normalized_update_settings()
+        db_ok = True
         try:
             settings = database.get_setting('control_center.update', fallback)
-        except Exception:
+        except Exception as exc:
+            db_ok = False
             settings = fallback
+            if request.method == 'POST':
+                return jsonify(error=f'PostgreSQL недоступен: {exc}'), 503
         if request.method == 'POST':
             body = request.get_json(silent=True) or {}
             automatic = body.get('automatic_updates')
@@ -221,17 +234,24 @@ def register(app, main):
             settings = {'automatic_updates': automatic, 'interval_minutes': interval, 'channel': 'production'}
             database.set_setting('control_center.update', settings)
             main._write_json(main.SETTINGS_FILE, settings)
-        return jsonify(settings=settings, status=main._read_json(main.STATUS_FILE, {}), current_version=main.APP_VERSION, current_build=main.APP_BUILD, persistence='postgresql')
+        return jsonify(
+            settings=settings,
+            status=main._read_json(main.STATUS_FILE, {}),
+            current_version=main.APP_VERSION,
+            current_build=main.APP_BUILD,
+            persistence='postgresql' if db_ok else 'compatibility-json',
+        )
 
     def os_update_settings_107():
-        _, error = _db_or_error()
-        if error and request.method == 'POST':
-            return error
         fallback = main._normalized_os_update_settings()
+        db_ok = True
         try:
             settings = database.get_setting('os.update', fallback)
-        except Exception:
+        except Exception as exc:
+            db_ok = False
             settings = fallback
+            if request.method == 'POST':
+                return jsonify(error=f'PostgreSQL недоступен: {exc}'), 503
         if request.method == 'POST':
             body = request.get_json(silent=True) or {}
             automatic = body.get('automatic_updates')
@@ -246,7 +266,7 @@ def register(app, main):
             settings = {'automatic_updates': automatic, 'interval_minutes': interval}
             database.set_setting('os.update', settings)
             main._write_json(main.OS_UPDATE_SETTINGS, settings)
-        return jsonify(settings=settings, status=main._read_json(main.OS_UPDATE_STATUS, {}), persistence='postgresql')
+        return jsonify(settings=settings, status=main._read_json(main.OS_UPDATE_STATUS, {}), persistence='postgresql' if db_ok else 'compatibility-json')
 
     app.view_functions['health'] = health_107
     app.view_functions['notifications'] = notifications_107
