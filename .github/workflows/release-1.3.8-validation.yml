@@ -4,7 +4,6 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'deployment.json'
       - 'releases/1.3.8/**'
       - '.github/workflows/release-1.3.8-validation.yml'
       - '.github/workflows/release-1.3.7-validation.yml'
@@ -16,6 +15,11 @@ permissions:
 
 jobs:
   release-1-3-8:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.head_ref, 'release/1.3.') ||
+      startsWith(github.head_ref, 'hotfix/1.3.') ||
+      startsWith(github.head_ref, 'feature/1.3.')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
