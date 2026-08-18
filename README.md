@@ -1,45 +1,34 @@
 # Control Center
 
-`filosoff31/srv-deployment` — production-репозиторий Control Center: web-системы централизованного управления серверной инфраструктурой с единым Core, транзакционными product-релизами и централизованным администрированием.
+`filosoff31/srv-deployment` — production-репозиторий Control Center: web-системы централизованного управления серверной инфраструктурой с транзакционными product-релизами, централизованной авторизацией и управляемыми privileged operations.
 
-## Текущее production-состояние
+## Текущее состояние
 
-Источник истины для опубликованного production target — **`deployment.json`**, а не номер версии, упомянутый в документации. На момент этой редакции `main/deployment.json` публикует **Control Center 1.3.8** из `releases/1.3.8`.
+**Production target определяется только `deployment.json`.** На момент этой редакции `main/deployment.json` публикует **Control Center 2.0.0** из frozen-каталога `releases/2.0.0`.
 
-Фактически установленная версия конкретного сервера может отличаться после failed preflight/apply/acceptance и rollback. Для неё следует использовать актуальный `server-state`/`release.json`. Исторические причины patch-релизов и real-server инциденты фиксируются в `docs/RELEASE-HISTORY.md`.
+Фактически установленная версия конкретного сервера может отличаться от production target после failed preflight/apply/acceptance, rollback или задержки обновления. Для runtime-состояния используйте актуальный `server-state`/`release.json`.
 
-Каждый опубликованный каталог `releases/<version>` считается **frozen**. Исправления уже опубликованного релиза выполняются новой patch-версией, а не изменением старого payload.
+Каталоги `releases/<version>` после публикации считаются **frozen**. Исправления выпускаются новой версией и не вносятся задним числом в опубликованный payload.
 
-## Что представляет собой Control Center
+## Что входит в Control Center 2.0
 
-Текущая production-линия включает:
+Production 2.0.0 объединяет:
 
-- FastAPI/PostgreSQL web-панель и dashboard/health;
-- Linux/PAM аутентификацию и доменную Samba/winbind интеграцию через PAM/NSS;
+- FastAPI/PostgreSQL web-панель и системный dashboard;
+- Linux/PAM и Samba/winbind identities через NSS/PAM;
 - Kerberos/SPNEGO SSO в корректно настроенной доменной среде;
-- RBAC по пользователям/группам и Read/Write полномочиям;
-- системное администрирование через ограниченные privileged helpers/systemd agents;
-- GitHub product updater и отдельный механизм обслуживания пакетов ОС;
-- backup/restore;
-- Samba Active Directory и Samba shares;
-- AdGuard VPN;
-- Minecraft Bedrock administration;
-- network overview/diagnostics и другие управляемые сервисные функции текущей release line.
+- RBAC по пользователям и группам;
+- privileged operations через ограниченные root-owned helpers/systemd agents;
+- транзакционный product updater с fingerprint/failed-release protection;
+- отдельное обслуживание пакетов ОС;
+- backup/restore и bulk backup management;
+- Samba Active Directory и SMB shares;
+- DHCP/PXE management, перенесённый в 2.0;
+- AdGuard VPN integration;
+- Minecraft Bedrock management с health-first recovery;
+- network overview и diagnostics.
 
-Web-приложение не должно выполнять произвольные root-команды. Привилегированные операции проходят backend/RBAC, CSRF/session checks и специализированные root-owned action paths.
-
-## Release и update model
-
-`main` — единственный production update channel. `server-state` используется для публикации фактического состояния сервера. Ветки `release/*` предназначены для подготовки и validation будущих product-релизов.
-
-Типовая deployment-транзакция:
-
-```text
-preflight → safety backup → apply → acceptance → healthcheck
-                                      ↘ failure → rollback
-```
-
-Updater использует release metadata и product fingerprint. Documentation-only commit не должен повторно применять неизменившийся product release.
+Web-приложение не должно выполнять произвольные root-команды. Критические операции проходят backend validation, session/CSRF checks, RBAC и специализированные privileged paths.
 
 ## Установка
 
@@ -50,33 +39,53 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Installer читает текущий `deployment.json` и разворачивает активный self-contained release. Перед production-установкой ознакомьтесь с `docs/INSTALL.md`, каноническим руководством и историей текущей release line.
+Installer читает активный `deployment.json` и разворачивает опубликованный self-contained release. Перед production-установкой прочитайте `docs/INSTALL.md` и `docs/PRODUCT-MANUAL-RU.md`.
 
-## Аутентификация и первый вход
+## Первый вход и права
 
-Современная production-линия **не использует отдельный bootstrap web-пароль Control Center**. Интерактивный вход выполняется существующей локальной Linux/PAM либо доменной Samba/winbind учётной записью; после authentication применяется RBAC Control Center. Для доменной среды поддерживается Kerberos/SPNEGO SSO при корректной настройке клиента, DNS, времени и браузера.
+Control Center 2.0 **не использует отдельный bootstrap web-пароль**. Вход выполняется существующей локальной Linux/PAM либо доменной Samba/winbind учётной записью. После authentication применяется RBAC Control Center. Kerberos/SPNEGO SSO доступен при корректной настройке доменной среды.
 
-Устаревшие инструкции ранних 0.x про `admin-bootstrap.txt` являются историческими и не должны использоваться для текущей production-линии.
+Инструкции ранних 0.x про `admin-bootstrap.txt` являются историческими и не применяются к текущей production-архитектуре.
+
+## Обновление продукта
+
+`main` — production update channel. Ветки `release/*` и draft PR используются для подготовки будущих релизов и сами по себе не означают production-доступность функций.
+
+Типовая транзакция:
+
+```text
+preflight → policy-controlled safety backup → apply → acceptance → healthcheck
+                                                   ↘ failure → rollback
+```
+
+Updater ориентируется на release metadata/product fingerprint, поэтому documentation-only commit не должен повторно применять неизменившийся product release.
 
 ## Документация
 
-Начальная точка для пользователя и администратора:
+Главная точка входа — **`docs/README.md`**.
 
-- **`docs/PRODUCT-MANUAL-RU.md`** — каноническое русскоязычное руководство;
-- **`docs/README.md`** — индекс документации и правила определения актуальности документов.
+- `docs/PRODUCT-MANUAL-RU.md` — каноническое русскоязычное руководство пользователя и администратора;
+- `docs/2.0/` — release-specific документация текущей major-линии;
+- `docs/INSTALL.md` — установка;
+- `docs/SYSTEM-ADMIN.md` — PAM/NSS/winbind, RBAC и privileged administration;
+- `docs/AUTO-UPDATES.md` — product updater;
+- `docs/DEPLOYMENT-RELIABILITY.md` — deployment/rollback model;
+- `docs/RELEASE-HISTORY.md` — опубликованная release lineage;
+- `docs/ROADMAP.md` — будущий scope, а не описание production;
+- `docs/PRODUCT-EDITIONS.md` — редакции/licensing lifecycle.
 
-Основные источники:
+Release-specific scope, incident и validation документы сохраняются как исторические или версионные источники. Они не должны трактоваться как текущая эксплуатационная инструкция, если противоречат active `deployment.json`, frozen manifest или каноническому руководству.
 
-- `docs/ROADMAP.md` — согласованный будущий product roadmap;
-- `docs/RELEASE-HISTORY.md` — история опубликованных версий и известных real-server результатов;
-- `docs/INSTALL.md` — чистая установка;
-- `docs/SYSTEM-ADMIN.md` — PAM/NSS/RBAC и privileged system administration;
-- `docs/AUTO-UPDATES.md` — GitHub updater;
-- `docs/DEPLOYMENT-RELIABILITY.md` — транзакционная модель deployment/rollback;
-- `docs/PRODUCT-EDITIONS.md` — редакции, licensing architecture и lifecycle.
+## Правило актуальности
 
-Release-specific scope, incident и diagnostic документы сохраняются как исторические источники соответствующего периода. Если исторический документ противоречит `deployment.json`, frozen-файлам активного release или каноническому руководству, он **не является текущей эксплуатационной инструкцией**.
+При расхождении источников используйте порядок:
 
-## Развитие
+1. `deployment.json`;
+2. frozen payload/manifest активного release;
+3. runtime `server-state` конкретного сервера;
+4. `docs/RELEASE-HISTORY.md`;
+5. `docs/PRODUCT-MANUAL-RU.md` и профильные current docs;
+6. `docs/ROADMAP.md`;
+7. исторические release/incident документы.
 
-Roadmap является источником будущего scope. Новая функция считается текущей только после реализации, validation и публикации через production release metadata. Пользовательская документация должна обновляться вместе с каждым новым релизом без переписывания frozen release payloads.
+Документация обновляется вместе с каждым новым релизом. Frozen release payloads ради документации не изменяются, секреты в документацию и diagnostics не добавляются.
