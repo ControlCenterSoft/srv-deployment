@@ -59,7 +59,11 @@ runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 \
 from app.main import app
 paths={route.path for route in app.routes}
 assert '/api/v1/system/backups/delete-many' in paths, sorted(paths)
-print('2.0 ROUTE PASS: bulk backup deletion registered')
+assert '/api/v1/minecraft/legacy/status' in paths, sorted(paths)
+assert '/ui/module/dhcp' in paths, sorted(paths)
+assert '/ui/module/pxe-windows' in paths, sorted(paths)
+assert '/ui/module/pxe-linux' in paths, sorted(paths)
+print('2.0 ROUTE PASS: system, Minecraft, DHCP and PXE routes registered')
 PY
 
 for helper in \
@@ -67,12 +71,74 @@ for helper in \
     /usr/local/sbin/srvcc-github-agent \
     /usr/local/sbin/srvcc-configure-auto-updates \
     /usr/local/libexec/srv-control-backup-policy \
-    /usr/local/libexec/srv-control-minecraft-repair
+    /usr/local/libexec/srv-control-minecraft-repair \
+    /usr/local/libexec/srv-control-minecraft-legacy \
+    /usr/local/sbin/srv-control-minecraft \
+    /usr/local/sbin/srv-control-minecraft-worlds \
+    /usr/local/sbin/srv-control-minecraft-players \
+    /usr/local/sbin/srv-control-minecraft-restore \
+    /usr/local/sbin/srv-control-minecraft-live
 do [[ -x "$helper" ]] || fail "2.0 helper missing: $helper"; done
-python3 -m py_compile /usr/local/sbin/srvcc-update-controller /usr/local/libexec/srv-control-backup-policy /usr/local/libexec/srv-control-minecraft-repair
+python3 -m py_compile \
+    /usr/local/sbin/srvcc-update-controller \
+    /usr/local/libexec/srv-control-backup-policy \
+    /usr/local/libexec/srv-control-minecraft-repair \
+    /usr/local/libexec/srv-control-minecraft-legacy
 
 grep -Fq 'srvcc-update-controller' /usr/local/sbin/srvcc-github-agent \
     || fail "legacy GitHub agent compatibility wrapper does not use 2.0 controller"
+
+[[ -s /etc/sudoers.d/srv-control-minecraft-legacy ]] || fail "Minecraft compatibility sudoers rule missing"
+if command -v visudo >/dev/null 2>&1; then
+    visudo -cf /etc/sudoers.d/srv-control-minecraft-legacy >/dev/null \
+        || fail "Minecraft compatibility sudoers rule is invalid"
+fi
+
+# Exercise all five helpers exactly through the same non-interactive sudo path
+# used by the web API. This closes the real-server regression where UDP/19132
+# was live but historical helper files were absent.
+runuser -u srv-control -- sudo -n /usr/local/sbin/srv-control-minecraft status \
+    >/tmp/srvcc-minecraft-compat-status.json \
+    || { cat /tmp/srvcc-minecraft-compat-status.json >&2 || true; fail "Minecraft status helper failed through web execution path"; }
+runuser -u srv-control -- sudo -n /usr/local/sbin/srv-control-minecraft-worlds list \
+    >/tmp/srvcc-minecraft-compat-worlds.json \
+    || { cat /tmp/srvcc-minecraft-compat-worlds.json >&2 || true; fail "Minecraft worlds helper failed through web execution path"; }
+printf '%s\n' '{"action":"list"}' | runuser -u srv-control -- sudo -n /usr/local/sbin/srv-control-minecraft-players \
+    >/tmp/srvcc-minecraft-compat-players.json \
+    || { cat /tmp/srvcc-minecraft-compat-players.json >&2 || true; fail "Minecraft players helper failed through web execution path"; }
+runuser -u srv-control -- sudo -n /usr/local/sbin/srv-control-minecraft-restore list \
+    >/tmp/srvcc-minecraft-compat-backups.json \
+    || { cat /tmp/srvcc-minecraft-compat-backups.json >&2 || true; fail "Minecraft restore helper failed through web execution path"; }
+printf '%s\n' '{"action":"status"}' | runuser -u srv-control -- sudo -n /usr/local/sbin/srv-control-minecraft-live \
+    >/tmp/srvcc-minecraft-compat-live.json \
+    || { cat /tmp/srvcc-minecraft-compat-live.json >&2 || true; fail "Minecraft live helper failed through web execution path"; }
+
+python3 - \
+    /tmp/srvcc-minecraft-compat-status.json \
+    /tmp/srvcc-minecraft-compat-worlds.json \
+    /tmp/srvcc-minecraft-compat-players.json \
+    /tmp/srvcc-minecraft-compat-backups.json \
+    /tmp/srvcc-minecraft-compat-live.json <<'PY'
+import json,sys
+status,worlds,players,backups,live=[json.load(open(p,encoding='utf-8')) for p in sys.argv[1:]]
+for value in (status,worlds,players,backups,live):
+    assert value.get('ok') is True,value
+assert status.get('active') is True,status
+assert status.get('port_listening') is True,status
+assert status.get('healthy') is True,status
+assert status.get('level_name'),status
+assert worlds.get('active_world') == status.get('level_name'),(worlds,status)
+assert any(row.get('name') == status.get('level_name') for row in worlds.get('worlds',[]) if isinstance(row,dict)),worlds
+assert isinstance(players.get('allowlist'),list),players
+assert isinstance(backups.get('backups'),list),backups
+print('MINECRAFT WEB BACKEND PASS:',status.get('service'),status.get('runtime'),status.get('level_name'),status.get('port'))
+PY
+rm -f \
+    /tmp/srvcc-minecraft-compat-status.json \
+    /tmp/srvcc-minecraft-compat-worlds.json \
+    /tmp/srvcc-minecraft-compat-players.json \
+    /tmp/srvcc-minecraft-compat-backups.json \
+    /tmp/srvcc-minecraft-compat-live.json
 
 python3 - "$UPDATE_CONFIG" "$UPDATE_STATUS" <<'PY'
 import json,pathlib,sys
@@ -165,4 +231,4 @@ if systemctl cat minecraft-update.timer >/dev/null 2>&1; then
     systemctl is-enabled --quiet minecraft-update.timer || fail "proven Minecraft update timer is not enabled"
 fi
 
-printf 'ACCEPTANCE 2.0.0 PASS: UI/API/update scheduling/backup policy/Minecraft healthy\n'
+printf 'ACCEPTANCE 2.0.0 PASS: UI/API/update scheduling/backup policy/Minecraft compatibility backend healthy\n'
