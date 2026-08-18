@@ -1,5 +1,52 @@
-from flask import request
-from main import app
+import json
+import os
+import tempfile
+from pathlib import Path
+from urllib.parse import urlparse
+
+from flask import abort, request
+import main
+
+app = main.app
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
+
+
+def atomic_write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.tmp', dir=str(path.parent))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write('\n')
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+# Flask route functions resolve this module global at call time, so replacing
+# the writer here keeps the development module simple while production Gunicorn
+# receives collision-safe atomic state writes.
+main._write_json = atomic_write_json
+
+
+@app.before_request
+def protect_state_changing_requests():
+    if request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return None
+    origin = request.headers.get('Origin')
+    if not origin:
+        return None  # CLI/API clients such as curl do not have to send Origin.
+    parsed = urlparse(origin)
+    if parsed.scheme not in {'http', 'https'} or parsed.netloc != request.host:
+        abort(403)
+    return None
 
 
 @app.after_request
