@@ -48,26 +48,43 @@ jobs:
               'restored domain SID missing',
               'acceptance SID hotfix anchor not found; refusing unsafe patch',
           )
+
+          # Sequential repair releases may wrap an already-wrapped predecessor.
+          # Follow the validated acceptance chain until the real-server Samba
+          # hotfix contract is reached instead of assuming a single hop.
           contract_text=wrapper
-          if not all(x in contract_text for x in required):
-              m=re.search(r'acceptance-(1\.3\.\d+)\.sh',wrapper)
-              assert m, 'active acceptance wrapper does not contain real-server hotfix contract or a validated predecessor helper'
+          target=cfg['release_id']
+          chain=[target]
+          seen=set()
+          for _ in range(16):
+              if all(x in contract_text for x in required):
+                  break
+              m=re.search(r'acceptance-(1\.3\.\d+)\.sh',contract_text)
+              assert m, (
+                  'active acceptance chain does not contain real-server hotfix '
+                  'contract or a validated predecessor helper'
+              )
               predecessor=m.group(1)
+              assert predecessor not in seen, f'acceptance predecessor cycle detected: {predecessor}'
+              seen.add(predecessor)
               helper=root/f'acceptance-{predecessor}.sh'
               assert helper.is_file(),helper
-              target=cfg['release_id']
               adaptation=(
-                  f"text=text.replace('{predecessor}','{target}')" in wrapper
-                  or f'text=text.replace("{predecessor}","{target}")' in wrapper
+                  f"text=text.replace('{predecessor}','{target}')" in contract_text
+                  or f'text=text.replace("{predecessor}","{target}")' in contract_text
                   or target==predecessor
               )
               assert adaptation, f'release identity adaptation missing: {predecessor} -> {target}'
               contract_text=helper.read_text(encoding='utf-8')
+              target=predecessor
+              chain.append(predecessor)
+          else:
+              raise AssertionError(f'acceptance predecessor chain too deep: {chain}')
 
           for needle in required:
               assert needle in contract_text,needle
 
           old_sid = '''    restored_sid="$(ldbsearch -H "$restored_sam" -b '' -s base objectSid 2>/dev/null | awk '/^objectSid: /{print $2; exit}')"\n    [[ "$restored_sid" == "$live_sid" ]] || fail "restored domain SID mismatch"\n'''
           assert old_sid in source, 'production acceptance SID anchor changed unexpectedly'
-          print('REAL-SERVER ACCEPTANCE CONTRACT PASS:',cfg['release_id'])
+          print('REAL-SERVER ACCEPTANCE CONTRACT PASS:',cfg['release_id'],'chain='+' -> '.join(chain))
           PY
