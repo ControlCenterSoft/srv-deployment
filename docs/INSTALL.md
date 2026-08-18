@@ -1,15 +1,15 @@
-# Установка Control Center 1.0.7
+# Установка Control Center 1.0.8
 
 ## Целевая платформа
 
 Ubuntu Server 26.04 LTS, systemd, Netplan, root/sudo и доступ к APT-репозиториям. Установщик автоматически устанавливает PostgreSQL из репозитория ОС.
 
-Web UI по умолчанию слушает TCP/8080, но начиная с 1.0.7 порт можно изменить в **Настройки → Web-панель**.
+Web UI по умолчанию слушает TCP/8080. Пользовательский порт из `/etc/control-center/web.env` сохраняется при обновлении.
 
 ## Установка
 
 ```bash
-git clone --depth 1 --branch release/1.0.7 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.8 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
@@ -20,7 +20,15 @@ sudo bash install/install.sh
 http://IP_СЕРВЕРА:8080
 ```
 
-При обновлении существующей 1.0.7+ установки текущий порт берётся из `/etc/control-center/web.env` и сохраняется.
+## Что добавляет installer 1.0.8
+
+Помимо PostgreSQL/Web/runtime архитектуры 1.0.7 installer включает:
+
+- Market lifecycle 1.0.8;
+- persistent service status/event history;
+- исправленный DHCP installer;
+- `control-center-update-now.path` для ручной установки обнаруженного обновления;
+- сохранение зрелого version/build-aware updater с PostgreSQL rollback.
 
 ## PostgreSQL
 
@@ -30,10 +38,10 @@ Installer:
 2. запускает локальный PostgreSQL;
 3. создаёт непривилегированную роль `control-center`;
 4. создаёт БД `control_center`, owner `control-center`;
-5. проверяет локальное peer authentication от Linux УЗ `control-center`;
+5. проверяет local peer authentication;
 6. создаёт Python venv с Psycopg 3;
 7. применяет versioned SQL migrations;
-8. выполняет DB health-check до запуска релиза.
+8. выполняет DB health-check.
 
 Runtime DSN:
 
@@ -41,92 +49,59 @@ Runtime DSN:
 dbname=control_center user=control-center host=/var/run/postgresql
 ```
 
-Он записывается в `/etc/control-center/database.env` с правами root:root `0600`. Пароля PostgreSQL в приложении нет.
+Пароль PostgreSQL в приложении не хранится. Внешний PostgreSQL listener installer не включает.
 
-Установщик не включает внешнее прослушивание PostgreSQL и не настраивает межузловой кластер в 1.0.7.
-
-## Состояние
-
-Сохраняются существующие каталоги:
+## State
 
 ```text
 /var/lib/control-center
 /var/lib/control-center-system
 /var/lib/control-center-root
 /var/lib/control-center-license
-```
-
-и новая application database:
-
-```text
 PostgreSQL database: control_center
 ```
 
-`--keep-data` сохраняет БД, state и Linux service identity.
-
-## Live configuration read access
-
-Web service по-прежнему имеет только чтение фактических конфигураций:
+Market 1.0.8 дополнительно использует:
 
 ```text
-/etc/netplan/90-control-center.yaml
-/etc/dnsmasq.d/control-center-dhcp.conf
+/var/lib/control-center-system/market-status.json
+/var/lib/control-center-system/market-events.jsonl
+/var/lib/control-center-system/market-last.log
 ```
-
-Запись выполняют root helpers. PostgreSQL не заменяет Netplan/dnsmasq/systemd как источник фактического состояния ОС.
-
-## Web runtime
-
-```text
-Gunicorn -> wsgi:app -> Flask application -> Psycopg -> PostgreSQL
-```
-
-Systemd читает:
-
-```text
-/etc/control-center/database.env
-/etc/control-center/web.env
-```
-
-Gunicorn bind использует `${CONTROL_CENTER_PORT}`.
 
 ## Проверка после установки
 
 ```bash
 cat /opt/control-center/VERSION
 cat /opt/control-center/BUILD
-cat /etc/control-center/web.env
 PORT=$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
 curl -fsS "http://127.0.0.1:${PORT}/api/health" | python3 -m json.tool
 curl -fsS "http://127.0.0.1:${PORT}/api/database/status" | python3 -m json.tool
-systemctl status postgresql --no-pager
-systemctl status control-center --no-pager
+curl -fsS "http://127.0.0.1:${PORT}/api/market" | python3 -m json.tool
+curl -fsS "http://127.0.0.1:${PORT}/api/settings/update/check" | python3 -m json.tool
+systemctl status control-center-update-now.path --no-pager
 ```
 
-Ожидаемая версия/build:
+Ожидаемые version/build:
 
 ```text
-1.0.7
-20260818.2
+1.0.8
+20260819.1
 ```
 
 ## Acceptance
 
 ```bash
-sudo bash scripts/acceptance-1.0.7.sh
+sudo bash scripts/acceptance-1.0.8.sh
 ```
 
-Проверка не меняет конфигурацию. Она тестирует PostgreSQL peer connection/schema migration, database API, version/build, Web port, Gunicorn/systemd wiring, notifications, network inventory и DHCP при установленном модуле.
+Acceptance не устанавливает/удаляет DHCP. Реальный install/remove lifecycle отдельно проверяется в GitHub Actions release validation.
 
 ## Удаление
-
-Полное:
 
 ```bash
 sudo bash install/uninstall.sh
 ```
-
-Полное удаление удаляет **только** БД `control_center` и роль PostgreSQL `control-center`, созданные продуктом. Пакет/служба PostgreSQL не удаляются, чтобы не повредить другие приложения сервера.
 
 С сохранением application state, PostgreSQL database и service identity:
 
@@ -134,14 +109,15 @@ sudo bash install/uninstall.sh
 sudo bash install/uninstall.sh --keep-data
 ```
 
+1.0.8 uninstall также удаляет manual update path watcher и internal updater compatibility copy.
+
 ## Диагностика
 
 ```bash
-PORT=$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
 journalctl -u control-center -n 200 --no-pager
-journalctl -u postgresql -n 100 --no-pager
-ss -ltnp | grep ":${PORT}"
-sudo -u control-center psql -d control_center -c 'select current_user, current_database();'
+journalctl -u control-center-market-apply.service -n 200 --no-pager
+journalctl -u control-center-update.service -n 200 --no-pager
+sudo tail -n 100 /var/lib/control-center-system/market-last.log 2>/dev/null || true
 ```
 
-См. `docs/POSTGRESQL.md`, `docs/WEB-PORT.md` и `docs/TROUBLESHOOTING.md`.
+См. `docs/MARKET.md`, `docs/DHCP.md`, `docs/UPDATE.md`, `docs/POSTGRESQL.md`, `docs/WEB-PORT.md` и `docs/TROUBLESHOOTING.md`.
