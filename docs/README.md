@@ -8,6 +8,7 @@
 - [DHCP.md](DHCP.md) — DHCP Server из Маркета.
 - [SECURITY.md](SECURITY.md) — модель привилегий и известные ограничения.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — диагностика.
+- [AUDIT-1.0.5.md](AUDIT-1.0.5.md) — результаты полного аудита 1.0.5, исправления и acceptance checklist.
 
 ## Быстрая проверка
 
