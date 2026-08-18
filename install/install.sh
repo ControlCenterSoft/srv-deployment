@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR=/opt/control-center
 STATE_DIR=/var/lib/control-center
+ROOT_STATE_DIR=/var/lib/control-center-root
 LICENSE_DIR=/var/lib/control-center-license
 SERVICE_USER=control-center
 VERSION=1.0.5
@@ -15,6 +16,7 @@ apt-get update
 apt-get install -y python3 python3-venv iproute2 ca-certificates curl git util-linux netplan.io procps openssl
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"; fi
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$APP_DIR" "$STATE_DIR" "$STATE_DIR/modules"
+install -d -o root -g root -m 0700 "$ROOT_STATE_DIR"
 install -d -o root -g root -m 0755 "$LICENSE_DIR" /etc/control-center
 # 1.0.5 pre-audit stored license state in a web-writable directory. Never trust or migrate it.
 rm -f "$STATE_DIR/license.json"
@@ -63,6 +65,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center
 ReadOnlyPaths=/var/lib/control-center-license
+InaccessiblePaths=/var/lib/control-center-root
 [Install]
 WantedBy=multi-user.target
 UNIT
