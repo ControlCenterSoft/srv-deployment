@@ -8,6 +8,7 @@ RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${RELEASE_DIR}/../.." && pwd -P)"
 BASE_RELEASE="${REPO_ROOT}/releases/2.1.0"
 SYSTEM="${RELEASE_DIR}/system"
+PAYLOAD="${RELEASE_DIR}/payload"
 STATE_DIR="/var/lib/srv-control"
 RELEASE_META="${STATE_DIR}/release.json"
 CANONICAL_UNIT="srv-control-minecraft-bedrock.service"
@@ -19,7 +20,7 @@ warn(){ printf 'PREFLIGHT 2.1.1 WARN: %s\n' "$*" >&2; }
 [[ -d "$PROJECT" ]] || fail "Control Center project is missing: $PROJECT"
 [[ -s "$RELEASE_META" ]] || fail "installed release metadata is missing"
 
-for command in python3 systemctl ss ps getent useradd usermod groupadd chown chmod install find stat curl; do
+for command in python3 systemctl ss ps getent useradd usermod groupadd chown chmod install find stat curl grep; do
     command -v "$command" >/dev/null 2>&1 || fail "required command is missing: $command"
 done
 
@@ -34,7 +35,10 @@ for path in \
     "$SYSTEM/srv-control-minecraft-bedrock-update" \
     "$SYSTEM/srv-control-minecraft-bedrock-update.service" \
     "$SYSTEM/srv-control-minecraft-bedrock-update.timer" \
-    "$SYSTEM/srv-control-minecraft-dispatch"
+    "$SYSTEM/srv-control-minecraft-dispatch" \
+    "$SYSTEM/srv-control-minecraft-agent" \
+    "$SYSTEM/srv-control-minecraft-router-bridge-patch" \
+    "$PAYLOAD/app/core/minecraft_privileged.py"
 do [[ -s "$path" ]] || fail "required 2.1.1 payload is missing: $path"; done
 
 SOURCE_VERSION="$(python3 - "$RELEASE_META" <<'PY'
@@ -77,7 +81,27 @@ fi
 python3 -m py_compile \
     "$SYSTEM/srv-control-minecraft-permissions" \
     "$SYSTEM/srv-control-minecraft-bedrock-update" \
-    "$SYSTEM/srv-control-minecraft-dispatch"
+    "$SYSTEM/srv-control-minecraft-dispatch" \
+    "$SYSTEM/srv-control-minecraft-agent" \
+    "$SYSTEM/srv-control-minecraft-router-bridge-patch" \
+    "$PAYLOAD/app/core/minecraft_privileged.py"
+
+# Prove the deterministic router patch applies to the actually installed source
+# before mutating production. The resulting staged copy must contain no sudo call.
+tmp_router="$(mktemp)"
+cp -a "$PROJECT/app/routers/minecraft_legacy.py" "$tmp_router"
+python3 "$SYSTEM/srv-control-minecraft-router-bridge-patch" "$tmp_router"
+python3 -m py_compile "$tmp_router"
+! grep -Fq '["/usr/bin/sudo", "-n", str(helper), *args]' "$tmp_router" \
+    || { rm -f "$tmp_router"; fail "staged Minecraft router still invokes sudo"; }
+grep -Fq 'run_privileged_minecraft_helper(kind, list(args)' "$tmp_router" \
+    || { rm -f "$tmp_router"; fail "staged Minecraft router does not use privileged agent bridge"; }
+rm -f "$tmp_router"
+
+# The security sandbox is intentionally retained. The patch fixes the incompatible
+# privilege path rather than weakening srv-control.service.
+no_new_privileges="$(systemctl show srv-control.service -p NoNewPrivileges --value 2>/dev/null || true)"
+printf 'Control Center NoNewPrivileges before 2.1.1: %s\n' "${no_new_privileges:-unknown}"
 
 # A root-owned canonical service is the exact production condition 2.1.1 is
 # designed to harden. Already-unprivileged installations remain idempotently safe.
@@ -99,4 +123,4 @@ PY
 curl -fsS --max-time 10 http://127.0.0.1:8876/api/v1/health >/dev/null \
     || fail "Control Center health endpoint is unavailable before 2.1.1"
 
-printf 'PREFLIGHT 2.1.1 PASS: source=%s; canonical Minecraft healthy; unprivileged ownership and canonical updater hardening staged; sha=%s\n' "$SOURCE_VERSION" "$REMOTE_SHA"
+printf 'PREFLIGHT 2.1.1 PASS: source=%s; canonical Minecraft healthy; NoNewPrivileges-safe UI bridge, unprivileged runtime ownership and canonical updater hardening staged; sha=%s\n' "$SOURCE_VERSION" "$REMOTE_SHA"
