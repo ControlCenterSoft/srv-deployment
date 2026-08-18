@@ -1,6 +1,8 @@
 # Control Center 1.0.9
 
-Статус: `production candidate` до финального GitHub Actions validation.
+Статус: `production`, audit `passed`.
+
+Оба обязательных GitHub Actions workflow успешно проверили релиз: стандартный release validation и отдельный end-to-end runtime validation. Runtime-тест установил релиз точно через `install/install.sh`, затем последовательно переключил живую Web-службу `8080 HTTP → 8443 HTTPS → 80 HTTP → 443 HTTPS`, выполнил acceptance и подтвердил чистое состояние `dpkg`.
 
 ## 1. Пагинация
 
@@ -44,7 +46,9 @@ Dashboard переработан по макету 1.0.9:
 
 Для привилегированных портов 80/443 systemd выдаёт только `CAP_NET_BIND_SERVICE` Web-службе. Root-права приложению не выдаются.
 
-HTTPS в 1.0.9 использует локальный self-signed сертификат `/etc/control-center/tls/server.crt` и ключ `/etc/control-center/tls/server.key`. Сертификат создаётся root helper только при первом включении SSL. Браузер может показывать предупреждение доверия. ACME/Let's Encrypt и загрузка пользовательского сертификата запланированы отдельно.
+HTTPS в 1.0.9 использует локальный self-signed сертификат `/etc/control-center/tls/server.crt` и ключ `/etc/control-center/tls/server.key`. Сертификат создаётся root helper только при первом включении SSL. Полный FQDN и IPv4 адреса помещаются в SAN, а Common Name использует короткое hostname, что поддерживает cloud-hostnames большой длины. Браузер может показывать предупреждение доверия. ACME/Let's Encrypt и загрузка пользовательского сертификата запланированы отдельно.
+
+Gunicorn control socket, не используемый Control Center, отключён через `--no-control-socket`, чтобы hardened read-only working directory не создавал лишние ошибки runtime.
 
 Изменение протокола/порта выполняется через `control-center-web-apply`: проверка порта → генерация сертификата при необходимости → PostgreSQL settings → restart → HTTP/HTTPS health-check → rollback при ошибке.
 
