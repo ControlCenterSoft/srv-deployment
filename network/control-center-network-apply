@@ -81,7 +81,8 @@ then
   status rejected 'Сетевая конфигурация отклонена привилегированной проверкой.'
   exit 1
 fi
-chmod 0600 "$TMP"
+chown root:control-center "$TMP"
+chmod 0640 "$TMP"
 mv "$TMP" "$NETPLAN"
 if netplan generate && netplan apply; then
   cp "$PENDING" "$CURRENT"
