@@ -1,25 +1,37 @@
-# Control Center 2.x — документация
+# Control Center 2.x — документация major-линии
 
-Эта папка является канонической эксплуатационной документацией для ветки Control Center 2.x.x. Документы 1.x сохраняются как исторические и не должны использоваться как основная инструкция после перехода production на 2.0.0.
+Эта папка содержит **version-specific** документацию линии Control Center 2.x. Общая текущая инструкция находится в `../PRODUCT-MANUAL-RU.md`, а production target всегда определяется `../../deployment.json`.
+
+## Production baseline
+
+Опубликованный baseline линии — **Control Center 2.0.0**. Каталог `../../releases/2.0.0` является frozen и не изменяется ради исправления документации или будущих patch/minor releases.
 
 ## Состав
 
-- `RELEASE-2.0.0.md` — состав и ограничения релиза 2.0.0.
-- `ADMIN-GUIDE.md` — ежедневное администрирование через новый интерфейс.
-- `UPGRADE-1.x-TO-2.0.md` — переход с опубликованной production-линии 1.x на 2.0.
-- `VALIDATION.md` — обязательные CI, acceptance и real-server проверки.
+- `RELEASE-2.0.0.md` — фактический scope, ограничения и особенности 2.0.0;
+- `ADMIN-GUIDE.md` — ежедневное администрирование интерфейса/модулей 2.0;
+- `UPGRADE-1.x-TO-2.0.md` — переход с production-линии 1.x;
+- `VALIDATION.md` — CI, acceptance и real-server validation для линии 2.0.
 
-## Основные подсистемы 2.x
+Общие документы находятся уровнем выше:
 
-Control Center 2.x объединяет управление сетью, DHCP, PXE Windows/Linux, Samba/доменом, сетевыми ресурсами, пользователями и RBAC, резервным копированием, обновлениями Control Center и ОС, AdGuard VPN, загрузками и Minecraft Bedrock.
+- `../PRODUCT-MANUAL-RU.md` — каноническое руководство;
+- `../INSTALL.md` — установка;
+- `../SYSTEM-ADMIN.md` — identity/RBAC/privileged operations;
+- `../AUTO-UPDATES.md` — updater;
+- `../RELEASE-HISTORY.md` — история версий;
+- `../ROADMAP.md` — будущий scope.
 
-## Правило обновления документации
+## Подсистемы baseline 2.0.0
 
-Каждый релиз 2.x.x должен одновременно обновлять:
+В документации 2.0 учитываются только возможности, подтверждённые опубликованным release metadata/frozen payload: новый интерфейс, transactional updater, backup management, Samba/domain/shares, DHCP/PXE carry-forward, AdGuard VPN, diagnostics и Minecraft Bedrock health-first recovery.
 
-1. release notes;
-2. административную инструкцию, если меняется интерфейс или поведение;
-3. upgrade/rollback инструкцию, если меняется механизм обновления;
-4. validation document, если добавляются новые обязательные проверки.
+Если будущая 2.1+ функция уже существует в draft PR или `ROADMAP.md`, она не должна описываться здесь как доступная в 2.0.0.
 
-Изменение считается незавершённым, если код изменён, а соответствующая документация 2.x осталась устаревшей.
+## Исторические документы 1.x
+
+Материалы 1.x сохраняются для release history, миграции и расследования прошлых инцидентов. После перехода production на 2.0.0 они не являются основной эксплуатационной инструкцией.
+
+## Правило обновления
+
+Каждый новый релиз 2.x должен одновременно обновлять release history, каноническое руководство и затронутые version-specific документы. Изменение интерфейса, API, updater, backup/restore, authentication/RBAC или managed services считается документально незавершённым, пока соответствующая инструкция не приведена в соответствие с фактическим frozen release.
