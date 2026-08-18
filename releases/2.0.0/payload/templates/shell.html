@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Control Center</title>
-    <link rel="stylesheet" href="/static/css/shell.css?v=1.4.0-ui3">
+    <link rel="stylesheet" href="/static/css/shell.css?v=2.0.0">
 </head>
 <body>
 <div class="app-shell">
@@ -23,6 +23,15 @@
             </a>
             <a class="nav-item" href="/ui/module/internet" target="moduleFrame" data-route="/ui/module/internet" data-module="network" data-search="сеть internet network wan lan">
                 <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Сеть</span><span class="nav-chevron">›</span>
+            </a>
+            <a class="nav-item" href="/ui/module/dhcp" target="moduleFrame" data-route="/ui/module/dhcp" data-module="network" data-search="dhcp адреса аренды резервирования options">
+                <span class="nav-icon" aria-hidden="true">≋</span><span class="nav-label">DHCP</span><span class="nav-chevron">›</span>
+            </a>
+            <a class="nav-item" href="/ui/module/pxe-windows" target="moduleFrame" data-route="/ui/module/pxe-windows" data-module="pxe" data-search="pxe windows установка образ iso">
+                <span class="nav-icon" aria-hidden="true">▣</span><span class="nav-label">PXE Windows</span><span class="nav-chevron">›</span>
+            </a>
+            <a class="nav-item" href="/ui/module/pxe-linux" target="moduleFrame" data-route="/ui/module/pxe-linux" data-module="pxe" data-search="pxe linux установка образ iso">
+                <span class="nav-icon" aria-hidden="true">▧</span><span class="nav-label">PXE Linux</span><span class="nav-chevron">›</span>
             </a>
             <a class="nav-item" href="/ui/module/samba" target="moduleFrame" data-route="/ui/module/samba" data-module="samba" data-search="домен samba directory access">
                 <span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">Домен и доступ</span><span class="nav-chevron">›</span>
@@ -89,6 +98,6 @@
         <iframe id="moduleFrame" name="moduleFrame" src="/ui/dashboard" title="Control Center"></iframe>
     </main>
 </div>
-<script src="/static/js/shell.js?v=1.4.0-ui3"></script>
+<script src="/static/js/shell.js?v=2.0.0"></script>
 </body>
 </html>
