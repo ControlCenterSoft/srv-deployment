@@ -5,27 +5,36 @@ SETTINGS="$STATE/os-update-settings.json"
 STATUS="$STATE/os-update-status.json"
 MANUAL="$STATE/os-update-now"
 LOCK=/run/control-center-os-update.lock
-mkdir -p "$STATE"; exec 9>"$LOCK"; flock -n 9 || exit 0
+APT_LOCK=/run/control-center-apt.lock
+mkdir -p "$STATE"
+exec 9>"$LOCK"; flock -n 9 || exit 0
 [[ -f "$SETTINGS" ]] || printf '%s\n' '{"automatic_updates":false,"interval_minutes":1440}' >"$SETTINGS"
 readarray -t CFG < <(python3 - "$SETTINGS" "$STATUS" <<'PY'
-import json,sys,time
+import json,sys
 try:s=json.load(open(sys.argv[1]))
 except:s={}
 try:st=json.load(open(sys.argv[2]))
 except:st={}
+try:mins=int(s.get('interval_minutes',1440))
+except:mins=1440
 print('1' if s.get('automatic_updates',False) else '0')
-print(max(60,min(int(s.get('interval_minutes',1440)),10080)))
+print(max(60,min(mins,10080)))
 print(int(st.get('last_run',0)))
 PY
 )
 NOW=$(date +%s); RUN=0
 [[ -f "$MANUAL" ]] && RUN=1
-if [[ "$RUN" == 0 && "${CFG[0]}" == 1 && $((NOW-CFG[2])) -ge ${CFG[1]}*60 ]]; then RUN=1; fi
+if [[ "$RUN" == 0 && "${CFG[0]}" == 1 && $((NOW-CFG[2])) -ge $((CFG[1]*60)) ]]; then RUN=1; fi
 [[ "$RUN" == 1 ]] || exit 0
 rm -f "$MANUAL"
-RESULT=ok; MSG='Обновление ОС и пакетов выполнено'
-export DEBIAN_FRONTEND=noninteractive
-if ! apt-get update || ! apt-get -y upgrade; then RESULT=error; MSG='Ошибка обновления ОС или пакетов'; fi
+exec 8>"$APT_LOCK"
+if ! flock -w 900 8; then
+  RESULT=error; MSG='Не удалось дождаться освобождения менеджера пакетов'
+else
+  RESULT=ok; MSG='Обновление ОС и пакетов выполнено'
+  export DEBIAN_FRONTEND=noninteractive
+  if ! apt-get update || ! apt-get -y upgrade --with-new-pkgs; then RESULT=error; MSG='Ошибка обновления ОС или пакетов'; fi
+fi
 REBOOT=false; [[ -f /var/run/reboot-required ]] && REBOOT=true
 python3 - "$STATUS" "$RESULT" "$MSG" "$REBOOT" <<'PY'
 import json,sys,time
