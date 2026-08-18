@@ -1,7 +1,7 @@
 {
   "product": "Control Center",
-  "release": "1.0.4",
+  "release": "1.0.5",
   "channel": "production",
   "published_at": "2026-08-18",
-  "release_branch": "release/1.0.4"
+  "release_branch": "release/1.0.5"
 }
