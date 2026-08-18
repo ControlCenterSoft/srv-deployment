@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+from typing import Any
+
+REGISTRY = Path("/var/lib/srv-control/minecraft-instances.json")
+TABLE = "srvcc_minecraft"
+
+
+def load_registry() -> dict[str, Any]:
+    try:
+        value = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    except Exception:
+        value = {"instances": []}
+    if not isinstance(value, dict) or not isinstance(value.get("instances"), list):
+        raise RuntimeError("Minecraft instance registry is invalid")
+    return value
+
+
+def valid_port(value: object) -> int | None:
+    try:
+        number = int(value)
+    except Exception:
+        return None
+    return number if 1 <= number <= 65535 else None
+
+
+def passive_ports(registry: dict[str, Any]) -> list[int]:
+    result: set[int] = set()
+    for item in registry.get("instances", []):
+        if not isinstance(item, dict) or bool(item.get("published", True)):
+            continue
+        for key in ("server_port", "server_portv6"):
+            number = valid_port(item.get(key))
+            if number:
+                result.add(number)
+        raw_dir = str(item.get("working_directory") or "")
+        properties = Path(raw_dir) / "server.properties" if raw_dir else None
+        if properties and properties.is_file():
+            try:
+                for raw in properties.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() in {"server-port", "server-portv6"}:
+                        number = valid_port(value.strip())
+                        if number:
+                            result.add(number)
+            except Exception:
+                pass
+    return sorted(result)
+
+
+def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+        check=False,
+        env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"},
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError((result.stdout or "")[-4000:] or f"command failed: {' '.join(command)}")
+    return result
+
+
+def remove_table(nft: str) -> None:
+    if run([nft, "list", "table", "inet", TABLE], check=False).returncode == 0:
+        run([nft, "delete", "table", "inet", TABLE])
+
+
+def apply_rules(nft: str, ports: list[int]) -> None:
+    remove_table(nft)
+    if not ports:
+        return
+    elements = ", ".join(str(number) for number in ports)
+    rules = f'''table inet {TABLE} {{
+    set passive_ports {{
+        type inet_service
+        flags interval
+        elements = {{ {elements} }}
+    }}
+
+    chain input {{
+        type filter hook input priority -10; policy accept;
+        iifname "lo" accept
+        udp dport @passive_ports drop
+    }}
+}}
+'''
+    handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="srvcc-minecraft-nft.", delete=False)
+    try:
+        handle.write(rules)
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o600)
+        path = Path(handle.name)
+    finally:
+        handle.close()
+    try:
+        run([nft, "-c", "-f", str(path)])
+        run([nft, "-f", str(path)])
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def main() -> int:
+    registry = load_registry()
+    ports = passive_ports(registry)
+    nft = shutil.which("nft")
+    if nft is None:
+        if ports:
+            raise SystemExit("nft is required to enforce unpublished Minecraft instances")
+        return 0
+    apply_rules(nft, ports)
+    print(json.dumps({"published_policy": "applied", "blocked_udp_ports": ports}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

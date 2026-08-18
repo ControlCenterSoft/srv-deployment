@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh AdGuard VPN status for SRV Control Center
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=srv-control-adguard-monitor.service
+
+[Install]
+WantedBy=timers.target
