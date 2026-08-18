@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+
+REGISTRY = Path("/var/lib/srv-control/minecraft-instances.json")
+RUN_DIR = Path("/run/srv-control/minecraft")
+INSTANCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+PLAYER_ACTIONS = {
+    "minecraft-player-allow",
+    "minecraft-player-deny",
+    "minecraft-player-permission",
+    "minecraft-player-kick",
+}
+
+
+def clean(value: object, maximum: int, required: bool = False) -> str:
+    raw = str(value if value is not None else "").strip()
+    if any(ch in raw for ch in "\r\n\x00"):
+        raise RuntimeError("value contains forbidden control characters")
+    if len(raw) > maximum:
+        raise RuntimeError("value is too long")
+    if required and not raw:
+        raise RuntimeError("value is required")
+    return raw
+
+
+def instance_id(value: object) -> str:
+    raw = clean(value, 32, True).lower()
+    if not INSTANCE_RE.fullmatch(raw):
+        raise RuntimeError("invalid Minecraft instance id")
+    return raw
+
+
+def read_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def registry_instance(value: object) -> dict[str, Any]:
+    registry = read_json(REGISTRY, {})
+    if not isinstance(registry, dict) or not isinstance(registry.get("instances"), list):
+        raise RuntimeError("Minecraft instance registry is invalid")
+    target = instance_id(value)
+    for item in registry["instances"]:
+        if isinstance(item, dict) and str(item.get("id") or "") == target:
+            return item
+    raise RuntimeError("Minecraft instance not found")
+
+
+def working_directory(instance: dict[str, Any]) -> Path:
+    raw = clean(instance.get("working_directory"), 1024, True)
+    path = Path(raw).resolve(strict=True)
+    if not path.is_dir():
+        raise RuntimeError("Minecraft working directory is missing")
+    return path
+
+
+def atomic_json_preserve_owner(path: Path, value: Any) -> None:
+    if path.exists():
+        info = path.stat()
+        mode = info.st_mode & 0o777
+        uid, gid = info.st_uid, info.st_gid
+    else:
+        parent = path.parent.stat()
+        mode = 0o640
+        uid, gid = parent.st_uid, parent.st_gid
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".tmp.", delete=False
+    )
+    try:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fchmod(handle.fileno(), mode)
+        temporary = Path(handle.name)
+    finally:
+        handle.close()
+    os.chown(temporary, uid, gid)
+    os.replace(temporary, path)
+
+
+def active(instance: dict[str, Any]) -> bool:
+    unit = clean(instance.get("service") or "", 128)
+    if not unit:
+        return False
+    return subprocess.run(["systemctl", "is-active", "--quiet", unit], check=False).returncode == 0
+
+
+def restart(instance: dict[str, Any]) -> None:
+    unit = clean(instance.get("service") or "", 128, True)
+    result = subprocess.run(
+        ["systemctl", "restart", unit],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stdout or "")[-4000:] or "Minecraft restart failed")
+
+
+def command(instance: dict[str, Any], value: str) -> None:
+    iid = instance_id(instance.get("id"))
+    path = RUN_DIR / f"{iid}.sock"
+    if not path.is_socket():
+        raise RuntimeError("Minecraft command channel is unavailable")
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(5)
+    try:
+        client.connect(str(path))
+        client.sendall((value + "\n").encode("utf-8"))
+        answer = client.recv(256).decode("utf-8", errors="replace").strip()
+    finally:
+        client.close()
+    if not answer.startswith("OK"):
+        raise RuntimeError("Minecraft command rejected: " + answer)
+
+
+def reload_or_restart(instance: dict[str, Any], reload_command: str) -> None:
+    if not active(instance):
+        return
+    iid = instance_id(instance.get("id"))
+    if (RUN_DIR / f"{iid}.sock").is_socket():
+        command(instance, reload_command)
+    else:
+        restart(instance)
+
+
+def allowlist(action: str, instance: dict[str, Any], payload: dict[str, Any]) -> str:
+    name = clean(payload.get("name"), 64, True)
+    xuid = clean(payload.get("xuid") or "", 64)
+    path = working_directory(instance) / "allowlist.json"
+    current = read_json(path, [])
+    if not isinstance(current, list):
+        current = []
+    current = [
+        item for item in current
+        if not (isinstance(item, dict) and str(item.get("name") or "").casefold() == name.casefold())
+    ]
+    if action == "minecraft-player-allow":
+        current.append({
+            "ignoresPlayerLimit": bool(payload.get("ignores_player_limit")),
+            "name": name,
+            "xuid": xuid,
+        })
+    atomic_json_preserve_owner(path, current)
+    reload_or_restart(instance, "allowlist reload")
+    return f"allowlist updated: {name}"
+
+
+def permission(instance: dict[str, Any], payload: dict[str, Any]) -> str:
+    name = clean(payload.get("name"), 64, True)
+    xuid = clean(payload.get("xuid"), 64, True)
+    level = clean(payload.get("permission"), 16, True).lower()
+    if level not in {"visitor", "member", "operator"}:
+        raise RuntimeError("invalid Bedrock permission level")
+    path = working_directory(instance) / "permissions.json"
+    current = read_json(path, [])
+    if not isinstance(current, list):
+        current = []
+    current = [
+        item for item in current
+        if not (isinstance(item, dict) and str(item.get("xuid") or "") == xuid)
+    ]
+    current.append({"permission": level, "xuid": xuid})
+    atomic_json_preserve_owner(path, current)
+    reload_or_restart(instance, "permission reload")
+    return f"player permission updated: {name}={level}"
+
+
+def kick(instance: dict[str, Any], payload: dict[str, Any]) -> str:
+    if not active(instance):
+        raise RuntimeError("Minecraft instance is not running")
+    name = clean(payload.get("name"), 64, True).replace('"', "")
+    reason = clean(payload.get("reason") or "Отключено администратором", 256, True).replace('"', "")
+    command(instance, f'kick "{name}" "{reason}"')
+    return f"kick command sent: {name}"
+
+
+def main() -> int:
+    try:
+        request = json.loads(sys.stdin.read())
+    except Exception as exc:
+        print(json.dumps({"ok": False, "detail": f"invalid request JSON: {exc}"}, ensure_ascii=False))
+        return 1
+    if not isinstance(request, dict):
+        print(json.dumps({"ok": False, "detail": "request must be a JSON object"}, ensure_ascii=False))
+        return 1
+    action = str(request.get("action") or "")
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    try:
+        if action not in PLAYER_ACTIONS:
+            raise RuntimeError("unsupported player action")
+        instance = registry_instance(payload.get("id"))
+        if action in {"minecraft-player-allow", "minecraft-player-deny"}:
+            detail = allowlist(action, instance, payload)
+        elif action == "minecraft-player-permission":
+            detail = permission(instance, payload)
+        else:
+            detail = kick(instance, payload)
+        print(json.dumps({"ok": True, "detail": detail}, ensure_ascii=False))
+        return 0
+    except Exception as exc:
+        print(json.dumps({"ok": False, "detail": str(exc)[-12000:]}, ensure_ascii=False))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
