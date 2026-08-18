@@ -3,6 +3,7 @@ set -Eeuo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Запустите от root.'; exit 1; }
 KEEP_DATA=false
 [[ "${1:-}" == "--keep-data" ]] && KEEP_DATA=true
+SYSTEM_STATE=/var/lib/control-center-system
 units=(
   control-center.service
   control-center-update.timer control-center-update.service
@@ -19,12 +20,12 @@ rm -rf /opt/control-center /etc/control-center
 systemctl daemon-reload
 systemctl reset-failed >/dev/null 2>&1 || true
 if ! $KEEP_DATA; then
-  if [[ -f /var/lib/control-center/modules/dhcp.json ]]; then
-    OWNED="$(python3 - /var/lib/control-center/modules/dhcp.json <<'PY'
+  if [[ -f "$SYSTEM_STATE/modules/dhcp.json" ]]; then
+    OWNED="$(python3 - "$SYSTEM_STATE/modules/dhcp.json" <<'PY'
 import json,sys
 try:j=json.load(open(sys.argv[1]))
 except:j={}
-print('true' if j.get('package_owned',True) else 'false')
+print('true' if j.get('installed') and j.get('package_owned',False) else 'false')
 PY
 )"
     if [[ "$OWNED" == true ]]; then
@@ -36,9 +37,9 @@ PY
     fi
   fi
   rm -f /etc/dnsmasq.d/control-center-dhcp.conf
-  rm -rf /var/lib/control-center /var/lib/control-center-root /var/lib/control-center-license
+  rm -rf /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root /var/lib/control-center-license
   id control-center >/dev/null 2>&1 && userdel control-center || true
 else
-  echo 'Данные, root rollback state, лицензия и служебная УЗ control-center сохранены (--keep-data).'
+  echo 'Web-state, system-state, rollback-state, лицензия и служебная УЗ control-center сохранены (--keep-data).'
 fi
 echo 'Control Center удален.'
