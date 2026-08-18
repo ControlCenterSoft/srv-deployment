@@ -1,49 +1,29 @@
-# Control Center 1.0.3
+# Control Center 1.0.4
 
-Control Center — web-панель управления Linux-сервером.
+## Что нового
 
-## Что нового в 1.0.3
+- оформление Web UI переработано по утвержденному образцу: компактный левый sidebar, верхняя служебная панель, темная плотная сетка карточек и статусные элементы;
+- **DHCP Server** стал первым реально устанавливаемым модулем Маркета;
+- установка DHCP выполняется отдельным привилегированным Market helper и устанавливает пакет `dnsmasq`;
+- после установки в левом меню автоматически появляется пункт **DHCP**;
+- после удаления DHCP пункт меню автоматически исчезает;
+- DHCP настраивается из Web UI: интерфейс, начало/конец диапазона, маска, шлюз, DNS и срок аренды;
+- конфигурация проверяется Web API и применяется отдельным root helper;
+- системный Web-процесс по-прежнему не получает root-доступ.
 
-- в разделе **Система** CPU и RAM получили отдельные live-графики;
-- в карточке CPU отображается **Top-3 процессов** по загрузке CPU с долей RAM;
-- **Хранилище** показывает файловые системы отдельными полосами заполнения, проценты и объемы;
-- **WAN** получил отдельный live-график входящей и исходящей скорости RX/TX;
-- WAN для dashboard определяется из сохраненной роли WAN раздела **Сети**;
-- данные dashboard обновляются каждые 3 секунды;
-- в **Настройки → Автоматические обновления** период теперь задается вручную в минутах;
-- допустимый интервал: от **5** до **10080** минут;
-- старые значения `hourly`, `daily`, `weekly` автоматически мигрируют в 60, 1440 и 10080 минут.
+## DHCP lifecycle
 
-## Dashboard «Система»
+Web UI создает запрос `/var/lib/control-center/market-pending.json`. Systemd path unit запускает `control-center-market-apply`, который устанавливает или удаляет `dnsmasq` и обновляет состояние модуля.
 
-Карточки:
+После установки настройки доступны в меню **DHCP**. При сохранении создается `/var/lib/control-center/dhcp-pending.json`; helper `control-center-dhcp-apply` формирует `/etc/dnsmasq.d/control-center-dhcp.conf`, выполняет `dnsmasq --test` и перезапускает службу.
 
-- CPU — текущая загрузка, live-график, количество логических CPU и Top-3 процессов;
-- RAM — текущая загрузка, live-график, использовано/всего;
-- Хранилище — заполнение доступных постоянных файловых систем;
-- WAN — интерфейс, его состояние, live RX/TX и текущая скорость в байтах/с.
+## Службы 1.0.4
 
-## Автоматические обновления
-
-Настройка хранится в:
-
-`/var/lib/control-center/update-settings.json`
-
-Формат 1.0.3:
-
-```json
-{
-  "automatic_updates": true,
-  "interval_minutes": 60,
-  "channel": "production"
-}
-```
-
-Systemd timer запускает легкий updater раз в минуту, но обращение к GitHub выполняется только по истечении заданного `interval_minutes`.
-
-## Сетевое управление
-
-Функции 1.0.2 сохранены: WAN/LAN, DHCP/Static, проверка IPv4/маски/шлюза/DNS, Netplan apply и rollback.
+- `control-center.service`
+- `control-center-update.timer`
+- `control-center-network-apply.path`
+- `control-center-market-apply.path`
+- `control-center-dhcp-apply.path`
 
 ## Установка
 
@@ -51,18 +31,14 @@ Systemd timer запускает легкий updater раз в минуту, н
 sudo bash install/install.sh
 ```
 
-Web UI:
-
-```text
-http://SERVER_IP:8080
-```
-
 Проверка:
 
 ```bash
 cat /opt/control-center/VERSION
-systemctl status control-center --no-pager
-systemctl status control-center-update.timer --no-pager
 curl -fsS http://127.0.0.1:8080/api/health
-cat /var/lib/control-center/update-settings.json
+systemctl status control-center --no-pager
+systemctl status control-center-market-apply.path --no-pager
+systemctl status control-center-dhcp-apply.path --no-pager
 ```
+
+Web UI: `http://SERVER_IP:8080`
