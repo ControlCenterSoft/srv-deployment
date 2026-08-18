@@ -1,91 +1,77 @@
 # Control Center — системное администрирование
 
-> Актуальное описание production-модели администрирования. Инструкции ранней 0.x линии про отдельного bootstrap web-пользователя являются историческими и не относятся к текущей архитектуре.
+> Актуальная эксплуатационная модель production-линии. Исторические инструкции 0.x про отдельного bootstrap web-пользователя/пароль не применяются.
 
 ## Аутентификация и первый вход
 
-Современная production-линия Control Center не ведёт собственную базу web-паролей и не создаёт отдельного bootstrap-пользователя `admin` со случайным первичным паролем.
+Control Center не ведёт отдельную базу web-паролей. Первый интерактивный вход выполняется **существующей локальной Linux либо доменной Samba/winbind учётной записью**.
 
-Интерактивная authentication chain построена на системной identity-модели:
+Поддерживаемая цепочка:
 
-1. локальная Linux-учётная запись разрешается через NSS и проверяется PAM;
-2. доменная учётная запись разрешается через Samba/winbind, NSS и PAM;
-3. при корректной доменной настройке возможно Kerberos/SPNEGO SSO;
-4. после успешной аутентификации Control Center применяет собственный RBAC.
+1. NSS разрешает identity и группы;
+2. PAM выполняет authentication/account policy (`srv-control` PAM service);
+3. для доменной identity Samba/winbind участвует в NSS/PAM;
+4. после успешной authentication Control Center создаёт web-session;
+5. RBAC определяет доступ к модулям/операциям.
 
-Первый вход выполняется **существующей локальной либо доменной учётной записью**, которой предоставлены необходимые полномочия. Файл `/var/lib/srv-control/admin-bootstrap.txt` относится к исторической архитектуре ранних релизов и не должен использоваться как инструкция для текущей production-линии.
+`/var/lib/srv-control/admin-bootstrap.txt` относится к исторической архитектуре и не является способом текущего первого входа.
 
-## Authentication и authorization — разные уровни
+### Kerberos/SPNEGO
 
-Authentication отвечает на вопрос «кто пользователь», RBAC — «что ему разрешено».
+Kerberos/SPNEGO — **дополнительный SSO path**, а не замена PAM/NSS contract. Он считается рабочим только при согласованной настройке DNS, времени, SPN/keytab, reverse proxy и браузера/клиента. `401` с `WWW-Authenticate: Negotiate` может инициировать browser-level challenge; если SSO не развёрнут корректно, это не должно блокировать интерактивный PAM login.
 
-Успешный PAM/winbind login сам по себе не означает полный административный доступ. После определения identity Control Center учитывает пользователя, его локальные/доменные группы и назначенные права на модули/операции. Полный административный доступ предоставляется только субъектам, соответствующим действующей full-admin/server-administrator политике текущего релиза.
+При изменении SSO обязательно проверяйте отдельно `/login`, `/api/v1/auth/login`, `/api/v1/auth/status`, SSO endpoint и поведение session cookie через reverse proxy.
 
-При диагностике входа проверяйте последовательно:
+## Authentication, session и authorization — разные уровни
 
-- разрешение пользователя и групп через NSS;
-- состояние winbind/Samba для доменных пользователей;
-- PAM authentication/account policy;
-- Kerberos/SPNEGO, если используется SSO;
-- назначения RBAC в Control Center.
+Успешный PAM/winbind login доказывает пароль/account policy, но ещё не доказывает корректность web-session или RBAC. Диагностика выполняется слоями:
 
-Пароли, Kerberos key material, session secrets и другие секреты не должны сохраняться в Git, release metadata или публичной диагностике.
+```text
+DNS/network → NSS identity → PAM/winbind → session cookie → RBAC → privileged action
+```
+
+Если POST login успешен, но следующий запрос снова попадает на `/login`, проверяйте `Set-Cookie`, возврат session cookie браузером, session signing key/TTL и reverse-proxy headers. Не диагностируйте такой случай как «неверный пароль» без подтверждения PAM failure.
+
+Полный административный доступ определяется текущей full-admin/server-administrator политикой и RBAC. Обычным пользователям выдаются минимально необходимые Read/Write права.
 
 ## Привилегированные действия
 
-Web-приложение работает без root-прав. Операции, требующие системных привилегий, передаются специализированным root-owned helper/systemd-agent компонентам.
-
-Типовой контракт:
+Web-приложение работает без root-прав. Системные изменения выполняются через ограниченные root-owned helpers/systemd agents:
 
 ```text
-Web UI/API → session + CSRF + RBAC → allowlisted action request → privileged helper/systemd agent → result/status
+Web UI/API → session + CSRF + RBAC → allowlisted action → privileged helper/agent → result/status
 ```
 
-Agent принимает только предусмотренные типы действий; HTTP-параметры не превращаются в произвольные shell-команды.
-
-К привилегированным операциям, в зависимости от установленного релиза и RBAC, относятся:
-
-- системное обслуживание и reboot;
-- product/OS update actions;
-- backup/restore;
-- Samba/domain/shares;
-- Minecraft management;
-- install/remove/configure поддерживаемых сервисов.
+HTTP-параметры не должны превращаться в произвольные shell-команды. К privileged actions относятся, в зависимости от активного release: system maintenance/reboot, product/OS updates, backup/restore, Samba/domain/shares, Minecraft и install/remove/configure поддерживаемых сервисов.
 
 ## Обновления продукта и ОС
 
-Обновление Control Center и обслуживание пакетов ОС — разные процессы.
-
-Product updater ориентируется на `deployment.json`, manifest активного frozen release и транзакционный deployment pipeline:
+Product updater ориентируется на `deployment.json`, manifest активного frozen release и транзакцию:
 
 ```text
 preflight → safety backup → apply → acceptance → healthcheck
                                       ↘ failure → rollback
 ```
 
-Automatic updater должен сохранять выбранный режим/период, различать check и apply, не переустанавливать неизменившийся release fingerprint и подавлять бесконечное автоматическое повторение уже известного failed fingerprint до вмешательства администратора.
-
-Control Center не должен автоматически выполнять неподтверждённый переход ОС на новый major distribution release.
+Product update и обслуживание пакетов ОС — разные процессы. Updater должен различать check/apply, использовать fingerprint, не переустанавливать неизменившийся release после documentation-only commit и не зацикливать known-failed fingerprint. Major OS migration требует отдельного подтверждённого плана.
 
 ## Резервное копирование
 
-Backup schedule и backup-before-update являются независимыми настройками. Отключение планового ежедневного backup не должно автоматически отключать safety backup перед update и наоборот.
-
-Restore — высокорисковая привилегированная операция. После восстановления должны выполняться предусмотренные release validation/health checks.
-
-## AdGuard VPN
-
-AdGuard VPN является отдельным управляемым компонентом. Учётные данные/токены внешних сервисов не должны попадать в Git, frozen payload или публичную диагностику. Доступность install/remove/configure действий определяется текущим release и RBAC.
+Scheduled backup и safety backup before update — независимые политики. Restore — высокорисковая privileged operation; после восстановления выполняются release validation/health checks.
 
 ## Диагностика доступа
 
-Если web-вход не работает, различайте четыре основных класса проблемы:
+Проверяйте последовательно:
 
-1. identity не разрешается NSS;
-2. PAM отклоняет authentication/account;
-3. winbind/Kerberos/SPNEGO недоступен или настроен неверно;
-4. authentication успешна, но RBAC не предоставляет нужный модуль/операцию.
+- DNS/доступность web/reverse proxy;
+- `getent`/`id` для NSS identity и групп;
+- Samba/winbind для domain identity;
+- PAM authentication/account;
+- HTTP login response и `Set-Cookie`;
+- возврат session cookie и `/api/v1/auth/status`;
+- Kerberos/SPNEGO только если SSO реально включён;
+- RBAC и privileged-agent status.
 
-Это принципиально отличается от устаревшей модели с отдельным web-паролем Control Center.
+Пароли, session signing keys, Kerberos key material, tokens и backup contents не сохраняются в Git или публичной диагностике.
 
-См. также `docs/PRODUCT-MANUAL-RU.md`, `docs/AUTO-UPDATES.md`, `docs/DEPLOYMENT-RELIABILITY.md` и `docs/RELEASE-HISTORY.md`.
+См. также [`PRODUCT-MANUAL-RU.md`](PRODUCT-MANUAL-RU.md), [`AUTO-UPDATES.md`](AUTO-UPDATES.md), [`DEPLOYMENT-RELIABILITY.md`](DEPLOYMENT-RELIABILITY.md) и [`RELEASE-HISTORY.md`](RELEASE-HISTORY.md).
