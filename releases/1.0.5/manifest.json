@@ -2,5 +2,24 @@
   "product": "Control Center",
   "release": "1.0.5",
   "channel": "production",
-  "components": ["home-edition", "professional-edition", "professional-activation", "license-status", "control-center-update", "os-package-update", "dhcp-market", "network-management"]
+  "audited_at": "2026-08-18",
+  "editions": ["Home", "Professional"],
+  "components": [
+    "web-ui",
+    "system-dashboard",
+    "network-management",
+    "dhcp-market",
+    "dhcp-configuration",
+    "local-rbac",
+    "home-edition",
+    "professional-edition",
+    "professional-activation",
+    "license-status",
+    "control-center-update",
+    "os-package-update",
+    "installer",
+    "uninstaller",
+    "documentation"
+  ],
+  "known_limitations": ["web-ui-authentication-not-yet-implemented"]
 }
