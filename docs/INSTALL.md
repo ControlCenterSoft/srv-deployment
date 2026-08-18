@@ -1,8 +1,8 @@
-# Установка SRV Control Center
+# Установка Control Center
 
 ## Чистая машина
 
-Поддерживается Debian/Ubuntu с `apt-get` и systemd. Clean installer предназначен для машины, где `/opt/srv-control` ещё не содержит установленный Control Center.
+Clean installer предназначен для поддерживаемой Debian/Ubuntu-системы с `apt-get` и systemd, где `/opt/srv-control` ещё не содержит установленный Control Center.
 
 ```bash
 curl -fL -o install.sh \
@@ -11,25 +11,32 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Bootstrap скачивает актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому устанавливается полный payload активного `releases/<version>/payload`.
+Bootstrap получает актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому устанавливается self-contained payload активного `releases/<version>`.
 
-Установщик создаёт PostgreSQL role/database, Python virtualenv, применяет Alembic migrations, устанавливает `srv-control.service`, Nginx, system helpers активного релиза и GitHub updater. Если TCP/80 уже занят, reverse proxy выбирает свободный резервный порт из поддерживаемых installer вариантов.
+Перед установкой проверьте сеть, DNS, время, доступ к GitHub, свободное место и наличие root/sudo. При миграции существующего сервера предварительно создайте независимую резервную копию важных данных.
 
-## Авторизация 1.1.0
+Установщик создаёт/настраивает PostgreSQL role/database, Python virtualenv, Alembic migrations, `srv-control.service`, reverse proxy, system helpers активного release и GitHub updater согласно фактической release implementation.
 
-В 1.1.0 отдельная пользовательская база Control Center не создаётся. Вход использует системный PAM/NSS:
+## Аутентификация после установки
 
-- локальные Linux-учётные записи входят своим системным паролем;
-- при настроенной доменной интеграции доступны доменные учётные записи через системный PAM/NSS;
-- root и пользователи серверных административных групп получают полный доступ;
-- остальные права определяются RBAC-группами Control Center;
-- пользовательские пароли не записываются в БД Control Center или state-файлы.
+Современная production-линия не создаёт отдельную базу web-паролей Control Center и не требует bootstrap web-user `admin`.
 
-При наличии Samba AD DC установщик создаёт/экспортирует HTTP Kerberos keytab и добавляет SPNEGO location в Nginx. Доменный клиент, способный получить Kerberos ticket для HTTP/FQDN сервера, использует SSO. Если SSO не сработал, остаётся интерактивный вход доменной учётной записью.
+Вход использует системную identity chain:
 
-Страница «Права пользователей» читает локальные данные через NSS и доменный каталог через доступные server-domain tools; она не создаёт отдельные учётные записи Control Center.
+- локальные Linux-учётные записи через NSS/PAM;
+- доменные учётные записи через Samba/winbind + NSS/PAM;
+- Kerberos/SPNEGO SSO при корректной доменной конфигурации;
+- RBAC Control Center после успешной authentication.
+
+Первый вход выполняется существующей локальной или доменной учётной записью с необходимыми правами.
+
+При наличии Samba AD DC release installation может настраивать HTTP Kerberos keytab/SPNEGO integration. Если SSO недоступен, интерактивный PAM/winbind login остаётся отдельным путем при условии корректной системной интеграции.
+
+Страница управления правами работает с доступными локальными/доменными identity и RBAC; она не создаёт отдельный парольный каталог Control Center.
 
 ## Основные пути
+
+Типовые пути production-линии:
 
 ```text
 /opt/srv-control                         приложение
@@ -39,17 +46,19 @@ Bootstrap скачивает актуальный `main`. `installer/install.sh`
 /var/lib/srv-control/backups             резервные копии
 /var/lib/srv-control/session.key          ключ web-сессий
 /var/lib/srv-control/http.keytab          HTTP keytab SSO при наличии
-/var/lib/srv-deployment                  deployment state и rollback backups
-/var/lib/srvcc-agent/deploy-repo         checkout GitHub main
-/var/lib/srvcc-agent/last-deployed-sha   последний product deployment
-/var/lib/srvcc-agent/last-seen-sha       последний проверенный main
+/var/lib/srv-deployment                   deployment state/rollback state
+/var/lib/srvcc-agent/deploy-repo          updater checkout GitHub main
+/var/lib/srvcc-agent/last-deployed-sha
+/var/lib/srvcc-agent/last-seen-sha
 /var/lib/srvcc-agent/last-release-fingerprint
-/var/log/srvcc-agent.log                 журнал updater
+/var/log/srvcc-agent.log
 ```
+
+Точный набор файлов/units конкретной версии определяется frozen `releases/<active-version>`.
 
 ## GitHub updates
 
-Режим обновления настраивается из «Система» или командой:
+Режим обновления настраивается из «Система» либо конфигуратором:
 
 ```bash
 sudo /usr/local/sbin/srvcc-configure-auto-updates \
@@ -70,40 +79,56 @@ sudo /usr/local/sbin/srvcc-github-agent check --actor root
 sudo /usr/local/sbin/srvcc-github-agent apply --actor root
 ```
 
-Если включена политика backup-before-update, updater сначала создаёт резервную копию и блокирует deployment при ошибке backup.
-
-Полное описание: `docs/AUTO-UPDATES.md`.
+Если включена `backup_before_update`, updater сначала создаёт safety backup и блокирует deployment при ошибке backup. Подробности: `AUTO-UPDATES.md`.
 
 ## Проверка установки
+
+Минимальная проверка:
 
 ```bash
 systemctl status srv-control.service --no-pager -l
 systemctl status srvcc-github-agent.timer --no-pager -l
 curl -fsS http://127.0.0.1:8876/api/v1/health
+cat /var/lib/srv-control/release.json
 cat /var/lib/srv-control/github-update-config.json
 cat /var/lib/srv-control/github-update-status.json
 ```
 
-Для 1.1.0 дополнительно:
+Проверка identity/admin path:
 
 ```bash
-getent passwd root
-pamtester srv-control <local-user> authenticate acct_mgmt
+getent passwd <local-user>
 systemctl status srv-control-system-agent.path --no-pager -l
 ls -ld /var/lib/srv-control/backups
 ```
 
-При настроенном AD/SPNEGO:
+Если установлен `pamtester`, PAM можно проверять отдельно без публикации пароля в shell history/logs.
+
+При настроенном AD/SPNEGO дополнительно проверяйте winbind/NSS, Kerberos ticket/keytab, DNS/FQDN и соответствующую Nginx authentication configuration.
+
+## Определение активной версии
+
+Не полагайтесь на номер версии в старой инструкции. Сначала смотрите опубликованный production target:
 
 ```bash
-klist -k /var/lib/srv-control/http.keytab
-nginx -T | grep -A8 -B2 'auth_gss on'
+# в checkout репозитория
+cat deployment.json
 ```
+
+На установленном сервере отдельно проверяйте:
+
+```bash
+cat /var/lib/srv-control/release.json
+```
+
+Эти значения могут временно различаться после failed update и rollback.
 
 ## Повторный clean install
 
-Clean installer намеренно не перезаписывает существующий `/opt/srv-control`. Для установленной системы используется product updater. Полная destructive reinstall выполняется только отдельным явно подтверждаемым reinstall-процессом.
+Clean installer намеренно не должен безусловно перезаписывать существующий `/opt/srv-control`. Для установленной системы используется product updater. Destructive reinstall выполняется отдельным явно подтверждаемым процессом с резервной копией необходимых данных.
 
 ## server-state
 
-`main` доступен для чтения без встроенного GitHub-секрета. Публикация фактического состояния в `server-state` требует отдельного write credential и не встраивается в публичный installer.
+`server-state` используется для публикации фактического состояния сервера и диагностики. Публикация требует отдельного write credential; секреты не должны встраиваться в публичный installer или документацию.
+
+После установки переходите к `PRODUCT-MANUAL-RU.md` и `SYSTEM-ADMIN.md`.
