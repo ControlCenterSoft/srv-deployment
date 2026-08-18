@@ -1,0 +1,70 @@
+name: Control Center 2.2.0 bootstrap validation
+
+on:
+  push:
+    branches: [release/2.2.0]
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'installer/**'
+      - 'docs/2.2/**'
+      - '.github/workflows/validate-2.2.0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile app/control_center.py
+          bash -n installer/install.sh
+          bash -n installer/acceptance.sh
+
+      - name: Validate new navigation contract
+        run: |
+          set -euo pipefail
+          grep -Fq '("overview", "Обзор")' app/control_center.py
+          grep -Fq '("market", "Маркет")' app/control_center.py
+          grep -Fq '("rbac", "RBAC")' app/control_center.py
+          grep -Fq '("system", "Система")' app/control_center.py
+          ! grep -Fq '>Сервисы<' app/control_center.py
+          ! grep -Fq '>Пользователи<' app/control_center.py
+
+      - name: Validate installer safety contract
+        run: |
+          set -euo pipefail
+          grep -Fq 'python3-pam gunicorn nginx' installer/install.sh
+          grep -Fq '/usr/bin/gunicorn' installer/install.sh
+          grep -Fq 'NoNewPrivileges=true' installer/install.sh
+          grep -Fq 'ProtectSystem=strict' installer/install.sh
+          grep -Fq 'nginx -t' installer/install.sh
+          grep -Fq '/api/v1/health' installer/install.sh
+          grep -Fq 'INSTALL PASS' installer/install.sh
+
+      - name: Validate health contract without PAM login
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/cc-venv
+          /tmp/cc-venv/bin/pip install python-pam gunicorn
+          install -d /tmp/cc-etc /opt/control-center/app/static
+          cp app/control_center.py /opt/control-center/app/control_center.py
+          cp app/static/style.css /opt/control-center/app/static/style.css
+          printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n' >/tmp/cc-etc/session.key
+          CONTROL_CENTER_SESSION_KEY=/tmp/cc-etc/session.key /tmp/cc-venv/bin/gunicorn --bind 127.0.0.1:8876 --chdir /opt/control-center/app control_center:application >/tmp/cc-gunicorn.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..20}; do curl -fsS http://127.0.0.1:8876/api/v1/health >/tmp/health.json && break; sleep 1; done
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/health.json'))
+          assert p == {'status':'ok','product':'Control Center','version':'2.2.0','line':'2.2'},p
+          PY
+          code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8876/overview)"
+          test "$code" = 302
