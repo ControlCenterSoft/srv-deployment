@@ -40,6 +40,7 @@ jobs:
             static/css/shell.css \
             static/css/module.css \
             static/css/workspace-1.4.css \
+            static/css/polish-1.4.css \
             static/css/dashboard-1.4.css \
             static/css/network.css \
             static/css/service-pages.css \
@@ -176,6 +177,7 @@ jobs:
             releases/1.4.0/payload/static/css/samba-1.3.css \
             releases/1.4.0/payload/static/css/access.css \
             releases/1.4.0/payload/static/css/workspace-1.4.css \
+            releases/1.4.0/payload/static/css/polish-1.4.css \
             releases/1.4.0/payload/static/css/minecraft-1.4.css
           do
             grep -Fq '@media' "$f" || { echo "missing responsive rules: $f"; exit 1; }
@@ -185,6 +187,20 @@ jobs:
           grep -Fq 'cc-responsive-table' releases/1.4.0/payload/static/js/ui-1.4.js
           grep -Fq 'data-cc-label' releases/1.4.0/payload/static/js/ui-1.4.js
           grep -Fq 'enhanceTables' releases/1.4.0/payload/static/js/samba.js
+          grep -Fq '.split-pane > .object-editor' releases/1.4.0/payload/static/css/polish-1.4.css
+
+      - name: Validate loading and editor polish contracts
+        run: |
+          set -euo pipefail
+          grep -Fq 'cc-skeleton' releases/1.4.0/payload/static/css/polish-1.4.css
+          grep -Fq 'cc-empty-illustration' releases/1.4.0/payload/static/css/polish-1.4.css
+          grep -Fq '.action-message:empty' releases/1.4.0/payload/static/css/polish-1.4.css
+          for page in services system samba shares access adguard torrents; do
+            grep -Fq 'static/css/polish-1.4.css' "releases/1.4.0/payload/templates/${page}.html" || { echo "polish layer missing from ${page}"; exit 1; }
+            grep -Fq 'cc-skeleton' "releases/1.4.0/payload/templates/${page}.html" || { echo "loading skeleton missing from ${page}"; exit 1; }
+          done
+          grep -Fq 'cc-empty-illustration' releases/1.4.0/payload/templates/samba.html
+          grep -Fq 'cc-empty-illustration' releases/1.4.0/payload/templates/shares.html
 
       - name: Validate interaction safety and accessibility contracts
         run: |
