@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "2.1.0",
-  "release_id": "2.1.0",
-  "release_path": "releases/2.1.0",
-  "manifest": "releases/2.1.0/manifest.json",
-  "preflight": "releases/2.1.0/preflight-2.1.0.sh",
-  "apply": "releases/2.1.0/apply-2.1.0.sh",
-  "acceptance": "releases/2.1.0/acceptance-2.1.0.sh",
-  "rollback": "releases/2.1.0/rollback-2.1.0.sh",
-  "description": "Control Center 2.1.0 production candidate: normalize the existing Minecraft Bedrock runtime into one canonical systemd service, preserve the active world and settings, prove backup/restart/update control paths, and keep transactional rollback with unmanaged-runtime availability fallback."
+  "release": "2.1.1",
+  "release_id": "2.1.1",
+  "release_path": "releases/2.1.1",
+  "manifest": "releases/2.1.1/manifest.json",
+  "preflight": "releases/2.1.1/preflight-2.1.1.sh",
+  "apply": "releases/2.1.1/apply-2.1.1.sh",
+  "acceptance": "releases/2.1.1/acceptance-2.1.1.sh",
+  "rollback": "releases/2.1.1/rollback-2.1.1.sh",
+  "description": "Control Center 2.1.1 production candidate: fix Minecraft UI control under the retained NoNewPrivileges web sandbox by routing privileged operations through the root action agent instead of sudo; run Bedrock as the dedicated minecraft account; enforce mutable-data ownership; and use one canonical update scheduler."
 }
