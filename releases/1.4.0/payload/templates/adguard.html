@@ -11,22 +11,9 @@
 </head>
 <body>
 <div class="page">
-    <header class="module-hero">
-        <div class="module-hero-copy">
-            <div class="module-hero-icon" aria-hidden="true">◈</div>
-            <div><span class="section-kicker">VPN и фильтрация</span><h1>AdGuard VPN</h1><p>Состояние VPN-клиента, SOCKS-параметры и безопасное управление подключением из Control Center.</p></div>
-        </div>
-        <div class="module-hero-side"><span class="hero-pill success">Управляемый сервис</span><span class="hero-pill">SOCKS</span></div>
-    </header>
-    <section class="panel">
-        <div class="workspace-heading"><div><div class="panel-title">Текущее состояние</div><p>Control Center обновляет эти данные автоматически и показывает фактическое состояние установленного сервиса.</p></div></div>
-        <div class="status-grid" id="adguardStatus"></div><div class="service-actions" id="adguardActions"></div><div class="action-message" id="adguardMessage"></div>
-    </section>
-    <section class="panel config-panel" id="adguardConfigPanel">
-        <div class="workspace-heading"><div><div class="panel-title">Параметры подключения</div><p>Изменения применяются через системный агент и не должны нарушать работу остальных сетевых служб.</p></div><span class="hero-pill purple">Конфигурация</span></div>
-        <form id="adguardConfigForm"><div class="config-grid"><label><span>Режим</span><select id="adguardMode"><option value="SOCKS">SOCKS</option></select></label><label><span>SOCKS адрес</span><input id="adguardSocksHost" type="text" maxlength="255" value="127.0.0.1" required></label><label><span>SOCKS порт</span><input id="adguardSocksPort" type="number" min="1" max="65535" step="1" value="1080" required></label></div><div class="config-actions"><button class="action-button" id="adguardSave" type="submit">Сохранить настройки</button></div></form>
-        <div class="soft-note">Сохранение параметров не выполняет подключение автоматически. После применения настроек используйте действие «Подключить» в блоке состояния.</div>
-    </section>
+    <header class="module-hero"><div class="module-hero-copy"><div class="module-hero-icon" aria-hidden="true">◈</div><div><span class="section-kicker">VPN и фильтрация</span><h1>AdGuard VPN</h1><p>Состояние VPN-клиента, SOCKS-параметры и безопасное управление подключением из Control Center.</p></div></div><div class="module-hero-side"><span class="hero-pill success">Управляемый сервис</span><span class="hero-pill">SOCKS</span></div></header>
+    <section class="panel"><div class="workspace-heading"><div><div class="panel-title">Текущее состояние</div><p>Control Center обновляет эти данные автоматически и показывает фактическое состояние установленного сервиса.</p></div></div><div class="status-grid" id="adguardStatus"></div><div class="service-actions" id="adguardActions"></div><div class="action-message" id="adguardMessage"></div></section>
+    <section class="panel config-panel" id="adguardConfigPanel"><div class="workspace-heading"><div><div class="panel-title">Параметры подключения</div><p>Изменения применяются через системный агент и не должны нарушать работу остальных сетевых служб.</p></div><span class="hero-pill purple">Конфигурация</span></div><form id="adguardConfigForm"><div class="config-grid"><label><span>Режим</span><select id="adguardMode"><option value="SOCKS">SOCKS</option></select></label><label><span>SOCKS адрес</span><input id="adguardSocksHost" type="text" maxlength="255" value="127.0.0.1" required></label><label><span>SOCKS порт</span><input id="adguardSocksPort" type="number" min="1" max="65535" step="1" value="1080" required></label></div><div class="config-actions"><button class="action-button" id="adguardSave" type="submit">Сохранить настройки</button></div></form><div class="soft-note">Сохранение параметров не выполняет подключение автоматически. После применения настроек используйте действие «Подключить» в блоке состояния.</div></section>
     <div class="module-footer-note">Control Center · AdGuard VPN</div>
 </div>
 <script src="/static/js/ui-1.4.js?v=1.4.0-ui6"></script>
