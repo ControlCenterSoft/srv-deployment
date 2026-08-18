@@ -4,17 +4,22 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Сервисы — Control Center</title>
-    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui3">
-    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.4.0-ui3">
+    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui7">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.4.0-ui7">
+    <link rel="stylesheet" href="/static/css/polish-1.4.css?v=1.4.0-ui7">
 </head>
 <body>
 <div class="page services-page">
     <header class="page-header"><div><h1>Сервисы</h1><p>Управляемые инфраструктурные компоненты: состояние, установка и безопасное удаление.</p></div><div class="service-page-status"><span class="service-page-dot"></span><span>Управление сервисами</span></div></header>
     <section class="services-intro-grid" aria-label="Возможности"><article class="services-intro-card"><span class="intro-icon intro-blue">▦</span><div><strong>Единое управление</strong><small>Все поддерживаемые службы в одном разделе</small></div></article><article class="services-intro-card"><span class="intro-icon intro-green">✓</span><div><strong>Контроль состояния</strong><small>Текущий статус и параметры после каждой операции</small></div></article><article class="services-intro-card"><span class="intro-icon intro-amber">◇</span><div><strong>Безопасные действия</strong><small>Критические операции требуют явного подтверждения</small></div></article></section>
-    <section class="service-grid managed-services-grid" id="serviceGrid" aria-live="polite"></section>
+    <section class="service-grid managed-services-grid" id="serviceGrid" aria-live="polite">
+        <article class="service-card"><div class="service-card-title"><span class="service-card-icon">▦</span><div class="service-title-copy"><span class="cc-skeleton cc-skeleton-line short"></span><span class="cc-skeleton cc-skeleton-line"></span></div></div><span class="cc-skeleton cc-skeleton-line wide"></span></article>
+        <article class="service-card"><div class="service-card-title"><span class="service-card-icon">▦</span><div class="service-title-copy"><span class="cc-skeleton cc-skeleton-line"></span><span class="cc-skeleton cc-skeleton-line short"></span></div></div><span class="cc-skeleton cc-skeleton-line wide"></span></article>
+        <article class="service-card"><div class="service-card-title"><span class="service-card-icon">▦</span><div class="service-title-copy"><span class="cc-skeleton cc-skeleton-line short"></span><span class="cc-skeleton cc-skeleton-line"></span></div></div><span class="cc-skeleton cc-skeleton-line"></span></article>
+    </section>
     <div class="action-message" id="serviceMessage" aria-live="polite"></div>
 </div>
-<script src="/static/js/ui-1.4.js?v=1.4.0-ui6"></script>
-<script src="/static/js/services.js?v=1.4.0-ui6"></script>
+<script src="/static/js/ui-1.4.js?v=1.4.0-ui7"></script>
+<script src="/static/js/services.js?v=1.4.0-ui7"></script>
 </body>
 </html>
