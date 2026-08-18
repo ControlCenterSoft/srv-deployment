@@ -37,7 +37,7 @@ for p in "${changed[@]}"; do
 done
 
 tmp_agent="$(mktemp)"
-cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > "$tmp_agent"
+cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,11a,12}.part > "$tmp_agent"
 python3 -m py_compile "$tmp_agent" "$RELEASE_DIR/system/srv-control-pxe-probe" "$RELEASE_DIR/system/srv-control-backup"
 install -m 0755 -o root -g root "$tmp_agent" /usr/local/libexec/srv-control-release14-agent
 install -m 0755 -o root -g root "$RELEASE_DIR/system/srv-control-pxe-probe" /usr/local/libexec/srv-control-pxe-probe
