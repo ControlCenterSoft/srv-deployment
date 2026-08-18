@@ -1,0 +1,126 @@
+name: Control Center 2.1.2 Minecraft status validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'releases/2.1.2/**'
+      - 'docs/2.1/RELEASE-2.1.2.md'
+      - '.github/workflows/release-2.1.2-validation.yml'
+      - 'deployment.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  minecraft-status-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Protect frozen releases
+        run: |
+          set -euo pipefail
+          git diff --exit-code origin/main -- releases/2.1.0 releases/2.1.1
+          python3 - <<'PY'
+          import json
+          d=json.load(open('deployment.json',encoding='utf-8'))
+          assert d.get('release_id') in {'2.1.1','2.1.2'},d
+          if d.get('release_id') == '2.1.1':
+              assert d.get('release_path') == 'releases/2.1.1',d
+              print('STAGING MODE: production remains 2.1.1')
+          else:
+              assert d.get('release_path') == 'releases/2.1.2',d
+              assert d.get('manifest') == 'releases/2.1.2/manifest.json',d
+              for stage in ('preflight','apply','acceptance','rollback'):
+                  assert d.get(stage) == f'releases/2.1.2/{stage}-2.1.2.sh',(stage,d.get(stage))
+              print('ACTIVATION MODE: production descriptor is 2.1.2')
+          PY
+
+      - name: Validate 2.1.2 manifest hashes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('releases/2.1.2')
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          assert manifest.get('release_id') == manifest.get('release_version') == '2.1.2',manifest
+          assert manifest.get('upgrade_from') == '>=1.3.8,<2.1.2',manifest
+          for stage,item in manifest.get('scripts',{}).items():
+              assert item['path'] == f'{stage}-2.1.2.sh',(stage,item)
+              digest=hashlib.sha256((root/item['path']).read_bytes()).hexdigest()
+              assert digest == item['sha256'],(stage,digest,item['sha256'])
+          print('2.1.2 MANIFEST PASS')
+          PY
+
+      - name: Validate syntax
+        run: |
+          set -euo pipefail
+          bash -n releases/2.1.2/preflight-2.1.2.sh
+          bash -n releases/2.1.2/apply-2.1.2.sh
+          bash -n releases/2.1.2/acceptance-2.1.2.sh
+          bash -n releases/2.1.2/rollback-2.1.2.sh
+          python3 -m py_compile \
+            releases/2.1.2/system/srv-control-minecraft-dispatch \
+            releases/2.1.2/system/srv-control-minecraft-ui-status-patch
+          node --check releases/2.1.2/payload/static/js/minecraft-status-2.1.2.js
+
+      - name: Validate stopped-state root cause repair
+        run: |
+          set -euo pipefail
+          d=releases/2.1.2/system/srv-control-minecraft-dispatch
+          grep -Fq "UNIT = 'srv-control-minecraft-bedrock.service'" "$d"
+          grep -Fq "show('WorkingDirectory')" "$d"
+          grep -Fq "'state': state" "$d"
+          grep -Fq "state = 'stopped'" "$d"
+          grep -Fq "status['message']" "$d"
+          grep -Fq 'Состояние подтверждено: OFFLINE' "$d"
+          grep -Fq 'Состояние подтверждено: ONLINE' "$d"
+          ! grep -Fq 'candidate_runtimes' "$d"
+          ! grep -Fq 'proc_pids' "$d"
+          grep -Fq 'WorkingDirectory=/opt/minicraft' docs/2.1/RELEASE-2.1.2.md
+          grep -Fq 'Bedrock runtime was not found' docs/2.1/RELEASE-2.1.2.md
+
+      - name: Validate live UI and explicit result contract
+        run: |
+          set -euo pipefail
+          js=releases/2.1.2/payload/static/js/minecraft-status-2.1.2.js
+          patch=releases/2.1.2/system/srv-control-minecraft-ui-status-patch
+          grep -Fq 'const POLL_MS = 5000' "$js"
+          grep -Fq '`${BASE}/status`' "$js"
+          grep -Fq 'mc212RuntimeStatus' "$js"
+          grep -Fq 'Последняя команда:' "$js"
+          grep -Fq 'serverStart' "$js"
+          grep -Fq 'serverRestart' "$js"
+          grep -Fq 'serverStop' "$js"
+          grep -Fq 'minecraft-status-2.1.2.js?v=2.1.2' "$patch"
+
+      - name: Validate upgrade and rollback chaining
+        run: |
+          set -euo pipefail
+          pre=releases/2.1.2/preflight-2.1.2.sh
+          apply=releases/2.1.2/apply-2.1.2.sh
+          rollback=releases/2.1.2/rollback-2.1.2.sh
+          grep -Fq '1.3.8|2.0.0|2.1.0|2.1.1' "$pre"
+          grep -Fq 'bash "$BASE_RELEASE/preflight-2.1.1.sh"' "$pre"
+          grep -Fq 'bash "$BASE_RELEASE/apply-2.1.1.sh"' "$apply"
+          grep -Fq 'srv-control-minecraft-2.1.1' "$apply"
+          grep -Fq 'original-source-version' "$apply"
+          grep -Fq 'bash "$BASE_RELEASE/rollback-2.1.1.sh"' "$rollback"
+          grep -Fq 'original-source-version' "$rollback"
+
+      - name: Validate real-server regression gate
+        run: |
+          set -euo pipefail
+          a=releases/2.1.2/acceptance-2.1.2.sh
+          grep -Fq '/usr/local/sbin/srv-control-minecraft service stop' "$a"
+          grep -Fq '/usr/local/sbin/srv-control-minecraft status' "$a"
+          grep -Fq "assert p.get('state') == 'stopped'" "$a"
+          grep -Fq "assert p.get('runtime')" "$a"
+          grep -Fq "assert p.get('world_exists') is True" "$a"
+          grep -Fq '/usr/local/sbin/srv-control-minecraft service start' "$a"
+          grep -Fq "'ONLINE' in str(p.get('message')" "$a"
+          grep -Fq 'NoNewPrivileges' "$a"
