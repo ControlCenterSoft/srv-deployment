@@ -179,6 +179,20 @@ jobs:
             grep -Fq '@media' "$f" || { echo "missing responsive rules: $f"; exit 1; }
           done
 
+      - name: Validate interaction safety and accessibility contracts
+        run: |
+          set -euo pipefail
+          grep -Fq ':focus-visible' releases/1.4.0/payload/static/css/module.css
+          grep -Fq ':focus-visible' releases/1.4.0/payload/static/css/shell.css
+          grep -Fq 'prefers-reduced-motion' releases/1.4.0/payload/static/css/module.css
+          grep -Fq 'prefers-reduced-motion' releases/1.4.0/payload/static/css/shell.css
+          grep -Fq 'aria-current' releases/1.4.0/payload/static/js/shell.js
+          grep -Fq 'ArrowDown' releases/1.4.0/payload/static/js/shell.js
+          grep -Fq 'window.confirm' releases/1.4.0/payload/static/js/services.js
+          grep -Fq 'Полный администратор' releases/1.4.0/payload/static/js/access.js
+          grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/services.js
+          grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/access.js
+
       - name: Compile application Python
         run: |
           python3 -m compileall -q releases/1.4.0/payload/app
