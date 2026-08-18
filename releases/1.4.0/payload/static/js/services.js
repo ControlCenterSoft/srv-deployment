@@ -3,6 +3,7 @@
 
     const grid = document.getElementById("serviceGrid");
     const message = document.getElementById("serviceMessage");
+    const ui = window.ControlCenterUI;
     let csrfToken = "";
     const busyServices = new Set();
 
@@ -29,6 +30,7 @@
         message.classList.toggle("error", error);
         message.setAttribute("role", error ? "alert" : "status");
         message.setAttribute("aria-live", error ? "assertive" : "polite");
+        if (value && ui) ui.toast(value, error ? "error" : "info", error ? 5200 : 3200);
     }
 
     async function auth() {
@@ -42,21 +44,19 @@
         return true;
     }
 
-    function confirmRemoval(serviceId, serviceName) {
-        if (serviceId === "samba-ad-dc") {
-            return window.confirm(
-                "Удалить Samba AD DC? Control Center сначала создаст резервную копию домена. База домена и данные сетевых ресурсов не будут очищены автоматически."
-            );
-        }
-        return window.confirm(
-            `Удалить сервис «${serviceName || serviceId}»? Служба будет остановлена, а управляемые пакеты удалены. Продолжить?`
-        );
+    async function confirmRemoval(serviceId, serviceName) {
+        const prompt = serviceId === "samba-ad-dc"
+            ? "Удалить Samba AD DC? Control Center сначала создаст резервную копию домена. База домена и данные сетевых ресурсов не будут очищены автоматически."
+            : `Удалить сервис «${serviceName || serviceId}»? Служба будет остановлена, а управляемые пакеты удалены.`;
+        return ui
+            ? ui.confirm(prompt, {title: "Удаление сервиса", confirmLabel: "Удалить", danger: true})
+            : window.confirm(prompt);
     }
 
     async function action(serviceId, serviceName, operation) {
         if (busyServices.has(serviceId)) return;
         setMessage("");
-        if (operation === "remove" && !confirmRemoval(serviceId, serviceName)) return;
+        if (operation === "remove" && !(await confirmRemoval(serviceId, serviceName))) return;
 
         busyServices.add(serviceId);
         renderLastItems();
@@ -96,10 +96,7 @@
     }
 
     let lastItems = [];
-
-    function renderLastItems() {
-        render(lastItems);
-    }
+    function renderLastItems() { render(lastItems); }
 
     function render(items) {
         lastItems = Array.isArray(items) ? items : [];
@@ -116,15 +113,12 @@
             const card = document.createElement("article");
             card.className = `service-card theme-${style.theme}`;
             card.setAttribute("aria-busy", busyServices.has(item.id) ? "true" : "false");
-
             const title = document.createElement("div");
             title.className = "service-card-title";
-
             const icon = document.createElement("span");
             icon.className = "service-card-icon";
             icon.textContent = style.icon;
             icon.setAttribute("aria-hidden", "true");
-
             const titleCopy = document.createElement("div");
             titleCopy.className = "service-title-copy";
             const name = document.createElement("strong");
@@ -132,19 +126,15 @@
             const hint = document.createElement("small");
             hint.textContent = style.hint;
             titleCopy.append(name, hint);
-
             const state = document.createElement("span");
             state.className = `service-state-badge ${item.installed ? "status-ok" : "status-error"}`;
             state.textContent = item.installed ? "Установлен" : "Не установлен";
             title.append(icon, titleCopy, state);
-
             const description = document.createElement("p");
             description.textContent = item.description || "Управляемый компонент Control Center.";
-
             const status = document.createElement("p");
             status.className = "service-status";
             status.textContent = statusText(item);
-
             const actions = document.createElement("div");
             actions.className = "service-actions";
             if (item.can_write) {
@@ -163,7 +153,6 @@
                 locked.textContent = "Только просмотр";
                 actions.appendChild(locked);
             }
-
             card.append(title, description);
             if (status.textContent) card.appendChild(status);
             card.appendChild(actions);
