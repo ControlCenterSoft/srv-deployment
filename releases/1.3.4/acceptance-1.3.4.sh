@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../1.3.3" && pwd -P)"
+SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT="${1:-/opt/srv-control}"
 REMOTE_SHA="${2:-unknown}"
 TMP="$(mktemp "${TMPDIR:-/tmp}/srvcc-acceptance-1.3.4.XXXXXX.sh")"
@@ -14,10 +14,7 @@ from pathlib import Path
 import sys
 src=Path(sys.argv[1]); dst=Path(sys.argv[2])
 text=src.read_text(encoding='utf-8')
-# Base 1.3.3 acceptance expects its own installed version. 1.3.4 intentionally
-# carries the identical payload, so only the release identity changes here.
 text=text.replace('1.3.3','1.3.4')
-# Keep all file references anchored to the frozen 1.3.3 payload/system tree.
 text=text.replace(
     'RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"',
     f'RELEASE_DIR="{src.parent}"',
