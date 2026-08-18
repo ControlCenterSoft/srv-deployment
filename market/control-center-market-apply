@@ -12,16 +12,18 @@ import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
 chown control-center:control-center "$STATUS" 2>/dev/null || true; }
+on_error(){ local rc=$?; trap - ERR; status error "Операция Маркета завершилась ошибкой (код $rc)" || true; exit "$rc"; }
+trap on_error ERR
 readarray -t x < <(python3 - "$PENDING" <<'PY'
 import json,sys
 j=json.load(open(sys.argv[1])); print(j.get('module','')); print(j.get('action',''))
 PY
 )
 rm -f "$PENDING"
-[[ "${x[0]}" == dhcp && ( "${x[1]}" == install || "${x[1]}" == remove ) ]] || { status error 'Некорректная операция Маркета'; exit 1; }
+[[ "${x[0]}" == dhcp && ( "${x[1]}" == install || "${x[1]}" == remove ) ]] || { status error 'Некорректная операция Маркета'; trap - ERR; exit 1; }
 mkdir -p "$MODULE_DIR"
 exec 8>"$APT_LOCK"
-flock -w 900 8 || { status error 'Менеджер пакетов занят'; exit 1; }
+flock -w 900 8 || { status error 'Менеджер пакетов занят'; trap - ERR; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 if [[ "${x[1]}" == install ]]; then
   status applying 'Установка DHCP Server…'
@@ -45,3 +47,4 @@ else
   apt-get remove -y dnsmasq || true
   status applied 'DHCP Server удалён'
 fi
+trap - ERR
