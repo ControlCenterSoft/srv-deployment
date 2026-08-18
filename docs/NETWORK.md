@@ -24,34 +24,51 @@
 
 Для WAN Static шлюз обязателен. Для LAN шлюз может отсутствовать.
 
-## Проверки до применения
+## Двухуровневая проверка
 
-Control Center проверяет:
+Проверка выполняется дважды: сначала Web API, затем независимо root helper непосредственно перед генерацией Netplan. Root helper не доверяет содержимому Web-writable pending-файла.
 
-- существование выбранных интерфейсов;
+Проверяются:
+
+- реальное существование интерфейса в `/sys/class/net`;
+- безопасный формат имени интерфейса и отсутствие `lo`;
 - отсутствие одного интерфейса одновременно в WAN и LAN;
-- корректность IPv4 и маски;
-- корректность DNS;
+- допустимый режим DHCP/Static;
+- IPv4, CIDR/mask и запрещённые loopback/multicast/unspecified адреса;
+- DNS;
 - принадлежность шлюза указанной подсети;
 - отсутствие совпадения IP и шлюза;
+- обязательный шлюз WAN Static;
 - отсутствие пересечения статических подсетей WAN и LAN.
 
 ## Применение
 
-После проверки Web UI записывает `/var/lib/control-center/network-pending.json`. Root helper создаёт:
+Web UI записывает:
+
+```text
+/var/lib/control-center/network-pending.json
+```
+
+Root helper повторно проверяет запрос, формирует временный файл, а затем атомарно заменяет:
 
 ```text
 /etc/netplan/90-control-center.yaml
 ```
 
-и выполняет:
+После этого выполняются:
 
 ```bash
 netplan generate
 netplan apply
 ```
 
-Перед заменой текущий файл Control Center сохраняется как rollback-копия. При ошибке предыдущий файл восстанавливается и Netplan применяется повторно.
+Rollback-копия хранится только в root-only каталоге:
+
+```text
+/var/lib/control-center-root/90-control-center.yaml.rollback
+```
+
+При ошибке предыдущий Netplan восстанавливается и применяется повторно. Невалидный pending request удаляется и получает статус `rejected`.
 
 ## Важно при удалённом управлении
 
@@ -63,6 +80,7 @@ netplan apply
 cat /var/lib/control-center/network-config.json
 cat /var/lib/control-center/network-status.json
 sudo cat /etc/netplan/90-control-center.yaml
+sudo ls -l /var/lib/control-center-root/
 sudo netplan generate
 ip -br addr
 ip route
