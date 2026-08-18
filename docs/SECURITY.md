@@ -1,0 +1,63 @@
+# Безопасность Control Center 1.0.5
+
+## Разделение привилегий
+
+Основной Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные действия выполняются отдельными systemd workers:
+
+- применение сети;
+- установка/удаление DHCP;
+- применение DHCP-конфигурации;
+- проверка Professional-лицензии;
+- обновление Control Center;
+- обновление ОС и пакетов.
+
+Web UI формирует только ограниченные JSON-запросы в `/var/lib/control-center`.
+
+## Лицензирование
+
+Подтверждённая Professional-лицензия хранится в `/var/lib/control-center-license`, принадлежащем `root:root`. Web-процесс может читать состояние, но не должен иметь возможность изменять подтверждённую лицензию.
+
+Приватный ключ издателя никогда не должен храниться в репозитории или на сервере клиента.
+
+## Systemd hardening
+
+`control-center.service` использует, в частности:
+
+```text
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+```
+
+Запись разрешена только в `/var/lib/control-center`; каталог лицензии доступен только на чтение.
+
+## Известное ограничение 1.0.5
+
+В текущей линии ещё **нет полноценной аутентификации Web UI**. Поэтому TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть. До появления встроенной аутентификации доступ должен ограничиваться доверенной административной LAN/VPN и внешним firewall/reverse proxy с аутентификацией.
+
+Особенно важно ограничить доступ, потому что Web UI может создавать запросы на изменение сети, установку DHCP и обновление системных пакетов.
+
+## Рекомендации
+
+- разрешать TCP/8080 только с административных адресов;
+- не публиковать порт через WAN/NAT;
+- использовать VPN для удалённого администрирования;
+- регулярно проверять `journalctl` для привилегированных workers;
+- хранить приватный ключ Professional offline;
+- делать резервную копию сетевой конфигурации до удалённых изменений;
+- не изменять вручную файлы в `/var/lib/control-center-license`.
+
+## Проверка прав
+
+```bash
+id control-center
+systemctl cat control-center
+ls -ld /var/lib/control-center /var/lib/control-center-license
+ls -l /var/lib/control-center-license 2>/dev/null || true
+```
