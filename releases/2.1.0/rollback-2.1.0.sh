@@ -39,11 +39,10 @@ restore_path(){
     fi
 }
 
-# Stop the new canonical service before restoring an explicitly known previous
-# managed service. If the old process was unmanaged we postpone shutdown until a
-# safe fallback is known, preventing rollback from turning a working game server
-# into an outage merely to reproduce legacy process ownership.
-if [[ -n "$previous_unit" && "$previous_unit" != "$CANONICAL_UNIT" ]]; then
+# If the source did not already use the 2.1 canonical service, stop it before
+# restoring the previous platform. This prevents an old unit or process restored
+# by rollback from racing the canonical service for UDP/19132.
+if [[ "$previous_unit" != "$CANONICAL_UNIT" ]]; then
     systemctl stop "$CANONICAL_UNIT" >/dev/null 2>&1 || true
 fi
 
@@ -52,15 +51,30 @@ if [[ "$SOURCE_VERSION" == "1.3.8" ]]; then
         || fail "published 2.0.0 rollback failed while returning to 1.3.8"
 else
     restore_path /var/lib/srv-control/release.json
-    restore_path "/etc/systemd/system/$CANONICAL_UNIT"
-    restore_path /usr/local/libexec/srv-control-minecraft-normalize
-    restore_path /usr/local/libexec/srv-control-minecraft-dispatch
     for role in "${ROLES[@]}"; do
         restore_path "/usr/local/sbin/$role"
         restore_path "/usr/local/libexec/$role"
     done
-    systemctl daemon-reload
 fi
+
+# These paths are introduced or replaced specifically by 2.1.0 and therefore
+# always use the 2.1 snapshot, independent of the source platform version.
+restore_path /usr/local/libexec/srv-control-minecraft-normalize
+restore_path /usr/local/libexec/srv-control-minecraft-dispatch
+
+# Restore the previous canonical unit when one existed. If the original Bedrock
+# process was unmanaged, keep the generated unit available but disabled as a
+# last-resort availability fallback; there is no old unit that can be restarted.
+if [[ -n "$previous_unit" ]]; then
+    restore_path "/etc/systemd/system/$CANONICAL_UNIT"
+else
+    if [[ -s "$BACKUP_DIR/state/canonical-unit.generated" ]]; then
+        install -m 0644 -o root -g root "$BACKUP_DIR/state/canonical-unit.generated" "/etc/systemd/system/$CANONICAL_UNIT"
+    else
+        restore_path "/etc/systemd/system/$CANONICAL_UNIT"
+    fi
+fi
+systemctl daemon-reload
 
 if [[ -n "$previous_unit" && "$previous_unit" != "$CANONICAL_UNIT" ]]; then
     systemctl reset-failed "$previous_unit" >/dev/null 2>&1 || true
@@ -70,14 +84,17 @@ if [[ -n "$previous_unit" && "$previous_unit" != "$CANONICAL_UNIT" ]]; then
 fi
 
 bedrock_count="$(pgrep -x bedrock_server 2>/dev/null | wc -l | tr -d ' ')"
-if [[ "$bedrock_count" == "0" ]]; then
-    # Last-resort availability protection for a source state where Bedrock was
-    # an unmanaged process. The canonical unit points to the same preserved
-    # runtime/world. Keeping it running is safer than a dead server; the product
-    # release metadata is still restored to the previous version.
+if [[ "$bedrock_count" == "0" && -z "$previous_unit" ]]; then
+    # availability fallback: the source had no recoverable managed unit. Start
+    # the exact preserved runtime through the generated canonical unit rather
+    # than leaving the Minecraft world unavailable after rollback.
     if systemctl cat "$CANONICAL_UNIT" >/dev/null 2>&1; then
-        warn "no previous managed Bedrock unit was recoverable; starting preserved canonical runtime as availability fallback"
-        systemctl enable --now "$CANONICAL_UNIT" >/dev/null 2>&1 || true
+        warn "source Bedrock was unmanaged; starting preserved runtime through canonical availability fallback"
+        systemctl reset-failed "$CANONICAL_UNIT" >/dev/null 2>&1 || true
+        systemctl enable --now "$CANONICAL_UNIT" >/dev/null 2>&1 \
+            || warn "canonical availability fallback could not be started"
+    else
+        warn "source Bedrock was unmanaged and no generated fallback unit is available"
     fi
 fi
 
