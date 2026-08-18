@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+STATE=/var/lib/control-center
+PENDING="$STATE/dhcp-pending.json"
+CONFIG="$STATE/dhcp-config.json"
+STATUS="$STATE/dhcp-status.json"
+TARGET=/etc/dnsmasq.d/control-center-dhcp.conf
+[[ -f "$PENDING" ]] || exit 0
+python3 - "$PENDING" "$TARGET" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1])); p=sys.argv[2]
+dns=','.join(j['dns'])
+text=f"""port=0
+bind-dynamic
+interface={j['interface']}
+dhcp-range={j['range_start']},{j['range_end']},{j['mask']},{j['lease_minutes']}m
+dhcp-option=option:router,{j['gateway']}
+dhcp-option=option:dns-server,{dns}
+"""
+open(p,'w').write(text)
+PY
+if dnsmasq --test >/tmp/control-center-dhcp-test.log 2>&1 && systemctl restart dnsmasq; then
+  mv "$PENDING" "$CONFIG"
+  printf '%s\n' '{"ok":true,"message":"DHCP конфигурация применена"}' >"$STATUS"
+else
+  printf '%s\n' '{"ok":false,"message":"Ошибка применения DHCP конфигурации"}' >"$STATUS"
+  exit 1
+fi
+chown control-center:control-center "$CONFIG" "$STATUS" 2>/dev/null || true
