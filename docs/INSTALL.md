@@ -1,6 +1,6 @@
 # Установка Control Center 1.0.9
 
-Release candidate build: **20260819.3** до завершения финального CI.
+Production build: **20260819.3**, audit `passed`.
 
 ## Установка / обновление
 
