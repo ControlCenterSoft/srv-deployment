@@ -39,18 +39,28 @@ jobs:
           required=(
               'bash "$TMP_ROOT/repo/deploy/deploy.sh" "$PROJECT" "$REMOTE_SHA"',
               'systemctl reset-failed srvcc-github-agent.service',
-              'systemctl enable --now srvcc-github-agent.timer',
+              '"$CONFIGURATOR"',
+              '--mode automatic',
+              '--interval-minutes "$EXPECTED_INTERVAL"',
               'systemctl is-enabled --quiet srvcc-github-agent.timer',
               'systemctl is-active --quiet srvcc-github-agent.timer',
-              "assert data.get('schema_version') == 4",
+              "assert cfg.get('schema_version') == 4",
+              "assert cfg.get('mode') == 'automatic'",
+              "assert cfg.get('interval_minutes') == interval",
+              "assert status.get('schema_version') == 4",
               "urlopen('http://127.0.0.1:8876/api/v1/health'",
+              'acceptance-2.0.0.sh" "$PROJECT" "$REMOTE_SHA"',
               '"$STATE_PUBLISHER"',
-              "merge-base --is-ancestor",
+              'merge-base --is-ancestor',
               'push --quiet origin --delete "$branch"',
               'release/1.4.0',
           )
           for item in required:
               assert item in text, item
+
+          # The recovery bootstrap must configure the desired automatic mode,
+          # not merely enable a timer while leaving UI/config in manual mode.
+          assert 'systemctl enable --now srvcc-github-agent.timer' not in text
 
           # Published 1.x release branches are frozen history and must never be
           # part of the bootstrap deletion set.
@@ -66,5 +76,5 @@ jobs:
           cleanup_block=text.split('OBSOLETE_UNPUBLISHED_BRANCHES=(',1)[1].split(')',1)[0]
           for branch in protected:
               assert branch not in cleanup_block, branch
-          print('BOOTSTRAP 2.0 CONTRACT PASS')
+          print('BOOTSTRAP 2.0 CONTRACT PASS: automatic 5-minute recovery and cleanup gates present')
           PY
