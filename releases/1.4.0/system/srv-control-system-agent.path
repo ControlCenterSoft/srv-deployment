@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for SRV Control Center privileged system actions
+
+[Path]
+PathExistsGlob=/var/lib/srv-control/system-actions/*.json
+Unit=srv-control-system-agent.service
+
+[Install]
+WantedBy=multi-user.target

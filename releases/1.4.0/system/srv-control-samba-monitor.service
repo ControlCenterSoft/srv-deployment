@@ -1,0 +1,24 @@
+[Unit]
+Description=SRV Control Center Samba AD snapshot collector
+After=network.target samba-ad-dc.service samba.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/srv-control-samba-monitor
+User=root
+Group=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# Local Samba/LDB reads use lock and runtime files even when the directory
+# operation is logically read-only. Keep the filesystem sandbox strict and
+# expose only Samba's own mutable state plus the SRV snapshot destination.
+ReadWritePaths=/var/lib/srv-control /var/lib/samba
+ReadWritePaths=-/var/cache/samba -/run/samba
+
+[Install]
+WantedBy=multi-user.target
