@@ -6,13 +6,21 @@ MODULE_DIR="$STATE/modules"
 DHCP_STATE="$MODULE_DIR/dhcp.json"
 STATUS="$STATE/market-status.json"
 APT_LOCK=/run/control-center-apt.lock
+DNSMASQ_MASK=/etc/systemd/system/dnsmasq.service
+MASK_CREATED=0
 [[ -s "$PENDING" ]] || exit 0
 status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
 import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
 chown control-center:control-center "$STATUS" 2>/dev/null || true; }
-on_error(){ local rc=$?; trap - ERR; status error "Операция Маркета завершилась ошибкой (код $rc)" || true; exit "$rc"; }
+unmask_dnsmasq(){
+  if [[ "$MASK_CREATED" == 1 && -L "$DNSMASQ_MASK" && "$(readlink "$DNSMASQ_MASK")" == /dev/null ]]; then
+    rm -f "$DNSMASQ_MASK"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+}
+on_error(){ local rc=$?; trap - ERR; unmask_dnsmasq; status error "Операция Маркета завершилась ошибкой (код $rc)" || true; exit "$rc"; }
 trap on_error ERR
 readarray -t x < <(python3 - "$PENDING" <<'PY'
 import json,sys
@@ -26,25 +34,61 @@ exec 8>"$APT_LOCK"
 flock -w 900 8 || { status error 'Менеджер пакетов занят'; trap - ERR; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 if [[ "${x[1]}" == install ]]; then
+  if [[ -f "$DHCP_STATE" ]] && python3 - "$DHCP_STATE" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except:raise SystemExit(1)
+raise SystemExit(0 if j.get('installed') else 1)
+PY
+  then
+    status applied 'DHCP Server уже установлен Control Center'
+    trap - ERR
+    exit 0
+  fi
+  if dpkg-query -W -f='${Status}' dnsmasq 2>/dev/null | grep -q 'install ok installed'; then
+    status error 'Обнаружен dnsmasq, установленный вне Control Center. Автоматический захват существующей службы запрещён.'
+    trap - ERR
+    exit 1
+  fi
   status applying 'Установка DHCP Server…'
+  if [[ -e "$DNSMASQ_MASK" && ! -L "$DNSMASQ_MASK" ]]; then
+    status error 'Нельзя временно замаскировать dnsmasq.service: путь уже занят.'
+    trap - ERR
+    exit 1
+  fi
+  ln -s /dev/null "$DNSMASQ_MASK"
+  MASK_CREATED=1
+  systemctl daemon-reload
   apt-get update
   apt-get install -y dnsmasq
+  unmask_dnsmasq
+  MASK_CREATED=0
+  systemctl disable --now dnsmasq.service >/dev/null 2>&1 || true
   install -d -m 0755 /etc/dnsmasq.d
   cat >/etc/dnsmasq.d/control-center-dhcp.conf <<'EOF'
+# DHCP Server is installed but not configured yet.
+# Configure it in Control Center -> DHCP.
 port=0
-# DHCP configuration is managed by Control Center.
 EOF
-  dnsmasq --test >/dev/null
-  systemctl enable dnsmasq >/dev/null 2>&1 || true
-  systemctl restart dnsmasq
-  printf '%s\n' '{"installed":true,"package":"dnsmasq"}' >"$DHCP_STATE"
+  printf '%s\n' '{"installed":true,"package":"dnsmasq","package_owned":true,"configured":false}' >"$DHCP_STATE"
   chown control-center:control-center "$DHCP_STATE"
-  status applied 'DHCP Server установлен'
+  status applied 'DHCP Server установлен. Настройте диапазон в меню DHCP.'
 else
   status applying 'Удаление DHCP Server…'
-  systemctl disable --now dnsmasq >/dev/null 2>&1 || true
+  OWNED=true
+  if [[ -f "$DHCP_STATE" ]]; then
+    OWNED="$(python3 - "$DHCP_STATE" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except:j={}
+print('true' if j.get('package_owned',True) else 'false')
+PY
+)"
+  fi
+  systemctl disable --now control-center-dhcp-server.service >/dev/null 2>&1 || true
+  systemctl disable --now dnsmasq.service >/dev/null 2>&1 || true
   rm -f /etc/dnsmasq.d/control-center-dhcp.conf "$DHCP_STATE" "$STATE/dhcp-config.json" "$STATE/dhcp-pending.json" "$STATE/dhcp-status.json"
-  apt-get remove -y dnsmasq || true
+  if [[ "$OWNED" == true ]]; then apt-get remove -y dnsmasq || true; fi
   status applied 'DHCP Server удалён'
 fi
 trap - ERR
