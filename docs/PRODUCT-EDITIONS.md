@@ -121,12 +121,86 @@ Home and Professional use edition-aware production channels/artifacts so cross-e
 
 Two agreements are required: Home EULA for personal/non-commercial use and Professional EULA for commercial rights, installation count, activation, transfer/re-host, release-based maintenance/update terms, support and termination. The Home EULA must explicitly state the limits of **10 domain users** and **10 network shares**. EULA and technical entitlement enforcement are separate layers. Final agreements require professional legal review before external commercial launch.
 
+## Default staged licensing rollout
+
+Licensing is a **mandatory sequential release track**. When preparation of each new feature release begins, the next not-yet-accepted stage below is included in that release scope automatically unless the user explicitly changes the plan.
+
+Rules:
+
+1. Stages are implemented strictly in order and are not skipped.
+2. A stage is considered complete only after implementation, regression tests, migration/upgrade tests where applicable, security review and release acceptance.
+3. If a stage is incomplete at release time, it remains the active licensing stage for the next feature release; the project does not advance to the following stage merely because a version number changed.
+4. Emergency repair/hotfix patch releases do **not** consume or advance the licensing stage unless they explicitly contain the remaining work for that stage.
+5. Every new feature-release scope must state which licensing stage is active and include its acceptance criteria.
+6. Documentation, site messaging and product behavior must not advertise a later stage as available before its acceptance is complete.
+
+### Stage 1 — Edition / Entitlement Engine
+
+**Default target: the next feature release, currently 2.0.0.**
+
+- Control Center understands `Home` and `Professional` as explicit edition state.
+- Central entitlement service/API is introduced; UI is not the sole enforcement layer.
+- Home limits are enforced at relevant API and privileged-operation boundaries: **10 domain users** and **10 network shares**.
+- Attempts to create the 11th domain user or 11th network share are rejected safely with a clear Professional-upgrade message.
+- Existing critical services are never stopped merely because a limit is reached.
+- Add **System → About / License** (or equivalent) showing edition, entitlement state, Home limits/usage and future activation status placeholder.
+- Add DB/state schema foundations needed by later licensing stages without requiring a commercial activation server yet.
+
+### Stage 2 — Signed local Professional licenses
+
+**Default target: the next feature release after Stage 1 acceptance.**
+
+- Generate and persist VM-safe random `installation_id`.
+- Define signed license certificate format.
+- Verify licenses locally using embedded verification public material; Ed25519 is the preferred target.
+- Private signing keys never ship in GitHub, installers or customer systems.
+- Professional entitlement state becomes loadable from a valid signed license certificate.
+- Invalid/tampered licenses fail closed for commercial administrative entitlements while already-running critical infrastructure services remain available.
+
+### Stage 3 — Online activation service
+
+**Default target: the next feature release after Stage 2 acceptance.**
+
+- Introduce licensing API under the official `control-center.pro` service namespace (for example `api.control-center.pro`).
+- License/activation database supports customer/license/installation/activation/entitlement/audit records.
+- Activation key is an activation credential, not the runtime license itself.
+- Online activation issues a signed license certificate bound to logical `installation_id`.
+- Support deactivate / transfer / re-host workflows and activation-count enforcement.
+- Product can continue using a previously valid signed local license during temporary network loss.
+
+### Stage 4 — Offline activation
+
+**Default target: the next feature release after Stage 3 acceptance.**
+
+- Product exports a signed/bounded activation request containing installation identity and nonce.
+- Connected portal/API accepts the request plus commercial activation credential.
+- Portal returns a signed license response/certificate for import into the isolated Control Center installation.
+- Replay, substitution and cross-installation misuse are rejected.
+- Offline-activated systems do not require continuous Internet access for critical infrastructure operation.
+
+### Stage 5 — Customer licensing portal
+
+**Default target: the next feature release after Stage 4 acceptance.**
+
+- Customer area on `control-center.pro` for licenses and installations.
+- View activation status and permitted installation count.
+- Deactivate/transfer/re-host a license according to policy.
+- Generate/download offline activation responses.
+- Show applicable update lifecycle/entitlement and license documents.
+- Keep licensing administration separate from the Control Center server's privileged infrastructure control plane.
+
+After Stage 5, new licensing work becomes normal roadmap evolution rather than automatic stage advancement.
+
 ## Roadmap integration
 
-- 1.4.x: prepare module boundaries, edition manifest and user-facing branding transition without destabilizing production.
-- 1.5.x: License/Entitlement Engine foundations in DB/API/UI, including signed release lifecycle metadata and About/System lifecycle fields.
-- 1.6.x: Professional activation/offline activation and signed releases; Ansible foundation is entitlement-aware.
-- 1.7.x: Endpoint Management uses the same Desired State Core with Home vs Professional entitlements.
-- 1.8.x: multi-server/HA is a Professional entitlement; Home remains single-server.
+The former fixed mapping to 1.4.x/1.5.x/1.6.x/1.7.x/1.8.x is superseded by the sequential staged rule above because the canonical product roadmap has moved to the 2.x line.
+
+- **2.0.0:** must include Stage 1 — Edition / Entitlement Engine.
+- **Next feature release after accepted 2.0.0:** Stage 2.
+- **Following feature release:** Stage 3.
+- **Following feature release:** Stage 4.
+- **Following feature release:** Stage 5.
+
+Exact later version numbers are intentionally not guessed in advance; `docs/ROADMAP.md` and each release scope assign the next stage when that release starts preparation.
 
 Detailed release scope remains in `docs/ROADMAP.md`. This document is the canonical architecture reference for editions, licensing, release lifecycle and public product naming.
