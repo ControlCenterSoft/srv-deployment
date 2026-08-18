@@ -62,6 +62,7 @@ jobs:
             releases/2.0.0/system/srv-control-backup-policy \
             releases/2.0.0/system/srv-control-os-auto-update \
             releases/2.0.0/system/srv-control-minecraft-repair \
+            releases/2.0.0/system/srv-control-minecraft-legacy \
             releases/2.0.0/system/srv-control-pxe-probe
           python3 -m compileall -q releases/2.0.0/payload/app
 
@@ -147,18 +148,27 @@ jobs:
           python3 releases/2.0.0/tests/pxe_transport_contract.py
           python3 releases/2.0.0/tests/pxe_backup_contract.py
 
-      - name: Validate Minecraft health-first repair and rollback safety
+      - name: Validate Minecraft health-first repair and real-server compatibility
         run: |
           set -euo pipefail
           preflight='releases/2.0.0/preflight-2.0.0.sh'
           apply='releases/2.0.0/apply-2.0.0.sh'
+          acceptance='releases/2.0.0/acceptance-2.0.0.sh'
           repair='releases/2.0.0/system/srv-control-minecraft-repair'
+          compat='releases/2.0.0/system/srv-control-minecraft-legacy'
           rollback='releases/2.0.0/rollback-2.0.0.sh'
           grep -Fq 'Minecraft health is deliberately non-blocking' "$preflight"
           grep -Fq 'srv-control-minecraft-repair repair --replace-world-on-failure' "$apply"
           grep -Fq 'already-healthy' "$repair"
           grep -Fq 'cannot replace world because safety backup failed' "$repair"
           grep -Fq 'ControlCenter-Recovery-' "$repair"
+          grep -Fq "Path(os.readlink(f'/proc/{pid}/cwd')).resolve()" "$compat"
+          grep -Fq "'healthy': bool(active and udp_listening(port) and level and world_exists)" "$compat"
+          grep -Fq 'visudo -cf "$sudoers_tmp"' "$apply"
+          grep -Fq 'runuser -u srv-control -- sudo -n /usr/local/sbin/srv-control-minecraft status' "$acceptance"
+          grep -Fq 'runuser -u srv-control -- sudo -n /usr/local/sbin/srv-control-minecraft-worlds list' "$acceptance"
+          grep -Fq '/etc/sudoers.d/srv-control-minecraft-legacy' "$rollback"
+          python3 releases/2.0.0/tests/minecraft_legacy_compat_contract.py
           for path in \
             /opt/minecraft-bedrock/server.properties \
             /opt/minecraft/server.properties \
