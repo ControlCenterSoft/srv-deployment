@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import grp
+import json
+import os
+from pathlib import Path
+import pwd
+import stat
+import subprocess
+import sys
+
+UNIT = 'srv-control-minecraft-bedrock.service'
+TARGET_USER = 'minecraft'
+TARGET_GROUP = 'minecraft'
+
+
+def run(cmd: list[str], *, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=timeout)
+    if check and result.returncode != 0:
+        raise RuntimeError((result.stdout or '')[-4000:] or f'command failed: {cmd}')
+    return result
+
+
+def runtime() -> Path:
+    raw = run(['systemctl', 'show', UNIT, '-p', 'WorkingDirectory', '--value']).stdout.strip()
+    path = Path(raw).resolve() if raw else None
+    if not path or not path.is_dir() or not (path / 'bedrock_server').is_file():
+        raise RuntimeError(f'canonical Bedrock runtime is invalid: {raw!r}')
+    return path
+
+
+def ensure_identity() -> tuple[int, int, bool]:
+    created = False
+    try:
+        user = pwd.getpwnam(TARGET_USER)
+        if user.pw_uid == 0:
+            raise RuntimeError('minecraft account unexpectedly resolves to uid 0')
+        try:
+            group = grp.getgrnam(TARGET_GROUP)
+        except KeyError:
+            run(['groupadd', '--system', TARGET_GROUP])
+            group = grp.getgrnam(TARGET_GROUP)
+        if user.pw_gid != group.gr_gid:
+            run(['usermod', '-g', TARGET_GROUP, TARGET_USER])
+            user = pwd.getpwnam(TARGET_USER)
+        return user.pw_uid, group.gr_gid, created
+    except KeyError:
+        try:
+            grp.getgrnam(TARGET_GROUP)
+        except KeyError:
+            run(['groupadd', '--system', TARGET_GROUP])
+        rt = runtime()
+        run([
+            'useradd', '--system', '--gid', TARGET_GROUP,
+            '--home-dir', str(rt), '--no-create-home',
+            '--shell', '/usr/sbin/nologin', TARGET_USER,
+        ])
+        created = True
+        user = pwd.getpwnam(TARGET_USER)
+        group = grp.getgrnam(TARGET_GROUP)
+        if user.pw_uid == 0:
+            raise RuntimeError('created minecraft account unexpectedly has uid 0')
+        return user.pw_uid, group.gr_gid, created
+
+
+def lchown_tree(root: Path, uid: int, gid: int) -> int:
+    changed = 0
+    for base, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        base_path = Path(base)
+        for name in ['.'] + dirs + files:
+            path = base_path if name == '.' else base_path / name
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if info.st_uid != uid or info.st_gid != gid:
+                os.lchown(path, uid, gid)
+                changed += 1
+            if stat.S_ISDIR(info.st_mode):
+                mode = stat.S_IMODE(info.st_mode)
+                required = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+                if mode & required != required:
+                    os.chmod(path, mode | required)
+                    changed += 1
+    binary = root / 'bedrock_server'
+    mode = stat.S_IMODE(binary.stat().st_mode)
+    wanted = mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+    if wanted != mode:
+        os.chmod(binary, wanted)
+        changed += 1
+    return changed
+
+
+def audit() -> dict:
+    rt = runtime()
+    try:
+        user = pwd.getpwnam(TARGET_USER)
+        group = grp.getgrnam(TARGET_GROUP)
+    except KeyError:
+        return {'ok': False, 'runtime': str(rt), 'error': 'minecraft identity is missing'}
+    mismatches: list[str] = []
+    checked = 0
+    for base, dirs, files in os.walk(rt, topdown=True, followlinks=False):
+        for name in ['.'] + dirs + files:
+            path = Path(base) if name == '.' else Path(base) / name
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            checked += 1
+            if info.st_uid != user.pw_uid or info.st_gid != group.gr_gid:
+                mismatches.append(str(path))
+                if len(mismatches) >= 50:
+                    break
+        if len(mismatches) >= 50:
+            break
+    unit_user = run(['systemctl', 'show', UNIT, '-p', 'User', '--value'], check=False).stdout.strip()
+    unit_group = run(['systemctl', 'show', UNIT, '-p', 'Group', '--value'], check=False).stdout.strip()
+    return {
+        'ok': not mismatches and unit_user == TARGET_USER and unit_group == TARGET_GROUP,
+        'runtime': str(rt),
+        'uid': user.pw_uid,
+        'gid': group.gr_gid,
+        'unit_user': unit_user,
+        'unit_group': unit_group,
+        'checked_paths': checked,
+        'mismatches': mismatches,
+    }
+
+
+def main() -> int:
+    operation = sys.argv[1] if len(sys.argv) > 1 else 'audit'
+    try:
+        if operation == 'prepare-user':
+            uid, gid, created = ensure_identity()
+            result = {'ok': True, 'uid': uid, 'gid': gid, 'created': created, 'user': TARGET_USER, 'group': TARGET_GROUP}
+        elif operation == 'ensure':
+            uid, gid, created = ensure_identity()
+            rt = runtime()
+            changed = lchown_tree(rt, uid, gid)
+            result = {'ok': True, 'runtime': str(rt), 'uid': uid, 'gid': gid, 'created': created, 'changed': changed}
+        elif operation == 'audit':
+            result = audit()
+        else:
+            raise RuntimeError('usage: srv-control-minecraft-permissions prepare-user|ensure|audit')
+    except Exception as exc:
+        result = {'ok': False, 'error': str(exc)[-4000:]}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get('ok') else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
