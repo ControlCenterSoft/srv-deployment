@@ -3,29 +3,47 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Права пользователей — SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/module.css?v=1.2.0-rc1">
-    <link rel="stylesheet" href="/static/css/access.css?v=1.2.0-rc1">
+    <title>Пользователи и права — Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui3">
+    <link rel="stylesheet" href="/static/css/access.css?v=1.4.0-ui3">
+    <link rel="stylesheet" href="/static/css/workspace-1.4.css?v=1.4.0-ui3">
 </head>
 <body>
 <div class="page">
-    <header class="page-header">
-        <div>
-            <h1>Права пользователей</h1>
-            <p>Назначение доступа Control Center локальным и доменным группам и пользователям.</p>
+    <header class="module-hero">
+        <div class="module-hero-copy">
+            <div class="module-hero-icon" aria-hidden="true">♙</div>
+            <div>
+                <span class="section-kicker">RBAC и идентификация</span>
+                <h1>Пользователи и права</h1>
+                <p>Единое управление доступом Control Center для локальных и доменных пользователей и групп.</p>
+            </div>
         </div>
-        <div class="identity-badge" id="identityBadge">—</div>
+        <div class="module-hero-side">
+            <div class="identity-badge" id="identityBadge">—</div>
+            <span class="hero-pill success">RBAC</span>
+        </div>
     </header>
 
     <section class="summary-grid directory-summary">
         <div class="panel">
-            <div class="panel-title">Авторизация</div>
+            <div class="workspace-heading">
+                <div>
+                    <div class="panel-title">Авторизация</div>
+                    <p>Источники идентификации, доступные текущей установке.</p>
+                </div>
+            </div>
             <div class="stat-row"><span>Системная PAM</span><strong id="pamState">—</strong></div>
             <div class="stat-row"><span>Домен</span><strong id="domainState">—</strong></div>
             <div class="stat-row"><span>SSO</span><strong id="ssoState">—</strong></div>
         </div>
         <div class="panel">
-            <div class="panel-title">Каталог</div>
+            <div class="workspace-heading">
+                <div>
+                    <div class="panel-title">Каталог</div>
+                    <p>Обнаруженные субъекты для назначения прав.</p>
+                </div>
+            </div>
             <div class="stat-row"><span>Локальные пользователи</span><strong id="localUserCount">—</strong></div>
             <div class="stat-row"><span>Доменные пользователи</span><strong id="domainUserCount">—</strong></div>
             <div class="stat-row"><span>Группы</span><strong id="groupCount">—</strong></div>
@@ -36,6 +54,7 @@
         <article class="panel subject-panel">
             <div class="subject-panel-head">
                 <div>
+                    <span class="section-kicker">Групповой доступ</span>
                     <div class="panel-title">Группы</div>
                     <p>Назначьте модульные права или роль полного администратора выбранной группе.</p>
                 </div>
@@ -55,6 +74,7 @@
         <article class="panel subject-panel">
             <div class="subject-panel-head">
                 <div>
+                    <span class="section-kicker">Персональный доступ</span>
                     <div class="panel-title">Пользователи</div>
                     <p>Назначьте персональные модульные права или роль полного администратора.</p>
                 </div>
@@ -75,11 +95,13 @@
     <div class="action-message" id="grantMessage"></div>
 
     <section class="panel">
-        <div class="panel-title-row access-title-row">
+        <div class="panel-title-row access-title-row modern-title-row">
             <div>
+                <span class="section-kicker">Действующие назначения</span>
                 <div class="panel-title">Назначенные права</div>
                 <p>«Запись» разрешает изменение только выбранного модуля. «Полный администратор» открывает все модули и административные операции Control Center.</p>
             </div>
+            <span class="hero-pill purple">Единая матрица</span>
         </div>
         <div class="grant-table-wrap">
             <table class="grant-table">
@@ -88,7 +110,9 @@
             </table>
         </div>
     </section>
+
+    <div class="module-footer-note">Control Center · Пользователи и права</div>
 </div>
-<script src="/static/js/access.js?v=1.2.0-rc1"></script>
+<script src="/static/js/access.js?v=1.4.0-ui3"></script>
 </body>
 </html>
