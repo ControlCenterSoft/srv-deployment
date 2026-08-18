@@ -1,0 +1,130 @@
+name: Control Center 1.4 UI redesign validation
+
+on:
+  push:
+    branches:
+      - feature/control-center-ui-redesign
+      - release/1.4.0
+  pull_request:
+    paths:
+      - 'releases/1.4.0/**'
+      - '.github/workflows/release-1.4-ui-redesign.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ui-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required UI assets
+        run: |
+          set -euo pipefail
+          root='releases/1.4.0/payload'
+          for f in \
+            templates/shell.html \
+            templates/dashboard.html \
+            templates/internet.html \
+            templates/services.html \
+            templates/system.html \
+            static/css/shell.css \
+            static/css/module.css \
+            static/css/dashboard-1.4.css \
+            static/css/network.css \
+            static/css/service-pages.css \
+            static/css/system-1.1.css \
+            static/js/shell.js \
+            static/js/dashboard.js \
+            static/js/internet.js \
+            static/js/services.js \
+            static/js/system.js
+          do
+            test -s "$root/$f" || { echo "missing UI asset: $f"; exit 1; }
+          done
+
+      - name: Validate public Control Center naming in redesigned pages
+        run: |
+          set -euo pipefail
+          for f in \
+            releases/1.4.0/payload/templates/shell.html \
+            releases/1.4.0/payload/templates/dashboard.html \
+            releases/1.4.0/payload/templates/internet.html \
+            releases/1.4.0/payload/templates/services.html \
+            releases/1.4.0/payload/templates/system.html
+          do
+            if grep -n -F 'SRV Control Center' "$f"; then
+              echo "legacy public branding remains in $f"
+              exit 1
+            fi
+          done
+          grep -Fq '>CONTROL CENTER<' releases/1.4.0/payload/templates/shell.html
+          grep -Fq 'Обзор системы' releases/1.4.0/payload/templates/dashboard.html
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+          for f in \
+            releases/1.4.0/payload/static/js/shell.js \
+            releases/1.4.0/payload/static/js/dashboard.js \
+            releases/1.4.0/payload/static/js/internet.js \
+            releases/1.4.0/payload/static/js/services.js \
+            releases/1.4.0/payload/static/js/system.js
+          do
+            node --check "$f"
+          done
+
+      - name: Validate page DOM contracts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('releases/1.4.0/payload')
+          contracts = {
+              'templates/shell.html': {
+                  'mainMenu','moduleFrame','globalSearch','backendHealthDot','backendHealth',
+                  'releaseVersion','githubSync','sessionUser','logoutButton','refreshButton'
+              },
+              'templates/dashboard.html': {
+                  'streamDot','streamText','serviceGrid','networkTx','networkRx','storageList',
+                  'cpuProcesses','ramProcesses','cpuValue','ramValue','loadAverage','databaseStatus'
+              },
+              'templates/internet.html': {
+                  'networkLiveDot','networkLiveText','networkWan','networkGateway','networkMetric',
+                  'networkLan','networkDns','networkVpn','networkInterfaces','diagnosticsGrid',
+                  'networkPlanForm','networkPlanResultPanel','networkPlanStatus','networkPlanMessages'
+              },
+              'templates/services.html': {'serviceGrid','serviceMessage'},
+              'templates/system.html': {
+                  'systemLiveDot','systemLiveText','rebootButton','systemHostname','systemOs',
+                  'systemKernel','systemArchitecture','systemUptime','systemCpu','systemLoad',
+                  'systemMemory','systemRelease','systemGitHubSync','systemStorage','githubForm',
+                  'osForm','backupForm','backupRows'
+              },
+          }
+          for rel, required in contracts.items():
+              text = (root / rel).read_text(encoding='utf-8')
+              ids = set(re.findall(r'\bid=["\']([^"\']+)["\']', text))
+              missing = sorted(required - ids)
+              if missing:
+                  raise SystemExit(f'{rel}: missing DOM id(s): {", ".join(missing)}')
+              duplicates = sorted({value for value in ids if text.count(f'id="{value}"') + text.count(f"id='{value}'") > 1})
+              if duplicates:
+                  raise SystemExit(f'{rel}: duplicate DOM id(s): {", ".join(duplicates)}')
+              print(f'{rel}: DOM contract PASS ({len(required)} required ids)')
+          PY
+
+      - name: Validate responsive design contracts
+        run: |
+          set -euo pipefail
+          grep -Fq '@media' releases/1.4.0/payload/static/css/shell.css
+          grep -Fq '@media' releases/1.4.0/payload/static/css/dashboard-1.4.css
+          grep -Fq '@media' releases/1.4.0/payload/static/css/network.css
+          grep -Fq '@media' releases/1.4.0/payload/static/css/service-pages.css
+          grep -Fq '@media' releases/1.4.0/payload/static/css/system-1.1.css
+
+      - name: Compile application Python
+        run: |
+          python3 -m compileall -q releases/1.4.0/payload/app
