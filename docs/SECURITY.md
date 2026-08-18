@@ -2,48 +2,66 @@
 
 ## Разделение привилегий
 
-Основной Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные действия выполняются отдельными systemd workers:
+Основной Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные действия выполняются отдельными systemd workers: сеть, Market/DHCP, лицензирование, обновление Control Center и обновление ОС/пакетов.
 
-- применение сети;
-- установка/удаление DHCP;
-- применение DHCP-конфигурации;
-- проверка Professional-лицензии;
-- обновление Control Center;
-- обновление ОС и пакетов.
+Web UI создаёт запросы в Web-writable state, но root helpers **не считают их доверенными**. Network и DHCP helpers независимо повторно проверяют интерфейсы, типы значений, IPv4, маски, шлюзы, DNS, диапазоны и ограничения непосредственно перед применением.
 
-Web UI формирует JSON-запросы в `/var/lib/control-center`, но **root helpers не считают эти файлы доверенными**. Сетевой и DHCP helpers повторно проверяют интерфейсы, типы значений, IPv4, маски, шлюзы, DNS, диапазоны и другие ограничения уже непосредственно перед привилегированным применением. Это защищает от обхода Web/API-валидации при компрометации Web-процесса.
-
-## Разделение state
+## Четыре уровня state
 
 ```text
 /var/lib/control-center
 ```
+Web-writable: настройки и pending requests.
 
-Web-writable состояние: настройки UI, pending requests и публичные статусы.
+```text
+/var/lib/control-center-system
+```
+`root:control-center 0750`: применённые конфигурации, статусы и ownership модулей. Web-процесс имеет только чтение.
 
 ```text
 /var/lib/control-center-root
 ```
-
-Root-only (`0700`) состояние: rollback-копии приложения, Netplan и DHCP. Web service получает `InaccessiblePaths=/var/lib/control-center-root`.
+`root:root 0700`: rollback-копии приложения, Netplan и DHCP. Web service получает `InaccessiblePaths=/var/lib/control-center-root`.
 
 ```text
 /var/lib/control-center-license
 ```
+`root:control-center 0750`, файл лицензии `0640`: подтверждённая Professional-лицензия. Web service может читать, но не изменять её.
 
-Root-owned каталог подтверждённой Professional-лицензии. Web service получает только чтение.
+Compatibility symlinks внутри `/var/lib/control-center` используются только для чтения текущим Web API. Root helpers всегда обращаются к защищённым оригиналам и не доверяют этим ссылкам.
 
-Таким образом, Web-процесс не может подменить rollback-копию приложения или подтверждённую лицензию.
+## Production Web runtime
+
+Web UI запускается Gunicorn через `wsgi:app`, а не Flask development server. Production entrypoint добавляет:
+
+- `Content-Security-Policy`;
+- `X-Content-Type-Options: nosniff`;
+- `X-Frame-Options: DENY`;
+- `Referrer-Policy`;
+- `Permissions-Policy`;
+- `Cross-Origin-Opener-Policy`;
+- `Cache-Control: no-store` для HTML/API;
+- same-origin проверку браузерных POST/PUT/PATCH/DELETE запросов;
+- лимит request body 64 KiB;
+- уникальные атомарные temp-файлы для JSON writes при нескольких Gunicorn workers.
+
+Динамические строки, вставляемые JavaScript через `innerHTML`, экранируются перед отображением.
+
+Текущий CSP временно содержит `script-src 'unsafe-inline'`, поскольку JavaScript 1.0.5 ещё находится в шаблоне HTML. В следующей архитектурной итерации рекомендуется вынести script в отдельный static-файл и убрать `unsafe-inline`.
 
 ## Лицензирование
 
-Professional-лицензия проверяется RSA/SHA-256. Root helper проверяет подпись, `edition`, `device_id`, `license_id` и срок действия перед записью `/var/lib/control-center-license/license.json`.
+Professional-лицензия проверяется RSA/SHA-256. Root helper проверяет подпись, `edition`, `device_id`, `license_id` и срок действия. Приватный ключ издателя никогда не должен храниться в GitHub или на клиентском сервере.
 
-Приватный ключ издателя никогда не должен храниться в GitHub или на сервере клиента.
+## DHCP ownership
 
-## Systemd hardening
+Control Center не захватывает `dnsmasq`, уже установленный вне продукта. Управляемый DHCP работает отдельным `control-center-dhcp-server.service`; дистрибутивный `dnsmasq.service` не используется как runtime модуля. Ownership пакета хранится только в защищённом system-state.
 
-`control-center.service` использует, в частности:
+## APT/dpkg
+
+Установщик, OS/package updater и Маркет используют общий `/run/control-center-apt.lock`, чтобы внутренние пакетные операции не выполнялись одновременно.
+
+## Systemd hardening Web UI
 
 ```text
 NoNewPrivileges=true
@@ -56,35 +74,31 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center
-ReadOnlyPaths=/var/lib/control-center-license
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license
 InaccessiblePaths=/var/lib/control-center-root
 ```
 
-## APT/dpkg
-
-Установщик, OS/package updater и Маркет используют общий `/run/control-center-apt.lock`, чтобы внутренние пакетные операции Control Center не выполнялись одновременно.
-
 ## Известное ограничение 1.0.5
 
-В текущей линии ещё **нет полноценной аутентификации Web UI**. Поэтому TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть. До появления встроенной аутентификации доступ должен ограничиваться доверенной административной LAN/VPN и внешним firewall/reverse proxy с аутентификацией.
+В 1.0.5 ещё **нет полноценной встроенной аутентификации Web UI**. Поэтому TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть. Same-origin/CSP уменьшают браузерные риски, но не являются заменой authentication/authorization.
 
-Особенно важно ограничить доступ, потому что Web UI может создавать запросы на изменение сети, установку DHCP и обновление системных пакетов.
+До внедрения аутентификации доступ должен ограничиваться доверенной административной LAN/VPN и firewall/reverse proxy с аутентификацией.
 
 ## Рекомендации
 
 - разрешать TCP/8080 только с административных адресов;
 - не публиковать порт через WAN/NAT;
 - использовать VPN для удалённого администрирования;
-- регулярно проверять `journalctl` для привилегированных workers;
 - хранить приватный ключ Professional offline и в зашифрованном хранилище;
-- делать резервную копию сетевой конфигурации до удалённых изменений;
-- не изменять вручную root-only state.
+- регулярно проверять журналы привилегированных workers;
+- выполнять `scripts/acceptance-1.0.5.sh` после установки/обновления.
 
 ## Проверка прав
 
 ```bash
 id control-center
 systemctl cat control-center
-ls -ld /var/lib/control-center /var/lib/control-center-root /var/lib/control-center-license
+ls -ld /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root /var/lib/control-center-license
+find /var/lib/control-center-system -maxdepth 2 -ls
 ls -l /var/lib/control-center-license 2>/dev/null || true
 ```
