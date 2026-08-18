@@ -1,28 +1,26 @@
 # Control Center — руководство пользователя и администратора
 
-> **Статус:** каноническое русскоязычное руководство production-линии. Фактический активный product release всегда определяется `deployment.json`. Опубликованные `releases/<version>` остаются frozen и не редактируются ради документации.
+> **Статус:** каноническое русскоязычное руководство production-линии. Активный product release всегда определяется `deployment.json`. Опубликованные `releases/<version>` являются frozen и не редактируются ради документации.
 
 ## 1. О продукте
 
-Control Center — web-система централизованного управления серверной инфраструктурой. Текущая production-линия объединяет системный dashboard, PAM/AD authentication, RBAC, product/OS updates, резервное копирование, Samba Active Directory и сетевые ресурсы, AdGuard VPN, Minecraft Bedrock management, network overview/diagnostics и служебные административные операции.
+Control Center — web-система централизованного управления серверной инфраструктурой. Текущий production target — **Control Center 2.0.0**, опубликованный через `main/deployment.json` и frozen-каталог `releases/2.0.0`.
 
-На момент этой редакции `main/deployment.json` публикует **1.3.8**. Это cumulative repair release линии 1.3.x, устраняющий real-server acceptance blockers 1.3.7: доступ web-приложения к release metadata и восстановление privileged system-action watcher. Точная история patch-релизов находится в `RELEASE-HISTORY.md`.
-
-Функции, перечисленные в `ROADMAP.md`, являются будущим scope и не должны считаться реализованными только потому, что присутствуют в roadmap.
+2.0.0 является новым major baseline и включает переработанный интерфейс, новый update controller, bulk backup management, исправленную политику backup-before-update, health-first восстановление Minecraft Bedrock и перенесённое DHCP/PXE управление. Точный состав определяется manifest и frozen payload 2.0.0.
 
 ## 2. Источники истины
 
 При расхождении документов используйте следующий приоритет:
 
 1. `deployment.json` — опубликованный production target;
-2. frozen `releases/<active-version>` — точный код, manifest и release transaction активной версии;
+2. frozen `releases/<active-version>` — точный код, manifest и release transaction;
 3. актуальный `server-state` — реально установленная версия и runtime-состояние конкретного сервера;
-4. `RELEASE-HISTORY.md` — история публикаций, repairs и известных production результатов;
-5. это руководство — пользовательская/административная инструкция;
+4. `RELEASE-HISTORY.md` — история публикаций и repairs;
+5. это руководство — текущая пользовательская/административная инструкция;
 6. `ROADMAP.md` — будущий scope;
-7. release-specific scope/incident документы — исторический контекст соответствующего периода.
+7. release-specific scope/incident документы — исторический контекст.
 
-Не путайте «файл релиза существует в репозитории», «релиз опубликован через `deployment.json`» и «релиз успешно установлен на конкретном сервере».
+Не путайте существование release-файлов, публикацию release через `deployment.json` и успешную установку на конкретном сервере.
 
 ## 3. Роли, учётные записи и доступ
 
@@ -35,9 +33,7 @@ Control Center не является отдельным каталогом па�
 - Kerberos/SPNEGO SSO в корректно настроенной доменной среде;
 - RBAC Control Center после успешной authentication.
 
-RBAC определяет доступ к модулям и операциям. Успешный вход не означает автоматически полный административный доступ. Полная серверная административная роль имеет расширенные полномочия; обычным пользователям выдаются только необходимые Read/Write права.
-
-UI не является единственной границей безопасности: критичные операции также проверяются backend и выполняются через ограниченный privileged path.
+Authentication отвечает на вопрос «кто пользователь», RBAC — «что ему разрешено». Успешный login не означает автоматически полный административный доступ. Обычным пользователям выдаются только необходимые Read/Write права, а full-admin/server-administrator права должны оставаться ограниченными.
 
 ## 4. Установка
 
@@ -50,178 +46,176 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Installer должен читать актуальный `deployment.json`, валидировать release metadata и разворачивать активный self-contained payload.
+Installer читает текущий `deployment.json`, проверяет release metadata и разворачивает активный self-contained payload.
 
-Перед установкой обеспечьте:
-
-- поддерживаемую серверную Linux-среду согласно `INSTALL.md`;
-- корректные сеть/DNS/время;
-- root/sudo для installation transaction;
-- резервную копию существующего сервера при миграции;
-- отсутствие секретов в командной истории/публичных логах, где это применимо.
-
-После установки проверяются как минимум web service/health, PostgreSQL, release metadata и необходимые systemd units/managed services.
+Перед установкой обеспечьте корректные сеть/DNS/время, root/sudo, резервную копию существующей системы при миграции и отсутствие секретов в публичных логах/репозитории.
 
 ## 5. Первый вход
 
-В текущей production-архитектуре нет отдельного bootstrap web-пароля и нет обязательного чтения `/var/lib/srv-control/admin-bootstrap.txt`.
+В production 2.0.0 **нет отдельного bootstrap web-пароля** и не требуется файл `/var/lib/srv-control/admin-bootstrap.txt`.
 
-Первый вход выполняется существующей локальной Linux либо доменной учётной записью, которой назначены необходимые права.
+Первый вход выполняется существующей локальной Linux либо доменной учётной записью, которой назначены необходимые права. Для локального пользователя должны работать NSS и PAM. Для доменного — Samba/winbind, NSS и PAM. Для SSO дополнительно требуются корректные Kerberos, DNS, время и настройки клиента/браузера.
 
-Для локальной учётной записи должны успешно работать NSS и PAM. Для доменной — Samba/winbind, NSS и PAM. Для SSO дополнительно необходимы корректные Kerberos, DNS, время и настройки браузера/клиента.
+Если authentication успешна, но модуль недоступен, проверяйте RBAC, а не пароль.
 
-Если пользователь проходит authentication, но не видит административный модуль, диагностируйте RBAC, а не пароль.
-
-## 6. Интерфейс и основные модули
+## 6. Интерфейс и модули
 
 ### Dashboard
 
-Показывает состояние сервера, health и основные показатели текущей release line. Набор карточек и метрик может меняться между релизами.
+Показывает health, состояние сервера и основные показатели. Интерфейс 2.0.0 использует новую визуальную систему и унифицированную навигацию.
 
 ### Система
 
-Системный обзор, product updates, обслуживание пакетов ОС, backup/restore и предусмотренные административные действия. Product update и OS package update — независимые механизмы.
+Содержит product updates, OS maintenance, backup/restore и системные административные действия. Product update и OS update — разные механизмы.
 
-### Права пользователей
+В блоке product update используются отдельные состояния:
 
-Каталог доступных локальных/доменных пользователей и групп и управление RBAC Read/Write согласно текущей модели ролей.
+- **Последняя проверка обновления**;
+- diagnostic timestamp последней попытки apply, если он нужен backend;
+- **Последнее успешное обновление**.
 
-### Домен / Samba
+### Пользователи и права
 
-Управление состоянием Samba Active Directory, пользователями/группами и предусмотренными domain backup/restore операциями.
+Отображаются доступные локальные/доменные identities и RBAC Read/Write. Полный доступ определяется серверной admin policy, а не только успешным входом.
+
+### Samba / Домен
+
+Управление Samba Active Directory, пользователями, группами и поддерживаемыми domain backup/restore операциями.
 
 ### Сетевые ресурсы / Shares
 
-Управление Samba shares, путями, доступом и разрешениями. Изменения должны проходить validation конфигурации перед безопасным reload/apply.
+Управление SMB shares, путями и правами. После изменения конфигурация должна проходить validation до безопасного reload/apply.
+
+### DHCP
+
+В 2.0.0 перенесено управление DHCP из ранее подготовленного функционального scope. Используйте только те операции и параметры, которые реально доступны в active frozen payload. Изменения сети требуют повышенной осторожности и последующей проверки lease/service/network state.
+
+### PXE
+
+2.0.0 содержит PXE management и публичный путь выдачи PXE media. PXE-клиент должен иметь разрешённый профиль согласно реализованному workflow; отсутствие development-функции в UI нельзя компенсировать неподдерживаемыми ручными изменениями production state.
 
 ### Minecraft Bedrock
 
-Управление поддерживаемым Bedrock server path, его состоянием, обновлениями и игроками. Линия 1.3.x содержит несколько repairs вокруг совместимости legacy/proven backend и update timers; эксплуатационные действия должны ориентироваться на активный release.
+2.0.0 сохраняет proven single-server management path и совместимый multi-instance API, но health/recovery логика перестроена. Восстановление выполняется health-first: здоровый сервер не переустанавливается. Destructive recovery допускается только после safety backup существующего состояния.
 
 ### AdGuard VPN
 
-Управляемая интеграция AdGuard VPN CLI. Внешние credentials/tokens не должны попадать в Git или diagnostics.
-
-### Сервисы
-
-Каталог install/remove/status действий только для тех сервисов, которые реально реализованы активным релизом и разрешены RBAC.
+Управляемая интеграция AdGuard VPN CLI. Credentials/tokens не должны попадать в Git или публичную диагностику.
 
 ### Network overview / diagnostics
 
-Read-only/управляемые сетевые сведения текущего release. Будущие DHCP/PXE функции из roadmap не следует считать production-функциями до их публикации отдельным релизом.
+Сетевые сведения, diagnostics и поддерживаемые действия текущего release. Roadmap-функции не считаются production до отдельной публикации.
 
 ## 7. Системное администрирование
 
-Web-процесс не выполняет произвольные root-команды. Привилегированные действия проходят цепочку:
+Web-процесс не должен выполнять произвольные root-команды. Привилегированные действия проходят цепочку:
 
 ```text
 UI/API → session/CSRF → RBAC → allowlisted request → root-owned helper/systemd agent → result
 ```
 
-К таким операциям относятся updates, backup/restore, Samba/domain/shares, Minecraft и другие предусмотренные release действия.
+К таким операциям относятся updates, backup/restore, Samba/domain/shares, DHCP/PXE, Minecraft и другие поддерживаемые release actions.
 
-Подробная модель: `SYSTEM-ADMIN.md`.
+Подробности: `SYSTEM-ADMIN.md`.
 
 ## 8. Обновления Control Center
 
-`main` — production channel. `deployment.json` задаёт активный product release. Ветки `release/*` предназначены для подготовки/validation и не являются production target сами по себе.
+`main` — production channel. `deployment.json` задаёт активный product release. Ветки `release/*` не являются production target сами по себе.
 
-Базовая транзакция:
+2.0.0 использует переработанный update controller. Основные принципы:
+
+- отдельные `check` и `apply`;
+- product/release fingerprint вместо решения только по commit SHA;
+- suppression автоматического повторения одного known-failed fingerprint;
+- безопасный manual retry;
+- восстановление update runtime/configuration после apply;
+- timer не должен оставаться выключенным после неуспешной транзакции;
+- хранение timestamps последней проверки, попытки apply и успешного update;
+- documentation-only commit не должен запускать повторный product apply.
+
+Типовая транзакция:
 
 ```text
-preflight → safety backup → apply → acceptance → healthcheck
-                                      ↘ failure → rollback
+preflight → policy-controlled safety backup → apply → acceptance → healthcheck
+                                                   ↘ failure → rollback
 ```
-
-Updater должен:
-
-- различать check и apply;
-- хранить сведения об активной/доступной версии;
-- использовать product fingerprint;
-- не применять повторно неизменившийся release из-за documentation-only commit;
-- блокировать update при обязательном failed pre-update backup;
-- предотвращать бесконечный автоматический retry одного и того же known-failed fingerprint;
-- сохранять выбранный automatic/manual режим и период после release transaction.
 
 См. `AUTO-UPDATES.md` и `DEPLOYMENT-RELIABILITY.md`.
 
 ## 9. Обновления ОС
 
-Обслуживание системных пакетов не равно обновлению Control Center. Автоматический переход на новый major distribution release не должен происходить без отдельного подтверждённого migration plan.
+OS package maintenance независимо от Control Center product update. Автоматический переход на новый major distribution release не должен происходить без отдельного migration plan.
 
-Ручной и автоматический режимы OS maintenance должны учитывать текущие настройки backup-before-update и состояние соответствующих systemd units/timers.
+Ручной/автоматический OS maintenance учитывает текущую `backup_before_update` policy и состояние соответствующих systemd units/timers.
 
 ## 10. Резервное копирование и восстановление
 
-Backup schedule и safety backup перед update — разные настройки.
+Backup schedule и backup-before-update — независимые настройки.
 
-- отключение планового backup не должно автоматически менять `backup_before_update`;
-- отключение backup-before-update не должно автоматически менять расписание ежедневных копий;
-- restore является высокорисковой операцией;
-- после restore должны выполняться предусмотренные validation/health checks.
+В 2.0.0:
 
-Backup может включать Control Center state/config/database и управляемые системные области согласно конкретному release.
+- отключение scheduled backup не должно менять `backup_before_update`;
+- отключение `backup_before_update` должно реально запрещать пользовательский pre-update backup и для product update, и для OS update;
+- внутренний rollback snapshot release transaction не считается пользовательским backup;
+- доступно массовое удаление backup с явным подтверждением;
+- restore остаётся высокорисковой операцией и требует validation/health checks.
 
 ### Samba domain backup/restore
 
-Domain restore нельзя подменять простым копированием Samba database files. Используйте поддерживаемый release workflow и Samba-инструменты с последующей проверкой SID, naming context, DNS/Kerberos и service health.
+Domain restore нельзя заменять простым копированием Samba database files. Используйте поддерживаемый workflow с последующей проверкой SID, naming context, DNS/Kerberos и service health.
 
 ## 11. Samba Active Directory
 
-Перед административными изменениями проверяйте:
+Перед изменениями проверяйте DNS, время, Kerberos, Samba service health, NSS/winbind и RBAC пользователя Control Center.
 
-- DNS;
-- синхронизацию времени;
-- Kerberos;
-- Samba service health;
-- разрешение пользователей/групп через NSS/winbind;
-- RBAC пользователя Control Center.
-
-При проблемах входа всегда разделяйте authentication и authorization.
+При проблемах входа разделяйте authentication и authorization.
 
 ## 12. Сетевые ресурсы
 
-Для share важны одновременно:
+Для share одновременно важны Samba share name, filesystem path, Samba configuration, filesystem ownership/ACL/permissions и субъекты доступа.
 
-- Samba share name;
-- filesystem path;
-- Samba configuration;
-- filesystem ownership/ACL/permissions;
-- доменные/локальные субъекты доступа.
+После изменения конфигурация должна проходить `testparm` или эквивалентную release validation. Наличие записи в UI не доказывает корректный filesystem access.
 
-После изменения конфигурация должна проходить `testparm` или эквивалентную release validation до reload. Наличие записи в UI не является доказательством корректного доступа к filesystem.
+Удаление публикации ресурса и удаление данных должны оставаться различимыми destructive действиями.
 
-Destructive операции должны иметь явное подтверждение; удаление публикации и удаление данных не должны смешиваться в одно неразличимое действие.
+## 13. DHCP и PXE
 
-## 13. Minecraft Bedrock
+DHCP/PXE в production 2.0.0 являются carried-forward модулями. Для безопасной эксплуатации:
 
-Minecraft management включает только возможности активного production release.
+- перед изменением DHCP фиксируйте действующий interface/subnet/range/options;
+- после apply проверяйте service state, leases и доступность сети;
+- PXE media публикуются только через предусмотренный path;
+- PXE installation workflow должен ограничиваться разрешёнными client profiles;
+- MAC является основным идентификатором PXE client, если это предусмотрено активной конфигурацией;
+- DHCP/PXE operations должны проходить RBAC и privileged helper boundary.
+
+Если конкретная функция описана только в `ROADMAP.md`, но отсутствует в active payload/API/UI, она ещё не считается production-функцией.
+
+## 14. Minecraft Bedrock
 
 Для диагностики проверяйте:
 
-- фактический процесс `bedrock_server`;
+- процесс `bedrock_server`;
 - UDP listening port;
 - service/helper status;
-- authoritative update timer/path текущего release;
+- authoritative update timer/path;
 - world/path settings;
 - player/allow-list permissions;
-- результаты monitor/acceptance.
+- monitor/acceptance results.
 
-Автоматическое обновление Bedrock и product update Control Center независимы.
+Health-first recovery не должен разрушать исправный runtime. Если обычный repair/update/restart не восстанавливает сервис, destructive recovery с новым recovery world допустим только после успешного safety backup старого состояния.
 
-Перед переустановкой игрового сервера или заменой мира следует создать отдельную safety copy существующего мира, если задача явно не требует его уничтожения.
+## 15. Диагностика и troubleshooting
 
-## 14. Диагностика и устранение неполадок
-
-Начинайте с фиксации трёх версий/состояний:
+Начинайте с трёх состояний:
 
 1. что опубликовано в `main/deployment.json`;
-2. что фактически установлено в `release.json`/server-state;
+2. что установлено в `release.json`/server-state;
 3. чем завершилась последняя updater/deployment transaction.
 
 ### Web/UI
 
-Проверяйте `srv-control.service`, health endpoint, application logs, database connectivity и соответствие release metadata.
+Проверяйте `srv-control.service`, health endpoint, application logs, database connectivity и release metadata.
 
 ### Вход
 
@@ -229,19 +223,27 @@ Minecraft management включает только возможности акт
 
 ### Update
 
-Проверяйте updater status, timer/service state, fingerprint state, preflight/apply/acceptance/healthcheck и rollback result.
+Проверяйте updater status, timer/service state, fingerprint/blocked-release state, preflight/apply/acceptance/healthcheck и rollback.
+
+### Backup
+
+Проверяйте `backup-config`, timer state и отдельно значение `backup_before_update`.
 
 ### Samba
 
 Проверяйте service state, DNS, time/Kerberos, `testparm`, domain state и NSS/winbind.
 
+### DHCP/PXE
+
+Проверяйте service state, listen sockets, interface binding, leases/media paths и клиентский профиль.
+
 ### Minecraft
 
-Проверяйте process/socket, helper/service/timer, world path, updater и acceptance активного release.
+Проверяйте process/socket, helper/service/timer, world path, updater и acceptance.
 
 Diagnostics/public server-state не должны содержать passwords, private keys, session secrets, tokens или содержимое backup archives.
 
-## 15. Безопасность
+## 16. Безопасность
 
 Основные принципы:
 
@@ -250,38 +252,32 @@ Diagnostics/public server-state не должны содержать passwords, 
 - RBAC как authorization;
 - session/CSRF protection;
 - root-owned privileged agents с allowlist действий;
-- safety backup перед рискованными изменениями;
+- policy-controlled safety backup перед рискованными изменениями;
 - release manifest/hash validation;
 - acceptance и rollback;
-- отсутствие секретов в Git и публичной диагностике;
+- отсутствие секретов в Git/публичной диагностике;
 - frozen published releases.
 
-## 16. Версии и релизы
+## 17. Версии и релизы
 
 Версия имеет вид `MAJOR.MINOR.PATCH`.
 
-- `MAJOR` — несовместимая/крупная архитектурная линия;
+- `MAJOR` — крупная архитектурная линия;
 - `MINOR` — значимое функциональное расширение;
-- `PATCH` — совместимое исправление/repair в текущей линии.
+- `PATCH` — совместимый repair.
 
-Published release directory frozen. Исправление выпускается новой версией.
+Текущий major baseline — **2.0.0**. Линия 1.3.x остаётся исторической release lineage и источником причин, которые привели к перестройке updater/backup/Minecraft mechanisms в 2.0.0.
 
-Для 1.3.x это особенно важно: реальные deployment/acceptance дефекты 1.3.2–1.3.7 исправлялись последовательными patch-релизами; активный production pointer сейчас находится на 1.3.8.
+Published release directory frozen. Исправление 2.0.0 должно выпускаться новой версией, а не модификацией `releases/2.0.0`.
 
-## 17. Roadmap и будущие функции
+## 18. Roadmap и product editions
 
-`ROADMAP.md` описывает будущую разработку, включая DHCP/PXE и последующие operations/infrastructure возможности. Roadmap не гарантирует наличие функции в production.
+`ROADMAP.md` описывает только будущий scope после текущего production release. Если старый roadmap перечислял требование как часть 2.0.0, но оно не подтверждается active manifest/frozen payload, оно должно быть перенесено в будущий 2.x scope, а не документироваться как реализованное.
 
-Функция становится пользовательской production-возможностью только после:
+`PRODUCT-EDITIONS.md` описывает editions/licensing architecture. Licensing stage считается реализованным только после появления подтверждаемого production implementation и соответствующей release history.
 
-```text
-implementation → tests/regression → release acceptance → publication in deployment.json → documentation update
-```
+## 19. Обновление этого руководства
 
-## 18. Редакции и lifecycle
+При каждом новом release необходимо сверить `deployment.json`, manifest/frozen payload, обновить `RELEASE-HISTORY.md`, это руководство и профильные инструкции. Документация не должна опережать production implementation и не должна изменять frozen release payload.
 
-Редакции и licensing/lifecycle architecture описываются в `PRODUCT-EDITIONS.md`. До официального коммерческого запуска нельзя выдумывать задним числом даты lifecycle или считать планируемое ограничение уже действующим, если оно не реализовано в опубликованном release.
-
-## 19. Обновление этой документации
-
-Это руководство обновляется при каждом новом product release или пользовательски значимом изменении архитектуры. Обновление документации выполняется вне frozen release payload и не должно менять уже опубликованные `releases/<version>`.
+Связанные документы: `README.md`, `INSTALL.md`, `SYSTEM-ADMIN.md`, `AUTO-UPDATES.md`, `DEPLOYMENT-RELIABILITY.md`, `ROADMAP.md`, `PRODUCT-EDITIONS.md`, `RELEASE-HISTORY.md`.
