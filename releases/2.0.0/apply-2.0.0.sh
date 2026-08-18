@@ -68,11 +68,18 @@ critical_paths=(
     /usr/local/libexec/srv-control-backup-policy
     /usr/local/libexec/srv-control-os-auto-update
     /usr/local/libexec/srv-control-minecraft-repair
+    /usr/local/libexec/srv-control-minecraft-legacy
     /usr/local/libexec/srv-control-release14-agent
     /usr/local/libexec/srv-control-pxe-probe
+    /usr/local/sbin/srv-control-minecraft
+    /usr/local/sbin/srv-control-minecraft-worlds
+    /usr/local/sbin/srv-control-minecraft-players
+    /usr/local/sbin/srv-control-minecraft-restore
+    /usr/local/sbin/srv-control-minecraft-live
     /usr/local/sbin/srvcc-update-controller
     /usr/local/sbin/srvcc-github-agent
     /usr/local/sbin/srvcc-configure-auto-updates
+    /etc/sudoers.d/srv-control-minecraft-legacy
     /etc/systemd/system/srv-control-system-agent.service
     /etc/systemd/system/srv-control-system-agent.path
     /etc/systemd/system/srv-control-release14-agent.service
@@ -153,13 +160,39 @@ helpers=(
     srv-control-samba-admin srv-control-samba-agent srv-control-samba-ldif-editor srv-control-samba-monitor srv-control-samba-shares-monitor
     srv-control-minecraft-admin srv-control-minecraft-admin-core srv-control-minecraft-agent srv-control-minecraft-auto-update
     srv-control-minecraft-firewall srv-control-minecraft-monitor srv-control-minecraft-player-admin srv-control-minecraft-runner srv-control-minecraft-update
-    srv-control-minecraft-repair srv-control-pxe-probe
+    srv-control-minecraft-repair srv-control-minecraft-legacy srv-control-pxe-probe
 )
 for helper in "${helpers[@]}"; do
     [[ -s "$SYSTEM/$helper" ]] || fail "managed helper missing: $helper"
     install -m 0755 -o root -g root "$SYSTEM/$helper" "/usr/local/libexec/$helper"
 done
 install -m 0755 -o root -g root "$SYSTEM/srvcc-update-controller" /usr/local/sbin/srvcc-update-controller
+
+# The 2.0 Minecraft page deliberately keeps the proven single-server API
+# contract. Install one self-contained compatibility backend under the five
+# historical helper names. It discovers the real bedrock_server process and its
+# working directory instead of assuming an old filesystem layout.
+python3 -m py_compile "$SYSTEM/srv-control-minecraft-legacy" "$SYSTEM/srv-control-minecraft-repair"
+for helper in \
+    srv-control-minecraft \
+    srv-control-minecraft-worlds \
+    srv-control-minecraft-players \
+    srv-control-minecraft-restore \
+    srv-control-minecraft-live
+do
+    install -m 0755 -o root -g root "$SYSTEM/srv-control-minecraft-legacy" "/usr/local/sbin/$helper"
+done
+
+sudoers_tmp="$(mktemp)"
+cat > "$sudoers_tmp" <<'EOF'
+srv-control ALL=(root) NOPASSWD: /usr/local/sbin/srv-control-minecraft, /usr/local/sbin/srv-control-minecraft-worlds, /usr/local/sbin/srv-control-minecraft-players, /usr/local/sbin/srv-control-minecraft-restore, /usr/local/sbin/srv-control-minecraft-live
+EOF
+chmod 0440 "$sudoers_tmp"
+if command -v visudo >/dev/null 2>&1; then
+    visudo -cf "$sudoers_tmp" >/dev/null || fail "Minecraft sudoers rule is invalid"
+fi
+install -m 0440 -o root -g root "$sudoers_tmp" /etc/sudoers.d/srv-control-minecraft-legacy
+rm -f -- "$sudoers_tmp"
 
 tmp_release14_agent="$(mktemp)"
 trap 'rm -f -- "$tmp_release14_agent"' EXIT
@@ -293,18 +326,14 @@ else
     systemctl disable --now srv-control-os-auto-update.timer >/dev/null 2>&1 || true
 fi
 
-# Health-first Minecraft repair. A healthy server is not touched. If ordinary
-# update/restart repair fails, the recovery path first creates a safety backup
-# and then switches to a new recovery world. The previous world is preserved in
-# the Minecraft backup set and the pre-2.0 server.properties files are in the
-# private rollback snapshot above.
-if [[ -x /usr/local/sbin/srv-control-minecraft && -x /usr/local/sbin/srv-control-minecraft-worlds ]]; then
-    /usr/local/libexec/srv-control-minecraft-repair repair --replace-world-on-failure \
-        > "$BACKUP_DIR/state/minecraft-repair.json" \
-        || fail "Minecraft Bedrock repair did not reach healthy state"
-else
-    fail "proven Minecraft legacy helpers are missing; refusing an unverified destructive reinstall"
-fi
+# Health-first Minecraft repair. The compatibility backend above is installed
+# before this gate, so the release can inspect the real pre-existing Bedrock
+# process even when historical /usr/local/sbin helpers never existed. A healthy
+# server is untouched. Destructive world replacement still requires a safety
+# backup and only runs after ordinary update/restart recovery fails.
+/usr/local/libexec/srv-control-minecraft-repair repair --replace-world-on-failure \
+    > "$BACKUP_DIR/state/minecraft-repair.json" \
+    || fail "Minecraft Bedrock repair did not reach healthy state"
 
 sync_time="$(date -Is)"
 python3 - "$RELEASE_META" "$RELEASE_VERSION" "$RELEASE_ID" "$sync_time" "$REMOTE_SHA" <<'PY'
@@ -335,4 +364,4 @@ if [[ "$GH_MODE" == "automatic" ]]; then
     systemctl is-active --quiet srvcc-github-agent.timer || fail "GitHub update timer is not active"
 fi
 
-log "APPLY 2.0.0 PASS: payload installed; updater rebuilt; backup policy preserved; DHCP/PXE activated; Minecraft healthy"
+log "APPLY 2.0.0 PASS: payload installed; updater rebuilt; backup policy preserved; DHCP/PXE activated; Minecraft compatibility backend healthy"
