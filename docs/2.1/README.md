@@ -11,16 +11,20 @@ Control Center 2.1.x is the Minecraft Bedrock stabilization release train.
 
 ## Verified 2.1.0 production result
 
-The real server automatically installed frozen Control Center `2.1.0` at Git SHA `7cc7b0512233fa023a5ab36951d57363272d024f`. Fresh server-state after deployment proved:
+Control Center 2.1.0 was merged to `main` as commit `7cc7b0512233fa023a5ab36951d57363272d024f` and was applied by the real server automatically. The production state collected after rollout recorded deployment result `success` at stage `acceptance`, with the accepted release still installed after the transaction.
 
-- `srv-control-minecraft-bedrock.service` is enabled and active;
+Fresh server-state proved:
+
+- installed `release_version=2.1.0` and `release_id=2.1.0` at Git SHA `7cc7b0512233fa023a5ab36951d57363272d024f`;
+- `srv-control-minecraft-bedrock.service` enabled and active;
 - the actual preserved runtime is `/opt/minicraft`;
-- exactly one `bedrock_server` owns UDP `19132`;
+- one live `bedrock_server` process listening on UDP `19132`;
 - the canonical service successfully restarted the existing server and logs reported `Server started.`;
 - the old unmanaged Bedrock PID disappeared and the replacement PID belongs to the canonical service;
-- the existing world/runtime was preserved rather than replaced.
+- the existing world/runtime was preserved rather than replaced;
+- the Control Center GitHub update timer remained enabled and active after the release transaction.
 
-This closes the original service-ownership/control-plane defect. The remaining hardening issue discovered by production evidence is that the preserved legacy runtime is owned by root, so the canonical Bedrock process in 2.1.0 also runs as `root`.
+This closes the original service-ownership/control-plane defect. `2.1.0` is frozen. The remaining hardening issue discovered by production evidence is that the preserved legacy runtime is owned by root, so the canonical Bedrock process in 2.1.0 also runs as `root`.
 
 ## 2.1.1 hardening objective
 
