@@ -14,6 +14,7 @@ RELOAD_HELPER="${REPO_ROOT}/deploy/reload-srv-control.sh"
 BACKUP_DIR="/var/lib/srv-deployment/backups/${REMOTE_SHA}-${RELEASE_ID}"
 STATE_DIR="/var/lib/srv-control"
 RELEASE_META="${STATE_DIR}/release.json"
+UPDATE_STATUS="${STATE_DIR}/github-update-status.json"
 APP_USER="srv-control"
 APP_GROUP="srv-control"
 
@@ -88,6 +89,10 @@ critical_paths=(
     /var/lib/srvcc-agent/blocked-release.json
     /var/lib/srvcc-agent/last-release-fingerprint
     /var/lib/srv-control/session.key
+    /opt/minecraft-bedrock/server.properties
+    /opt/minecraft/server.properties
+    /srv/minecraft/server.properties
+    /var/lib/minecraft/server.properties
 )
 for path in "${critical_paths[@]}"; do backup_absolute_path "$path"; done
 
@@ -107,10 +112,11 @@ GH_SOURCE="$(json_value "$STATE_DIR/github-update-config.json" source 'https://g
 GH_MODE="$(json_value "$STATE_DIR/github-update-config.json" mode automatic)"
 GH_INTERVAL="$(json_value "$STATE_DIR/github-update-config.json" interval_minutes 5)"
 
-# 2.0 deliberately does NOT create an unconditional user-visible backup here.
-# The update controller evaluates backup_before_update once before entering the
-# deployment transaction. This removes the 1.x double/forced-backup defect while
-# retaining this private rollback snapshot regardless of operator policy.
+# No unconditional user-visible backup is created here. The 2.0 update
+# controller evaluates backup_before_update exactly once before deployment.
+# This fixes the 1.x defect where apply.sh created a pre-release backup even
+# when the administrator explicitly disabled backups before updates. The
+# private snapshot above exists only for transactional rollback.
 log "Internal rollback snapshot completed; user backup policy remains authoritative"
 
 log "Installing Control Center 2.0.0 application payload"
@@ -176,17 +182,68 @@ systemctl enable --now srv-control-minecraft-agent.path
 systemctl enable --now srv-control-minecraft-monitor.timer
 systemctl enable --now srv-control-minecraft-firewall.service >/dev/null 2>&1 || true
 
-# The real 1.3.x production line proved the legacy single-server updater is the
-# authoritative path. Keep the conflicting multi-instance update timer off.
+# The published 1.3.x production line proved the legacy single-server updater
+# as the authoritative Minecraft update path. Keep the conflicting modern timer
+# disabled until multi-instance replacement is separately proven.
 systemctl disable --now srv-control-minecraft-auto-update.timer >/dev/null 2>&1 || true
 if systemctl cat minecraft-update.timer >/dev/null 2>&1; then
     systemctl enable --now minecraft-update.timer >/dev/null 2>&1 || true
 fi
 
 # Rebuild the updater from clean 2.0 sources and restore the operator-selected
-# schedule. A failed legacy unit/timer is explicitly repaired here.
+# schedule. Failed legacy service/timer state is explicitly reset by configurator.
 bash "$SYSTEM/srvcc-configure-auto-updates" \
     --repo "$GH_SOURCE" --mode "$GH_MODE" --interval-minutes "$GH_INTERVAL" --no-check-now
+
+# Manual/local deployment may enter apply without the new controller being the
+# outer transport. Normalize legacy updater status to schema 4 without inventing
+# a new successful update. When the controller is the transport this is a no-op.
+python3 - "$UPDATE_STATUS" "$GH_SOURCE" <<'PY'
+import json,os,pathlib,sys,tempfile
+path=pathlib.Path(sys.argv[1]); source=sys.argv[2]
+try:
+    old=json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(old,dict): old={}
+except Exception:
+    old={}
+if old.get('schema_version') == 4:
+    raise SystemExit(0)
+checked=old.get('last_check_at') or old.get('checked_at')
+result=old.get('result') or 'unknown'
+last_check_result=old.get('last_check_result')
+if not last_check_result and checked:
+    if result in {'ok','updated'}: last_check_result='up-to-date'
+    elif result == 'update-available': last_check_result='update-available'
+    elif result in {'error','failed'}: last_check_result='error'
+payload={
+    'schema_version':4,
+    'source':old.get('source') or source,
+    'checked_at':checked,
+    'result':result,
+    'detail':old.get('detail'),
+    'remote_sha':old.get('remote_sha'),
+    'release_id':old.get('release_id'),
+    'release_version':old.get('release_version'),
+    'update_available':bool(old.get('update_available',False)),
+    'last_check_at':checked,
+    'last_check_result':last_check_result,
+    'last_update_attempt_at':old.get('last_update_attempt_at'),
+    'last_update_result':old.get('last_update_result'),
+    'last_successful_update_at':old.get('last_successful_update_at') or (checked if result == 'updated' else None),
+    'transaction_id':old.get('transaction_id'),
+    'stage':old.get('stage') or 'idle',
+    'blocked_fingerprint':old.get('blocked_fingerprint'),
+}
+path.parent.mkdir(parents=True,exist_ok=True)
+fd,tmp=tempfile.mkstemp(prefix='.'+path.name+'.',dir=str(path.parent))
+try:
+    with os.fdopen(fd,'w',encoding='utf-8') as h:
+        json.dump(payload,h,ensure_ascii=False,indent=2); h.write('\n'); h.flush(); os.fsync(h.fileno())
+    os.chmod(tmp,0o644); os.replace(tmp,path)
+finally:
+    try: os.unlink(tmp)
+    except FileNotFoundError: pass
+PY
 
 if /usr/local/libexec/srv-control-backup-policy scheduled; then
     systemctl enable --now srv-control-backup.timer >/dev/null
@@ -202,9 +259,10 @@ else
 fi
 
 # Health-first Minecraft repair. A healthy server is not touched. If ordinary
-# update/restart repair fails, the operator-authorized recovery path creates a
-# safety backup and switches to a new recovery world. The old world remains in
-# the Minecraft backup set.
+# update/restart repair fails, the recovery path first creates a safety backup
+# and then switches to a new recovery world. The previous world is preserved in
+# the Minecraft backup set and the pre-2.0 server.properties files are in the
+# private rollback snapshot above.
 if [[ -x /usr/local/sbin/srv-control-minecraft && -x /usr/local/sbin/srv-control-minecraft-worlds ]]; then
     /usr/local/libexec/srv-control-minecraft-repair repair --replace-world-on-failure \
         > "$BACKUP_DIR/state/minecraft-repair.json" \
@@ -234,8 +292,8 @@ log "Gracefully rotating Control Center workers"
 "$RELOAD_HELPER" srv-control.service http://127.0.0.1:8876/api/v1/health
 
 # Reassert automatic update scheduling after the service rotation. This is a
-# direct regression guard for the 1.x failure mode where an unsuccessful update
-# left the timer disabled.
+# direct regression guard for the 1.x failure mode where a failed update left
+# future update checks disabled.
 if [[ "$GH_MODE" == "automatic" ]]; then
     systemctl enable --now srvcc-github-agent.timer >/dev/null
     systemctl is-enabled --quiet srvcc-github-agent.timer || fail "GitHub update timer is not enabled"
