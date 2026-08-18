@@ -5,25 +5,37 @@ PENDING="$STATE/dhcp-pending.json"
 CONFIG="$STATE/dhcp-config.json"
 STATUS="$STATE/dhcp-status.json"
 TARGET=/etc/dnsmasq.d/control-center-dhcp.conf
-[[ -f "$PENDING" ]] || exit 0
-python3 - "$PENDING" "$TARGET" <<'PY'
+BACKUP="$STATE/control-center-dhcp.conf.rollback"
+[[ -s "$PENDING" ]] || exit 0
+status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
+import json,sys,time
+open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='applied','state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
+PY
+chown control-center:control-center "$STATUS" 2>/dev/null || true; }
+[[ -f "$TARGET" ]] && cp -a "$TARGET" "$BACKUP" || rm -f "$BACKUP"
+TMP=$(mktemp /etc/dnsmasq.d/control-center-dhcp.conf.XXXXXX)
+trap 'rm -f "$TMP"' EXIT
+python3 - "$PENDING" "$TMP" <<'PY'
 import json,sys
-j=json.load(open(sys.argv[1])); p=sys.argv[2]
-dns=','.join(j['dns'])
-text=f"""port=0
+j=json.load(open(sys.argv[1])); dns=','.join(j['dns'])
+open(sys.argv[2],'w').write(f"""port=0
 bind-dynamic
 interface={j['interface']}
 dhcp-range={j['range_start']},{j['range_end']},{j['mask']},{j['lease_minutes']}m
 dhcp-option=option:router,{j['gateway']}
 dhcp-option=option:dns-server,{dns}
-"""
-open(p,'w').write(text)
+""")
 PY
+chmod 0644 "$TMP"
+mv "$TMP" "$TARGET"
 if dnsmasq --test >/tmp/control-center-dhcp-test.log 2>&1 && systemctl restart dnsmasq; then
   mv "$PENDING" "$CONFIG"
-  printf '%s\n' '{"ok":true,"message":"DHCP конфигурация применена"}' >"$STATUS"
-else
-  printf '%s\n' '{"ok":false,"message":"Ошибка применения DHCP конфигурации"}' >"$STATUS"
-  exit 1
+  status applied 'DHCP конфигурация применена'
+  chown control-center:control-center "$CONFIG" "$STATUS" 2>/dev/null || true
+  exit 0
 fi
-chown control-center:control-center "$CONFIG" "$STATUS" 2>/dev/null || true
+if [[ -f "$BACKUP" ]]; then cp -a "$BACKUP" "$TARGET"; else rm -f "$TARGET"; fi
+dnsmasq --test >/dev/null 2>&1 && systemctl restart dnsmasq 2>/dev/null || true
+rm -f "$PENDING"
+status rollback 'Ошибка применения DHCP. Предыдущая конфигурация восстановлена.'
+exit 1
