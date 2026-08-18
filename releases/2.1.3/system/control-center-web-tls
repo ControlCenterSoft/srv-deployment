@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cmd="${1:-ensure}"
+TLS=/var/lib/srv-control/tls
+SITE=/etc/nginx/sites-available/srv-control
+host="$(hostname -f)"
+ip="$(hostname -I | awk '{print $1}')"
+ensure() {
+  install -d -m 0700 "$TLS"
+  if [[ ! -s "$TLS/ca.key" || ! -s "$TLS/ca.crt" ]]; then
+    openssl genrsa -out "$TLS/ca.key" 4096
+    openssl req -x509 -new -sha256 -days 3650 -key "$TLS/ca.key" -out "$TLS/ca.crt" -subj "/CN=HM.DM Control Center Root CA"
+  fi
+  if [[ ! -s "$TLS/server.key" || ! -s "$TLS/server.crt" ]] || ! openssl x509 -in "$TLS/server.crt" -noout -ext subjectAltName 2>/dev/null | grep -Fqi "DNS:$host"; then
+    openssl genrsa -out "$TLS/server.key" 3072
+    openssl req -new -key "$TLS/server.key" -out "$TLS/server.csr" -subj "/CN=$host"
+    cat >"$TLS/server.ext" <<EOF
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:$host,DNS:${host%%.*},IP:$ip
+EOF
+    openssl x509 -req -in "$TLS/server.csr" -CA "$TLS/ca.crt" -CAkey "$TLS/ca.key" -CAcreateserial -out "$TLS/server.crt" -days 397 -sha256 -extfile "$TLS/server.ext"
+  fi
+  chmod 0600 "$TLS/ca.key" "$TLS/server.key"
+  chmod 0644 "$TLS/ca.crt" "$TLS/server.crt"
+  cat >"$SITE" <<EOF
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name $host _;
+    return 308 https://$host\$request_uri;
+}
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name $host;
+    ssl_certificate $TLS/server.crt;
+    ssl_certificate_key $TLS/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 128m;
+    location = /api/v1/auth/sso {
+        auth_gss on;
+        auth_gss_keytab /var/lib/srv-control/http.keytab;
+        auth_gss_service_name HTTP;
+        auth_gss_allow_basic_fallback off;
+        proxy_pass http://127.0.0.1:8876;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-SRVCC-Remote-User \$remote_user;
+        proxy_set_header Authorization "";
+    }
+    location / {
+        proxy_pass http://127.0.0.1:8876;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-SRVCC-Remote-User "";
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+EOF
+  nginx -t
+  systemctl reload nginx.service
+}
+case "$cmd" in
+  ensure) ensure ;;
+  status) openssl x509 -in "$TLS/server.crt" -noout -subject -issuer -dates -ext subjectAltName ;;
+  *) echo "usage: $0 {ensure|status}" >&2; exit 2 ;;
+esac
