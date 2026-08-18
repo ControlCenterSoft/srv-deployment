@@ -4,11 +4,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Control Center</title>
-    <link rel="stylesheet" href="/static/css/shell.css?v=1.4.0-ui1">
+    <link rel="stylesheet" href="/static/css/shell.css?v=1.4.0-ui3">
 </head>
 <body>
 <div class="app-shell">
-    <aside class="main-nav" aria-label="Основная навигация">
+    <aside class="main-nav" id="mainNav" aria-label="Основная навигация">
         <div class="brand">
             <div class="brand-mark" aria-hidden="true">C</div>
             <div class="brand-text">
@@ -62,7 +62,10 @@
         </div>
     </aside>
 
+    <button id="navBackdrop" class="nav-backdrop" type="button" aria-label="Закрыть меню" tabindex="-1"></button>
+
     <header class="topbar">
+        <button class="icon-button mobile-menu-button" id="mobileMenuButton" type="button" aria-label="Открыть меню" aria-controls="mainNav" aria-expanded="false">☰</button>
         <label class="global-search" for="globalSearch">
             <span class="search-icon" aria-hidden="true">⌕</span>
             <input id="globalSearch" type="search" autocomplete="off" placeholder="Поиск (Ctrl + K)" aria-label="Поиск по разделам">
@@ -86,6 +89,6 @@
         <iframe id="moduleFrame" name="moduleFrame" src="/ui/dashboard" title="Control Center"></iframe>
     </main>
 </div>
-<script src="/static/js/shell.js?v=1.4.0-ui1"></script>
+<script src="/static/js/shell.js?v=1.4.0-ui3"></script>
 </body>
 </html>
