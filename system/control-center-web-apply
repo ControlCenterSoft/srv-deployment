@@ -6,17 +6,19 @@ PENDING="$STATE/web-pending.json"
 STATUS="$SYSTEM_STATE/web-status.json"
 CONFIG="$SYSTEM_STATE/web-config.json"
 ENV_FILE=/etc/control-center/web.env
+TLS_DIR=/etc/control-center/tls
+CERT="$TLS_DIR/server.crt"
+KEY="$TLS_DIR/server.key"
 UNIT=control-center.service
-DB_CLI=/opt/control-center/app/db_cli.py
 PY=/opt/control-center/venv/bin/python
 [[ -s "$PENDING" ]] || exit 0
 install -d -o root -g control-center -m 0750 "$SYSTEM_STATE"
 
 status(){
-  python3 - "$STATUS" "$1" "$2" "$3" <<'PY'
+  python3 - "$STATUS" "$1" "$2" "$3" "$4" "$5" <<'PY'
 import json,sys,time
-p,state,msg,port=sys.argv[1:]
-open(p,'w').write(json.dumps({'state':state,'message':msg,'port':int(port),'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
+p,state,msg,port,ssl,standard=sys.argv[1:]
+open(p,'w').write(json.dumps({'state':state,'message':msg,'port':int(port),'ssl_enabled':ssl=='1','standard_port':standard=='1','timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
   chown root:control-center "$STATUS"; chmod 0640 "$STATUS"
 }
@@ -24,91 +26,99 @@ PY
 readarray -t REQ < <(python3 - "$PENDING" <<'PY'
 import json,sys
 j=json.load(open(sys.argv[1]))
-p=j.get('port'); old=j.get('previous_port',8080); job=str(j.get('job_id',''))
-if isinstance(p,bool): raise SystemExit(2)
-p=int(p); old=int(old)
-if not 1024 <= p <= 65535: raise SystemExit(3)
-if not 1024 <= old <= 65535: old=8080
-print(p); print(old); print(job)
+def b(name,default=False):
+    v=j.get(name,default)
+    if not isinstance(v,bool): raise SystemExit(2)
+    return v
+p=int(j.get('port')); old=int(j.get('previous_port',8080))
+ssl=b('ssl_enabled'); oldssl=b('previous_ssl_enabled'); standard=b('standard_port'); oldstandard=b('previous_standard_port')
+if not 1<=p<=65535 or not 1<=old<=65535: raise SystemExit(3)
+if standard and p not in (80,443): raise SystemExit(4)
+if not standard and p<1024: raise SystemExit(5)
+print(p);print(old);print('1' if ssl else '0');print('1' if oldssl else '0');print('1' if standard else '0');print('1' if oldstandard else '0');print(str(j.get('job_id','')))
 PY
-) || { rm -f "$PENDING"; status rejected 'Некорректный запрос изменения порта' 8080; exit 1; }
-PORT="${REQ[0]}"; OLD_PORT="${REQ[1]}"; JOB_ID="${REQ[2]}"
+) || { rm -f "$PENDING"; status rejected 'Некорректный запрос Web runtime' 8080 0 0; exit 1; }
+PORT="${REQ[0]}"; OLD_PORT="${REQ[1]}"; SSL="${REQ[2]}"; OLD_SSL="${REQ[3]}"; STANDARD="${REQ[4]}"; OLD_STANDARD="${REQ[5]}"; JOB_ID="${REQ[6]}"
 rm -f "$PENDING"
-status applying "Применение порта Web UI $PORT…" "$PORT"
+status applying "Применение Web runtime: $PORT / SSL=$SSL…" "$PORT" "$SSL" "$STANDARD"
 
 if [[ "$PORT" != "$OLD_PORT" ]]; then
   if ! python3 - "$PORT" <<'PY'
 import socket,sys
-p=int(sys.argv[1]); s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-try:
-    s.bind(('0.0.0.0',p))
-except OSError as e:
-    print(e); raise SystemExit(1)
-finally:
-    s.close()
+p=int(sys.argv[1]);s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+try:s.bind(('0.0.0.0',p))
+except OSError as e:print(e);raise SystemExit(1)
+finally:s.close()
 PY
-  then
-    status rejected "Порт $PORT уже занят или недоступен" "$OLD_PORT"
-    exit 1
+  then status rejected "Порт $PORT уже занят или недоступен" "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD"; exit 1; fi
+fi
+
+if [[ "$SSL" == 1 ]]; then
+  install -d -o root -g control-center -m 0750 "$TLS_DIR"
+  if [[ ! -s "$CERT" || ! -s "$KEY" ]]; then
+    HOST="$(hostname -f 2>/dev/null || hostname)"
+    SAN="DNS:${HOST},DNS:localhost,IP:127.0.0.1"
+    while read -r ip; do [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && SAN+=",IP:${ip}"; done < <(hostname -I 2>/dev/null | tr ' ' '\n')
+    openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 825 \
+      -subj "/CN=${HOST}" -addext "subjectAltName=${SAN}" \
+      -keyout "$KEY" -out "$CERT" >/dev/null 2>&1
+    chown root:control-center "$KEY" "$CERT"; chmod 0640 "$KEY"; chmod 0644 "$CERT"
   fi
 fi
 
 OLD_ENV="$(cat "$ENV_FILE" 2>/dev/null || true)"
 OLD_CONFIG="$(cat "$CONFIG" 2>/dev/null || true)"
-TMP_ENV=$(mktemp /etc/control-center/web.env.XXXXXX)
-printf 'CONTROL_CENTER_PORT=%s\n' "$PORT" >"$TMP_ENV"
-chown root:root "$TMP_ENV"; chmod 0600 "$TMP_ENV"
-mv "$TMP_ENV" "$ENV_FILE"
-python3 - "$CONFIG" "$PORT" <<'PY'
+write_env(){
+  local port="$1" ssl="$2" standard="$3"
+  cat >"$ENV_FILE" <<EOF
+CONTROL_CENTER_PORT=$port
+CONTROL_CENTER_SSL=$ssl
+CONTROL_CENTER_STANDARD_PORT=$standard
+CONTROL_CENTER_CERT=$CERT
+CONTROL_CENTER_KEY=$KEY
+EOF
+  chown root:root "$ENV_FILE"; chmod 0600 "$ENV_FILE"
+}
+write_config(){
+  python3 - "$CONFIG" "$1" "$2" "$3" <<'PY'
 import json,sys,time
-open(sys.argv[1],'w').write(json.dumps({'port':int(sys.argv[2]),'updated_at':int(time.time())},indent=2)+'\n')
+p,port,ssl,standard=sys.argv[1:]
+open(p,'w').write(json.dumps({'port':int(port),'ssl_enabled':ssl=='1','standard_port':standard=='1','scheme':'https' if ssl=='1' else 'http','certificate':'self-signed' if ssl=='1' else 'none','updated_at':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
-chown root:control-center "$CONFIG"; chmod 0640 "$CONFIG"
-
-set_db_port(){
-  local value="$1"
-  [[ -x "$PY" && -f "$DB_CLI" ]] || return 1
-  runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" "$PY" "$DB_CLI" set-web-port "$value" >/dev/null
+  chown root:control-center "$CONFIG"; chmod 0640 "$CONFIG"
 }
-
-rollback(){
-  if [[ -n "$OLD_ENV" ]]; then printf '%s\n' "$OLD_ENV" >"$ENV_FILE"; chmod 0600 "$ENV_FILE"; else printf 'CONTROL_CENTER_PORT=%s\n' "$OLD_PORT" >"$ENV_FILE"; chmod 0600 "$ENV_FILE"; fi
-  if [[ -n "$OLD_CONFIG" ]]; then printf '%s\n' "$OLD_CONFIG" >"$CONFIG"; chown root:control-center "$CONFIG"; chmod 0640 "$CONFIG"; else rm -f "$CONFIG"; fi
-  set_db_port "$OLD_PORT" || true
-  systemctl daemon-reload
-  systemctl restart "$UNIT" || true
-}
-
-if ! set_db_port "$PORT"; then
-  rollback
-  status rollback 'PostgreSQL не принял новый порт; предыдущая конфигурация восстановлена' "$OLD_PORT"
-  exit 1
-fi
-
-systemctl daemon-reload
-if ! systemctl restart "$UNIT"; then
-  rollback
-  status rollback 'Web service не перезапустился; предыдущий порт восстановлен' "$OLD_PORT"
-  exit 1
-fi
-
-OK=0
-for _ in $(seq 1 20); do
-  if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then OK=1; break; fi
-  sleep 1
-done
-if [[ "$OK" != 1 ]]; then
-  rollback
-  status rollback 'Health-check нового порта не пройден; предыдущий порт восстановлен' "$OLD_PORT"
-  exit 1
-fi
-
-status applied "Web UI переведён на порт $PORT" "$PORT"
-if [[ -n "$JOB_ID" ]]; then
-  runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" "$PY" - "$JOB_ID" "$PORT" <<'PY' 2>/dev/null || true
+set_db(){
+  local port="$1" ssl="$2" standard="$3"
+  runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" "$PY" - "$port" "$ssl" "$standard" <<'PY'
 import sys
 sys.path.insert(0,'/opt/control-center/app')
 import database
-database.upsert_job(sys.argv[1],'web-port-change','done',message=f'Web UI port {sys.argv[2]} applied',result={'port':int(sys.argv[2])})
+database.set_setting('web.port',int(sys.argv[1]));database.set_setting('web.ssl_enabled',sys.argv[2]=='1');database.set_setting('web.standard_port',sys.argv[3]=='1')
+database.set_setting('web.port.requested',None);database.set_setting('web.ssl.requested',None);database.set_setting('web.standard.requested',None)
+PY
+}
+rollback(){
+  if [[ -n "$OLD_ENV" ]]; then printf '%s\n' "$OLD_ENV" >"$ENV_FILE"; chmod 0600 "$ENV_FILE"; else write_env "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD"; fi
+  if [[ -n "$OLD_CONFIG" ]]; then printf '%s\n' "$OLD_CONFIG" >"$CONFIG"; chown root:control-center "$CONFIG"; chmod 0640 "$CONFIG"; else rm -f "$CONFIG"; fi
+  set_db "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD" || true
+  systemctl daemon-reload; systemctl restart "$UNIT" || true
+}
+
+write_env "$PORT" "$SSL" "$STANDARD";write_config "$PORT" "$SSL" "$STANDARD"
+if ! set_db "$PORT" "$SSL" "$STANDARD"; then rollback;status rollback 'PostgreSQL не принял Web-настройки; предыдущая конфигурация восстановлена' "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD";exit 1;fi
+systemctl daemon-reload
+if ! systemctl restart "$UNIT"; then rollback;status rollback 'Web service не перезапустился; предыдущая конфигурация восстановлена' "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD";exit 1;fi
+
+SCHEME=http; CURL_ARGS=(-fsS --max-time 2)
+if [[ "$SSL" == 1 ]]; then SCHEME=https; CURL_ARGS=(-kfsS --max-time 2); fi
+OK=0
+for _ in $(seq 1 20); do if curl "${CURL_ARGS[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then OK=1;break;fi;sleep 1;done
+if [[ "$OK" != 1 ]]; then rollback;status rollback 'Health-check нового Web runtime не пройден; предыдущая конфигурация восстановлена' "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD";exit 1;fi
+status applied "Web UI: $SCHEME / порт $PORT" "$PORT" "$SSL" "$STANDARD"
+if [[ -n "$JOB_ID" ]]; then
+  runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" "$PY" - "$JOB_ID" "$PORT" "$SSL" <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0,'/opt/control-center/app');import database
+database.upsert_job(sys.argv[1],'web-runtime-change','done',message='Web runtime applied',result={'port':int(sys.argv[2]),'ssl_enabled':sys.argv[3]=='1'})
 PY
 fi
