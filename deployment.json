@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "2.1.2",
-  "release_id": "2.1.2",
-  "release_path": "releases/2.1.2",
-  "manifest": "releases/2.1.2/manifest.json",
-  "preflight": "releases/2.1.2/preflight-2.1.2.sh",
-  "apply": "releases/2.1.2/apply-2.1.2.sh",
-  "acceptance": "releases/2.1.2/acceptance-2.1.2.sh",
-  "rollback": "releases/2.1.2/rollback-2.1.2.sh",
-  "description": "Control Center 2.1.2 production candidate: keep Minecraft Bedrock status visible while stopped by using the canonical systemd WorkingDirectory, return explicit confirmed ONLINE/OFFLINE command results, and add a 5-second live status panel while preserving the 2.1.1 privilege bridge and NoNewPrivileges sandbox."
+  "release": "2.1.4",
+  "release_id": "2.1.4",
+  "release_path": "releases/2.1.4",
+  "manifest": "releases/2.1.4/manifest.json",
+  "preflight": "releases/2.1.4/preflight-2.1.4.sh",
+  "apply": "releases/2.1.4/apply-2.1.4.sh",
+  "acceptance": "releases/2.1.4/acceptance-2.1.4.sh",
+  "rollback": "releases/2.1.4/rollback-2.1.4.sh",
+  "description": "Control Center 2.1.4 production candidate: repair clean installation for delta patch releases by reconstructing the full frozen application lineage, stop package-default nginx before port selection, remove the stock welcome site, and require public reverse-proxy health acceptance."
 }

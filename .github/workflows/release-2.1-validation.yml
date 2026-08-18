@@ -30,7 +30,7 @@ jobs:
           assert data.get('enabled') is True,data
           assert data.get('channel') == 'production',data
           release=data.get('release_id')
-          assert release in {'2.1.1','2.1.2'},data
+          assert release in {'2.1.1','2.1.2','2.1.4'},data
           assert data.get('release') == release,data
           assert data.get('release_path') == f'releases/{release}',data
           assert data.get('manifest') == f'releases/{release}/manifest.json',data
@@ -38,7 +38,7 @@ jobs:
               assert data.get(stage) == f'releases/{release}/{stage}-{release}.sh',(stage,data.get(stage))
           print('PRODUCTION DESCRIPTOR PASS: Control Center',release)
           PY
-          git diff --exit-code origin/main -- releases/2.1.0 releases/2.1.1
+          git diff --exit-code origin/main -- releases/2.1.0 releases/2.1.1 releases/2.1.2
 
       - name: Revalidate frozen 2.1.0 manifest
         run: |

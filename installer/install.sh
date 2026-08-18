@@ -16,6 +16,9 @@ DEPLOY_STATE="/var/lib/srv-deployment"
 AGENT_ROOT="/var/lib/srvcc-agent"
 REPO_URL="https://github.com/filosoff31/srv-deployment.git"
 INSTALL_LOG="/var/log/srv-control-install.log"
+INSTALL_PROFILE="$SCRIPT_DIR/install-profile.json"
+PAYLOAD_BUILDER="$SCRIPT_DIR/build-install-payload.py"
+ASSEMBLED_PAYLOAD=""
 
 exec > >(tee -a "$INSTALL_LOG") 2>&1
 
@@ -27,6 +30,13 @@ fail() {
     log "INSTALL FAIL: $*" >&2
     exit 1
 }
+
+cleanup() {
+    if [[ -n "$ASSEMBLED_PAYLOAD" && -d "$ASSEMBLED_PAYLOAD" ]]; then
+        rm -rf -- "$ASSEMBLED_PAYLOAD"
+    fi
+}
+trap cleanup EXIT
 
 [[ "$(id -u)" -eq 0 ]] || fail "run as root"
 command -v apt-get >/dev/null 2>&1 || fail "Debian/Ubuntu with apt-get is required"
@@ -43,6 +53,7 @@ apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
+    iproute2 \
     nginx \
     postgresql \
     postgresql-client \
@@ -75,12 +86,25 @@ mapfile -t release_meta <<< "$release_info"
 RELEASE_ID="${release_meta[0]:-}"
 RELEASE_PATH="${release_meta[1]:-}"
 RELEASE_VERSION="${release_meta[2]:-}"
-PAYLOAD="$REPO_ROOT/$RELEASE_PATH/payload"
 
-[[ -d "$PAYLOAD/app" ]] || fail "active release application payload is missing"
-[[ -d "$PAYLOAD/templates" ]] || fail "active release templates are missing"
-[[ -d "$PAYLOAD/static" ]] || fail "active release static files are missing"
-[[ -s "$PAYLOAD/requirements.lock" ]] || fail "active release requirements.lock is missing"
+[[ -s "$INSTALL_PROFILE" ]] || fail "installer/install-profile.json is missing"
+[[ -s "$PAYLOAD_BUILDER" ]] || fail "installer/build-install-payload.py is missing"
+
+# Patch releases are intentionally delta releases. A clean installation must not
+# assume deployment.json points at a self-contained payload. Assemble the exact
+# published application from a frozen consolidated baseline plus ordered delta
+# layers and deterministic post-assembly patches.
+ASSEMBLED_PAYLOAD="$(mktemp -d /tmp/control-center-install-payload.XXXXXX)"
+log "Assembling clean-install payload for release ${RELEASE_VERSION}"
+python3 "$PAYLOAD_BUILDER" "$REPO_ROOT" "$INSTALL_PROFILE" "$ASSEMBLED_PAYLOAD"
+PAYLOAD="$ASSEMBLED_PAYLOAD"
+
+[[ -d "$PAYLOAD/app" ]] || fail "assembled application payload is missing"
+[[ -d "$PAYLOAD/templates" ]] || fail "assembled templates are missing"
+[[ -d "$PAYLOAD/static" ]] || fail "assembled static files are missing"
+[[ -d "$PAYLOAD/migrations" ]] || fail "assembled migrations are missing"
+[[ -s "$PAYLOAD/alembic.ini" ]] || fail "assembled alembic.ini is missing"
+[[ -s "$PAYLOAD/requirements.lock" ]] || fail "assembled requirements.lock is missing"
 
 systemctl enable --now postgresql.service
 
@@ -100,7 +124,7 @@ install -d -m 0750 -o root -g "$APP_GROUP" "$PROJECT" "$CONFIG_DIR"
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$STATE_DIR" "$CACHE_DIR" "$LOG_DIR"
 install -d -m 0750 -o root -g root "$DEPLOY_STATE" "$AGENT_ROOT"
 
-log "Installing consolidated release ${RELEASE_VERSION}"
+log "Installing consolidated Control Center ${RELEASE_VERSION} application"
 cp -a "$PAYLOAD/." "$PROJECT/"
 find "$PROJECT" -type d -exec chmod 0750 {} +
 find "$PROJECT" -type f -exec chmod 0640 {} +
@@ -126,7 +150,7 @@ fi
 canonical_host="$(hostname -f 2>/dev/null || hostname)"
 cat > "$CONFIG_DIR/control.toml" <<EOF
 [application]
-name = "SRV Control Center"
+name = "Control Center"
 
 [web]
 canonical_host = "${canonical_host}"
@@ -152,7 +176,7 @@ runuser -u "$APP_USER" -- env \
 log "Installing Control Center service"
 cat > /etc/systemd/system/srv-control.service <<'EOF'
 [Unit]
-Description=SRV Control Center
+Description=Control Center
 After=network-online.target postgresql.service
 Wants=network-online.target
 Requires=postgresql.service
@@ -191,8 +215,13 @@ WantedBy=multi-user.target
 EOF
 
 log "Configuring reverse proxy"
+# nginx installed by apt normally starts immediately and occupies port 80 itself.
+# Stop that package-default instance before probing ports; otherwise a clean
+# install falsely concludes that port 80 is externally occupied and publishes
+# Control Center on 8080 while the browser sees the stock nginx welcome page.
+systemctl stop nginx.service >/dev/null 2>&1 || true
 web_port=80
-if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:|\])80$'; then
+if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:|\])80$'; then
     web_port=8080
     if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:|\])8080$'; then
         web_port=8880
@@ -281,22 +310,32 @@ bash "$REPO_ROOT/bootstrap/configure-auto-updates.sh" \
     --no-check-now
 
 log "Running installation acceptance"
-python3 - "$RELEASE_VERSION" "$current_sha" <<'PY'
+python3 - "$RELEASE_VERSION" "$current_sha" "$web_port" <<'PY'
 import json
 import sys
 import time
 import urllib.request
 version=sys.argv[1]
 sha=sys.argv[2]
+web_port=int(sys.argv[3])
 last_error=None
+backend="http://127.0.0.1:8876/api/v1/health"
+proxy=f"http://127.0.0.1:{web_port}/api/v1/health"
 for _ in range(40):
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8876/api/v1/health",timeout=5) as response:
+        with urllib.request.urlopen(backend,timeout=5) as response:
             payload=json.load(response)
         release=payload.get("data",{}).get("release",{})
-        if payload.get("ok") is True and release.get("version")==version and release.get("git_sha")==sha:
+        if not (payload.get("ok") is True and release.get("version")==version and release.get("git_sha")==sha):
+            last_error=repr(payload)
+            time.sleep(1)
+            continue
+        with urllib.request.urlopen(proxy,timeout=5) as response:
+            proxy_payload=json.load(response)
+        proxy_release=proxy_payload.get("data",{}).get("release",{})
+        if proxy_payload.get("ok") is True and proxy_release.get("version")==version:
             raise SystemExit(0)
-        last_error=repr(payload)
+        last_error=repr(proxy_payload)
     except Exception as exc:
         last_error=repr(exc)
     time.sleep(1)
@@ -306,6 +345,8 @@ PY
 systemctl is-active --quiet srv-control.service || fail "srv-control.service is not active"
 systemctl is-active --quiet nginx.service || fail "nginx.service is not active"
 systemctl is-active --quiet srvcc-github-agent.timer || fail "GitHub updater timer is not active"
+nginx -T 2>/dev/null | grep -Fq "proxy_pass http://127.0.0.1:8876;" \
+    || fail "nginx does not contain the Control Center reverse proxy"
 
 server_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 server_ip="${server_ip:-127.0.0.1}"
@@ -315,8 +356,8 @@ else
     access_url="http://${server_ip}:${web_port}/"
 fi
 
-log "INSTALL PASS: SRV Control Center ${RELEASE_VERSION}"
-printf '\nSRV CONTROL CENTER: INSTALLED\n'
+log "INSTALL PASS: Control Center ${RELEASE_VERSION}"
+printf '\nCONTROL CENTER: INSTALLED\n'
 printf 'release=%s\n' "$RELEASE_VERSION"
 printf 'git_sha=%s\n' "$current_sha"
 printf 'url=%s\n' "$access_url"
