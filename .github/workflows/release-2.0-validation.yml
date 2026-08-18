@@ -93,10 +93,9 @@ jobs:
           updater='releases/2.0.0/system/srvcc-update-controller'
           auto_os='releases/2.0.0/system/srv-control-os-auto-update'
           policy='releases/2.0.0/system/srv-control-backup-policy'
-          # 1.x applied a visible backup unconditionally. 2.0 must not.
           ! grep -E 'srv-control-backup.*create.*pre-release|BACKUP_WORKER.*create.*pre-release' "$apply"
           grep -Fq 'No unconditional user-visible backup is created here' "$apply"
-          grep -Fq "config.get(\"backup_before_update\") is True" "$updater"
+          grep -Fq 'config.get("backup_before_update") is True' "$updater"
           grep -Fq 'required-for-update' "$auto_os"
           grep -Fq 'raw.get("backup_before_update") is True' "$policy"
           grep -Fq 'srv-control-backup-policy scheduled' "$apply"
@@ -107,7 +106,7 @@ jobs:
           controller='releases/2.0.0/system/srvcc-update-controller'
           configurator='releases/2.0.0/system/srvcc-configure-auto-updates'
           apply='releases/2.0.0/apply-2.0.0.sh'
-          grep -Fq 'schema_version": 4' "$controller"
+          grep -Fq '"schema_version": 4' "$controller"
           grep -Fq 'last_check_at' "$controller"
           grep -Fq 'last_update_attempt_at' "$controller"
           grep -Fq 'last_successful_update_at' "$controller"
@@ -146,7 +145,7 @@ jobs:
           grep -Fq 'RELEASE_ID="2.0.0"' releases/2.0.0/apply-2.0.0.sh
           grep -Fq 'RELEASE_VERSION="2.0.0"' releases/2.0.0/apply-2.0.0.sh
           grep -Fq "p.get('version') == '2.0.0'" releases/2.0.0/acceptance-2.0.0.sh
-          grep -Fq 'release_id') == '2.0.0' releases/2.0.0/acceptance-2.0.0.sh || true
+          grep -Fq "p.get('release_id') == '2.0.0'" releases/2.0.0/acceptance-2.0.0.sh
           ! grep -Fq 'text=text.replace' releases/2.0.0/preflight-2.0.0.sh
           ! grep -Fq 'text=text.replace' releases/2.0.0/apply-2.0.0.sh
 
