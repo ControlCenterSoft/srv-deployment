@@ -1,0 +1,111 @@
+name: Control Center 2.1.4 clean-install validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'installer/**'
+      - 'releases/2.1.4/**'
+      - '.github/workflows/release-2.1.4-clean-install.yml'
+      - 'deployment.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clean-install-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate installer and release syntax
+        run: |
+          set -euo pipefail
+          bash -n installer/install.sh
+          bash -n installer/install-system-admin.sh
+          bash -n releases/2.1.4/preflight-2.1.4.sh
+          bash -n releases/2.1.4/apply-2.1.4.sh
+          bash -n releases/2.1.4/acceptance-2.1.4.sh
+          bash -n releases/2.1.4/rollback-2.1.4.sh
+          python3 -m py_compile installer/build-install-payload.py
+
+      - name: Reconstruct consolidated clean-install payload
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          python3 installer/build-install-payload.py "$PWD" installer/install-profile.json "$tmp/payload"
+          test -s "$tmp/payload/app/main.py"
+          test -s "$tmp/payload/requirements.lock"
+          test -s "$tmp/payload/alembic.ini"
+          test -s "$tmp/payload/templates/login.html"
+          test -s "$tmp/payload/templates/minecraft.html"
+          test -s "$tmp/payload/static/js/minecraft-status-2.1.2.js"
+          ! grep -Fq '["/usr/bin/sudo", "-n", str(helper), *args]' "$tmp/payload/app/routers/minecraft_legacy.py"
+          grep -Fq '/static/js/minecraft-status-2.1.2.js' "$tmp/payload/templates/minecraft.html"
+          rm -rf "$tmp"
+
+      - name: Validate explicit frozen install lineage
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib
+          p=json.loads(pathlib.Path('installer/install-profile.json').read_text(encoding='utf-8'))
+          assert p['schema_version'] == 1,p
+          assert p['baseline_release'] == '2.1.0',p
+          assert p['payload_layers'] == [
+              'releases/2.1.0/payload',
+              'releases/2.1.1/payload',
+              'releases/2.1.2/payload',
+          ],p
+          assert p['system_baseline'] == 'releases/2.1.0/system',p
+          patches=p['post_assembly_patches']
+          assert any(x['script'].endswith('srv-control-minecraft-router-bridge-patch') for x in patches),patches
+          assert any(x['script'].endswith('srv-control-minecraft-ui-status-patch') for x in patches),patches
+          print('INSTALL LINEAGE PASS')
+          PY
+
+      - name: Validate nginx clean-host regression guard
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          text=pathlib.Path('installer/install.sh').read_text(encoding='utf-8')
+          stop=text.index('systemctl stop nginx.service')
+          probe=text.index("ss -ltnH", stop)
+          remove=text.index('rm -f /etc/nginx/sites-enabled/default', probe)
+          proxy=text.index('proxy_pass http://127.0.0.1:8876;', remove)
+          public=text.index('proxy=f"http://127.0.0.1:{web_port}/api/v1/health"', proxy)
+          assert stop < probe < remove < proxy < public
+          assert 'PAYLOAD="$REPO_ROOT/$RELEASE_PATH/payload"' not in text
+          print('NGINX CLEAN HOST REGRESSION PASS')
+          PY
+          grep -Fq 'system_baseline' installer/install-system-admin.sh
+          grep -Fq 'releases/2.1.1/system/srv-control-minecraft-agent' installer/install-system-admin.sh
+
+      - name: Print 2.1.4 release hashes
+        run: |
+          sha256sum \
+            releases/2.1.4/preflight-2.1.4.sh \
+            releases/2.1.4/apply-2.1.4.sh \
+            releases/2.1.4/acceptance-2.1.4.sh \
+            releases/2.1.4/rollback-2.1.4.sh
+
+      - name: Validate manifest when present
+        run: |
+          set -euo pipefail
+          if [[ ! -s releases/2.1.4/manifest.json ]]; then
+            echo 'manifest not added yet; hash-print staging pass'
+            exit 0
+          fi
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('releases/2.1.4')
+          m=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          assert m['release_id'] == m['release_version'] == '2.1.4',m
+          for stage in ('preflight','apply','acceptance','rollback'):
+              item=m['scripts'][stage]
+              digest=hashlib.sha256((root/item['path']).read_bytes()).hexdigest()
+              assert digest == item['sha256'],(stage,digest,item['sha256'])
+          print('2.1.4 MANIFEST PASS')
+          PY
