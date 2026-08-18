@@ -28,6 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n tools/bootstrap-control-center-2.0.sh
+          bash -n releases/2.0.0/system/srvcc-configure-auto-updates
           python3 - <<'PY'
           import json, pathlib
           dep=json.loads(pathlib.Path('deployment.json').read_text(encoding='utf-8'))
@@ -39,7 +40,8 @@ jobs:
           required=(
               'bash "$TMP_ROOT/repo/deploy/deploy.sh" "$PROJECT" "$REMOTE_SHA"',
               'systemctl reset-failed srvcc-github-agent.service',
-              '"$CONFIGURATOR"',
+              'CONFIGURATOR_SOURCE="$TMP_ROOT/repo/releases/${EXPECTED_RELEASE}/system/srvcc-configure-auto-updates"',
+              'bash "$CONFIGURATOR_SOURCE"',
               '--mode automatic',
               '--interval-minutes "$EXPECTED_INTERVAL"',
               'systemctl is-enabled --quiet srvcc-github-agent.timer',
@@ -58,9 +60,24 @@ jobs:
           for item in required:
               assert item in text, item
 
+          configurator=pathlib.Path('releases/2.0.0/system/srvcc-configure-auto-updates').read_text(encoding='utf-8')
+          for item in (
+              'same_file(){',
+              'if ! same_file "$controller_source" "$CONTROLLER"; then',
+              'if ! same_file "$0" "$CONFIGURATOR"; then',
+              'if ! same_file "$publisher_source" "$STATE_PUBLISHER"; then',
+          ):
+              assert item in configurator, item
+
           # The recovery bootstrap must configure the desired automatic mode,
           # not merely enable a timer while leaving UI/config in manual mode.
           assert 'systemctl enable --now srvcc-github-agent.timer' not in text
+
+          # A re-run after successful 2.0 deployment must refresh transport
+          # helpers from the cloned production tree instead of executing only
+          # the possibly stale installed configurator.
+          restore=text.split('log "Restoring automatic update mode:',1)[1].split('systemctl reset-failed',1)[0]
+          assert 'bash "$CONFIGURATOR_SOURCE"' in restore, restore
 
           # Published 1.x release branches are frozen history and must never be
           # part of the bootstrap deletion set.
@@ -76,5 +93,5 @@ jobs:
           cleanup_block=text.split('OBSOLETE_UNPUBLISHED_BRANCHES=(',1)[1].split(')',1)[0]
           for branch in protected:
               assert branch not in cleanup_block, branch
-          print('BOOTSTRAP 2.0 CONTRACT PASS: automatic 5-minute recovery and cleanup gates present')
+          print('BOOTSTRAP 2.0 CONTRACT PASS: idempotent automatic 5-minute recovery and cleanup gates present')
           PY
