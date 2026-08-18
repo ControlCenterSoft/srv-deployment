@@ -6,20 +6,34 @@
   "editions": ["Home", "Professional"],
   "components": [
     "web-ui",
+    "gunicorn-wsgi",
+    "http-security-headers",
+    "same-origin-write-guard",
     "system-dashboard",
     "network-management",
+    "network-root-revalidation",
     "dhcp-market",
-    "dhcp-configuration",
+    "dhcp-dedicated-runtime",
+    "dhcp-root-revalidation",
+    "dhcp-rollback",
     "local-rbac",
     "home-edition",
     "professional-edition",
     "professional-activation",
-    "license-status",
+    "protected-system-state",
+    "protected-license-state",
+    "root-only-rollback-state",
     "control-center-update",
     "os-package-update",
+    "apt-operation-lock",
     "installer",
     "uninstaller",
+    "acceptance-checks",
+    "release-ci-validation",
     "documentation"
   ],
-  "known_limitations": ["web-ui-authentication-not-yet-implemented"]
+  "known_limitations": [
+    "web-ui-authentication-not-yet-implemented",
+    "inline-script-csp-requires-unsafe-inline"
+  ]
 }
