@@ -1,0 +1,15 @@
+{
+  "product": "Control Center",
+  "release": "1.0.2",
+  "channel": "production",
+  "upgrade_from": "1.0.1",
+  "components": [
+    "system-dashboard",
+    "wan-lan-role-assignment",
+    "dhcp-static-ipv4",
+    "network-validation",
+    "netplan-apply",
+    "network-rollback",
+    "automatic-updates"
+  ]
+}
