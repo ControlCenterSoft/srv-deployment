@@ -44,8 +44,27 @@ jobs:
               'systemctl is-active --quiet srvcc-github-agent.timer',
               "assert data.get('schema_version') == 4",
               "urlopen('http://127.0.0.1:8876/api/v1/health'",
+              '"$STATE_PUBLISHER"',
+              "merge-base --is-ancestor",
+              'push --quiet origin --delete "$branch"',
+              'release/1.4.0',
           )
           for item in required:
               assert item in text, item
+
+          # Published 1.x release branches are frozen history and must never be
+          # part of the bootstrap deletion set.
+          protected=(
+              'release/1.2.0',
+              'release/1.3.0',
+              'release/1.3.4',
+              'release/1.3.5',
+              'release/1.3.6',
+              'release/1.3.7',
+              'release/1.3.8',
+          )
+          cleanup_block=text.split('OBSOLETE_UNPUBLISHED_BRANCHES=(',1)[1].split(')',1)[0]
+          for branch in protected:
+              assert branch not in cleanup_block, branch
           print('BOOTSTRAP 2.0 CONTRACT PASS')
           PY
