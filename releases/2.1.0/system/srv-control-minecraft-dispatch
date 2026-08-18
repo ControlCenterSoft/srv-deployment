@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+UNIT = 'srv-control-minecraft-bedrock.service'
+ROLE = Path(sys.argv[0]).name
+BACKEND = Path('/usr/local/libexec') / ROLE
+
+
+def run(command: list[str], *, input_text: str | None = None, timeout: int = 1800, check: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        input=input_text,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=check,
+    )
+
+
+def active() -> bool:
+    return run(['systemctl', 'is-active', '--quiet', UNIT], timeout=20).returncode == 0
+
+
+def unit_exists() -> bool:
+    return run(['systemctl', 'cat', UNIT], timeout=20).returncode == 0
+
+
+def systemctl(action: str) -> None:
+    result = run(['systemctl', action, UNIT], timeout=180)
+    if result.returncode != 0:
+        raise RuntimeError((result.stdout or '')[-4000:] or f'failed to {action} {UNIT}')
+
+
+def backend(args: list[str], stdin_text: str) -> tuple[dict, int]:
+    if not BACKEND.is_file():
+        raise RuntimeError(f'Minecraft backend is missing: {BACKEND}')
+    result = run([str(BACKEND), *args], input_text=stdin_text, timeout=1800)
+    text = (result.stdout or '').strip()
+    try:
+        payload = json.loads(text)
+    except Exception as exc:
+        raise RuntimeError(text[-4000:] or 'invalid Minecraft backend response') from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError('invalid Minecraft backend payload')
+    return payload, result.returncode
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return code
+
+
+def with_temporary_service(args: list[str], stdin_text: str) -> tuple[dict, int]:
+    was_active = active()
+    if not was_active:
+        systemctl('start')
+    try:
+        return backend(args, stdin_text)
+    finally:
+        if not was_active:
+            run(['systemctl', 'stop', UNIT], timeout=180)
+
+
+def main() -> int:
+    stdin_text = sys.stdin.read()
+    args = sys.argv[1:]
+    try:
+        if not unit_exists():
+            payload, code = backend(args, stdin_text)
+            return emit(payload, code)
+
+        if ROLE == 'srv-control-minecraft':
+            operation = args[0] if args else ''
+            if operation == 'service':
+                if len(args) < 2 or args[1] not in {'start', 'stop', 'restart'}:
+                    raise RuntimeError('service action must be start, stop or restart')
+                systemctl(args[1])
+                payload, _ = backend(['status'], '')
+                payload['service'] = UNIT
+                payload['active'] = active()
+                payload['healthy'] = bool(payload.get('healthy') and payload['active'])
+                payload['action'] = args[1]
+                return emit(payload)
+            if operation == 'status':
+                payload, code = backend(args, stdin_text)
+                payload['service'] = UNIT
+                payload['active'] = active()
+                payload['healthy'] = bool(payload.get('healthy') and payload['active'])
+                return emit(payload, code)
+            if operation == 'logs':
+                limit = 150
+                if len(args) > 1:
+                    try:
+                        limit = max(20, min(500, int(args[1])))
+                    except Exception:
+                        pass
+                result = run(['journalctl', '-u', UNIT, '-n', str(limit), '--no-pager'], timeout=30)
+                return emit({'ok': True, 'logs': (result.stdout or '').splitlines()[-limit:]})
+            if operation == 'update' and not active():
+                payload, code = with_temporary_service(args, stdin_text)
+                return emit(payload, code)
+
+        if ROLE == 'srv-control-minecraft-worlds' and args and args[0] == 'activate' and not active():
+            payload, code = with_temporary_service(args, stdin_text)
+            return emit(payload, code)
+
+        if ROLE == 'srv-control-minecraft-restore' and args and args[0] == 'restore' and not active():
+            payload, code = with_temporary_service(args, stdin_text)
+            return emit(payload, code)
+
+        payload, code = backend(args, stdin_text)
+        return emit(payload, code)
+    except Exception as exc:
+        return emit({'ok': False, 'error': str(exc)[-5000:]}, 1)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
