@@ -11,7 +11,7 @@
     },
     "apply": {
       "path": "apply.sh",
-      "sha256": "6c277a8f784983408a57ad244c87f4623e3e2d52211a930ea15f3376f6b6f518"
+      "sha256": "342b0d60c71e5501f62c6627ee1cde8d35ed50bd39582925b54a85c4cc283444"
     },
     "acceptance": {
       "path": "acceptance.sh",
@@ -19,7 +19,7 @@
     },
     "rollback": {
       "path": "rollback.sh",
-      "sha256": "644388cde433352b79b9e15144843b2a5ae2868271e5ab80d564ba138836e155"
+      "sha256": "50d60df41127674d308b1c1088d3eafa9dbea4047cf66a511e8a8f3739b952c6"
     }
   }
 }
