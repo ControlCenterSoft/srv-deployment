@@ -1,131 +1,88 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Запустите от root: sudo bash install/install.sh'; exit 1; }
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASE="$ROOT_DIR/install/install-base-1.0.7.sh"
-BASE_UPDATER="$ROOT_DIR/update/control-center-update-base-1.0.7"
-BASE_OS_UPDATER="$ROOT_DIR/update/control-center-os-update-base-1.0.8"
-BASE_MARKET="$ROOT_DIR/market/control-center-market-apply-base-1.0.8"
-TMP="$(mktemp /tmp/control-center-install-1.0.8.XXXXXX)"
-POLICY=/usr/sbin/policy-rc.d
-POLICY_BACKUP="/run/control-center-policy-rc.d.install.$$"
-POLICY_HAD=0
-POLICY_ACTIVE=0
-APT_LOCK=/run/control-center-apt.lock
-
-cleanup(){
-  rm -f "$TMP"
-  if [[ "$POLICY_ACTIVE" == 1 ]]; then
-    rm -f "$POLICY"
-    if [[ "$POLICY_HAD" == 1 && -e "$POLICY_BACKUP" || "$POLICY_HAD" == 1 && -L "$POLICY_BACKUP" ]]; then
-      cp -a "$POLICY_BACKUP" "$POLICY"
-    fi
-    rm -f "$POLICY_BACKUP"
-    POLICY_ACTIVE=0
-  fi
-}
-trap cleanup EXIT
-
-prepare_policy(){
-  [[ "$POLICY_ACTIVE" == 0 ]] || return 0
-  if [[ -e "$POLICY" || -L "$POLICY" ]]; then
-    cp -a "$POLICY" "$POLICY_BACKUP"
-    rm -f "$POLICY"
-    POLICY_HAD=1
-    cat >"$POLICY" <<EOF
-#!/bin/sh
-if [ "\${1:-}" = "dnsmasq" ]; then exit 101; fi
-exec "$POLICY_BACKUP" "\$@"
-EOF
-  else
-    POLICY_HAD=0
-    cat >"$POLICY" <<'EOF'
-#!/bin/sh
-if [ "${1:-}" = "dnsmasq" ]; then exit 101; fi
-exit 0
-EOF
-  fi
-  chmod 0755 "$POLICY"
-  POLICY_ACTIVE=1
-}
-
-restore_policy(){
-  [[ "$POLICY_ACTIVE" == 1 ]] || return 0
-  rm -f "$POLICY"
-  if [[ "$POLICY_HAD" == 1 && ( -e "$POLICY_BACKUP" || -L "$POLICY_BACKUP" ) ]]; then
-    cp -a "$POLICY_BACKUP" "$POLICY"
-  fi
-  rm -f "$POLICY_BACKUP"
-  POLICY_ACTIVE=0
-}
-
-repair_package_database(){
-  install -d -o root -g root -m 0700 /var/lib/control-center-root
-  local log=/var/lib/control-center-root/upgrade-preflight-1.0.8.log
-  exec 7>"$APT_LOCK"
-  flock -w 900 7 || { echo 'Менеджер пакетов занят более 15 минут.' >&2; return 75; }
-  export DEBIAN_FRONTEND=noninteractive
-  prepare_policy
-  {
-    echo "[$(date -Is)] Control Center 1.0.8 build 20260819.2 package preflight"
-    dpkg --audit || true
-    dpkg --configure -a || true
-    apt-get -f install -y
-    dpkg --configure -a
-    dpkg --audit || true
-  } 2>&1 | tee -a "$log"
-  restore_policy
-  flock -u 7
-}
-
-[[ -f "$BASE" ]] || { echo 'Отсутствует install/install-base-1.0.7.sh' >&2; exit 1; }
-[[ -f "$BASE_UPDATER" ]] || { echo 'Отсутствует update/control-center-update-base-1.0.7' >&2; exit 1; }
-[[ -f "$BASE_OS_UPDATER" ]] || { echo 'Отсутствует update/control-center-os-update-base-1.0.8' >&2; exit 1; }
-[[ -f "$BASE_MARKET" ]] || { echo 'Отсутствует market/control-center-market-apply-base-1.0.8' >&2; exit 1; }
-
-# 1.0.6 could leave dnsmasq configured by dpkg while apt itself returned code 100.
-# Repair the package database first, without starting dnsmasq and without deleting
-# any dnsmasq configuration. This also repairs unrelated half-configured packages.
-repair_package_database
-
-install -d -m 0755 /usr/local/lib/control-center
-install -m 0755 "$BASE_UPDATER" /usr/local/lib/control-center/control-center-update-base-1.0.7
-install -m 0755 "$BASE_OS_UPDATER" /usr/local/lib/control-center/control-center-os-update-base-1.0.8
-install -m 0755 "$BASE_MARKET" /usr/local/lib/control-center/control-center-market-apply-base-1.0.8
+BASE="$ROOT_DIR/install/install-base-1.0.8.sh"
+TMP="$(mktemp /tmp/control-center-install-1.0.9.XXXXXX)"
+OLD_WEB_ENV="$(cat /etc/control-center/web.env 2>/dev/null || true)"
+trap 'rm -f "$TMP"' EXIT
+[[ -f "$BASE" ]] || { echo 'Отсутствует install/install-base-1.0.8.sh' >&2; exit 1; }
 
 python3 - "$BASE" "$TMP" <<'PY'
 from pathlib import Path
 import sys
-src,dst=map(Path,sys.argv[1:])
-text=src.read_text()
+src,dst=map(Path,sys.argv[1:]);text=src.read_text()
 old_root='ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"'
-new_root='ROOT_DIR="${CONTROL_CENTER_RELEASE_ROOT:?}"'
 if old_root not in text:
-    raise SystemExit('Base installer ROOT_DIR marker not found')
-text=text.replace(old_root,new_root,1)
-if 'VERSION=1.0.7' not in text or 'BUILD=20260818.2' not in text:
-    raise SystemExit('Base installer version/build markers not found')
-text=text.replace('VERSION=1.0.7','VERSION=1.0.8',1)
-text=text.replace('BUILD=20260818.2','BUILD=20260819.2',1)
+    raise SystemExit('Base 1.0.8 ROOT_DIR marker not found')
+text=text.replace(old_root,'ROOT_DIR="${CONTROL_CENTER_RELEASE_ROOT:?}"',1)
+text=text.replace('Control Center 1.0.8 build 20260819.2','Control Center 1.0.9 build 20260819.3')
+text=text.replace("'VERSION=1.0.7','VERSION=1.0.8'","'VERSION=1.0.7','VERSION=1.0.9'")
+text=text.replace("'BUILD=20260818.2','BUILD=20260819.2'","'BUILD=20260818.2','BUILD=20260819.3'")
+text=text.replace('control-center-install-1.0.8.','control-center-install-1.0.9.')
 dst.write_text(text)
 PY
 chmod 0755 "$TMP"
 CONTROL_CENTER_RELEASE_ROOT="$ROOT_DIR" bash "$TMP" "$@"
 
-cat >/etc/systemd/system/control-center-update-now.path <<'UNIT'
+install -m 0755 "$ROOT_DIR/system/control-center-web-run" /usr/local/sbin/control-center-web-run
+install -m 0755 "$ROOT_DIR/system/control-center-web-apply" /usr/local/sbin/control-center-web-apply
+
+PORT="$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env | head -1)"; PORT="${PORT:-8080}"
+SSL="$(printf '%s\n' "$OLD_WEB_ENV" | sed -n 's/^CONTROL_CENTER_SSL=//p' | head -1)"; SSL="${SSL:-0}"
+STANDARD="$(printf '%s\n' "$OLD_WEB_ENV" | sed -n 's/^CONTROL_CENTER_STANDARD_PORT=//p' | head -1)"; STANDARD="${STANDARD:-0}"
+CERT=/etc/control-center/tls/server.crt
+KEY=/etc/control-center/tls/server.key
+cat >/etc/control-center/web.env <<EOF
+CONTROL_CENTER_PORT=$PORT
+CONTROL_CENTER_SSL=$SSL
+CONTROL_CENTER_STANDARD_PORT=$STANDARD
+CONTROL_CENTER_CERT=$CERT
+CONTROL_CENTER_KEY=$KEY
+EOF
+chown root:root /etc/control-center/web.env; chmod 0600 /etc/control-center/web.env
+
+cat >/etc/systemd/system/control-center.service <<'UNIT'
 [Unit]
-Description=Control Center manual update request watcher
-
-[Path]
-PathExists=/var/lib/control-center/update-now
-Unit=control-center-update.service
-
+Description=Control Center web interface
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+[Service]
+Type=simple
+User=control-center
+Group=control-center
+WorkingDirectory=/opt/control-center/app
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-/etc/control-center/database.env
+EnvironmentFile=-/etc/control-center/web.env
+ExecStart=/usr/local/sbin/control-center-web-run
+Restart=on-failure
+RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/control-center
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
+InaccessiblePaths=/var/lib/control-center-root
 [Install]
 WantedBy=multi-user.target
 UNIT
-rm -f /var/lib/control-center/update-now
-systemctl daemon-reload
-systemctl enable --now control-center-update-now.path
 
-echo 'Control Center 1.0.8 build 20260819.2: legacy updater compatibility and package repair enabled.'
+systemctl daemon-reload
+systemctl restart control-center
+SCHEME=http; CURL=(-fsS --max-time 3)
+if [[ "$SSL" == 1 || "$SSL" == true ]]; then SCHEME=https; CURL=(-kfsS --max-time 3); fi
+for _ in $(seq 1 20); do if curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi; sleep 1; done
+curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null
+
+echo 'Control Center 1.0.9 build 20260819.3 установлен.'
+echo "Web UI: $SCHEME://SERVER:$PORT"
+echo 'Samba AD-DC: schema/preflight prepared; provisioning remains disabled.'

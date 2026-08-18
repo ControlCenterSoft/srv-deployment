@@ -12,59 +12,31 @@
 <div class="mobile-backdrop" id="mobileBackdrop"></div>
 <div class="app-shell">
   <aside class="sidebar" id="sidebar">
-    <div class="brand">
-      <div class="brand-mark">C</div>
-      <div class="brand-copy"><strong>CONTROL CENTER</strong><small id="editionBadge">HOME · {{ version }}</small></div>
-      <button class="sidebar-close" id="sidebarClose" type="button" aria-label="Закрыть меню">×</button>
-    </div>
+    <div class="brand"><div class="brand-mark">C</div><div class="brand-copy"><strong>CONTROL CENTER</strong><small id="editionBadge">HOME · {{ version }}</small></div><button class="sidebar-close" id="sidebarClose" type="button" aria-label="Закрыть меню">×</button></div>
     <nav aria-label="Основное меню">
-      <button class="nav-item active" data-tab="system" data-title="Система">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4M7 9h2M11 9h6"/></svg><span>Система</span>
-      </button>
-      <button class="nav-item" data-tab="networks" data-title="Сети">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7.5 11 16.5 7M7.5 13l9 4"/></svg><span>Сети</span>
-      </button>
-      <button id="dhcpNav" class="nav-item hidden" data-tab="dhcp" data-title="DHCP">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h4M7 13h7M17 9h.01M17 13h.01"/></svg><span>DHCP</span>
-      </button>
-      <button class="nav-item" data-tab="market" data-title="Маркет">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16l-1 12H5L4 8Z"/><path d="M8 8a4 4 0 0 1 8 0"/></svg><span>Маркет</span>
-      </button>
-      <button class="nav-item" data-tab="rbac" data-title="RBAC">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M17 10v6M14 13h6"/></svg><span>RBAC</span>
-      </button>
-      <button class="nav-item" data-tab="settings" data-title="Настройки">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.8-1L14.4 3h-4.8l-.4 3.1a7 7 0 0 0-1.8 1L5 6.1 3 9.5 5.1 11a7 7 0 0 0 0 2L3 14.5 5 18l2.4-1a7 7 0 0 0 1.8 1l.4 3h4.8l.4-3a7 7 0 0 0 1.8-1l2.4 1 2-3.5-2.1-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Настройки</span>
-      </button>
+      <button class="nav-item active" data-tab="system" data-title="Система"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4M7 9h2M11 9h6"/></svg><span>Система</span></button>
+      <button class="nav-item" data-tab="networks" data-title="Сети"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7.5 11 16.5 7M7.5 13l9 4"/></svg><span>Сети</span></button>
+      <button id="dhcpNav" class="nav-item hidden" data-tab="dhcp" data-title="DHCP"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h4M7 13h7M17 9h.01M17 13h.01"/></svg><span>DHCP</span></button>
+      <button class="nav-item" data-tab="market" data-title="Маркет"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16l-1 12H5L4 8Z"/><path d="M8 8a4 4 0 0 1 8 0"/></svg><span>Маркет</span></button>
+      <button class="nav-item" data-tab="rbac" data-title="RBAC"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M17 10v6M14 13h6"/></svg><span>RBAC</span></button>
+      <button class="nav-item" data-tab="settings" data-title="Настройки"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.8-1L14.4 3h-4.8l-.4 3.1a7 7 0 0 0-1.8 1L5 6.1 3 9.5 5.1 11a7 7 0 0 0 0 2L3 14.5 5 18l2.4-1a7 7 0 0 0 1.8 1l.4 3h4.8l.4-3a7 7 0 0 0 1.8-1l2.4 1 2-3.5-2.1-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Настройки</span></button>
     </nav>
     <div class="sidebar-footer"><div class="edition-avatar">C</div><div class="edition-copy"><b id="sidebarEdition">Home</b><small>Редакция</small></div></div>
   </aside>
 
   <main class="main">
-    <header class="topbar">
-      <button class="hamb" id="sidebarToggle" type="button" aria-label="Открыть меню" aria-expanded="false">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-      </button>
-      <input id="menuSearch" class="search" type="search" placeholder="Поиск раздела (Ctrl + K)" aria-label="Поиск по разделам">
-      <div class="top-actions">
-        <button class="bell neutral" id="notificationBell" type="button" aria-label="Уведомления" aria-expanded="false">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
-          <span id="notificationCount" class="bell-count hidden">0</span>
-        </button>
-        <div class="top-status"><span>● Система работает</span><b id="topVersion">Control Center {{ version }} Home</b></div>
-      </div>
-    </header>
+    <header class="topbar"><button class="hamb" id="sidebarToggle" type="button" aria-label="Открыть меню" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><input id="menuSearch" class="search" type="search" placeholder="Поиск раздела (Ctrl + K)" aria-label="Поиск по разделам"><div class="top-actions"><button class="bell neutral" id="notificationBell" type="button" aria-label="Уведомления" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span id="notificationCount" class="bell-count hidden">0</span></button><div class="top-status"><span>● Система работает</span><b id="topVersion">Control Center {{ version }} Home</b></div></div></header>
 
     <div class="content">
       <section id="system" class="panel active">
         <div class="page-head"><div><h1>Обзор системы</h1><p>Состояние сервера и ресурсов в реальном времени</p></div><span class="status-pill ok">● Система работает</span></div>
-        <div class="summary-grid">
-          <article><small>CPU</small><strong id="cpuValue">—</strong><canvas id="cpuChart" width="360" height="96"></canvas></article>
-          <article><small>RAM</small><strong id="ramValue">—</strong><canvas id="ramChart" width="360" height="96"></canvas></article>
-          <article><small>Хранилище</small><strong id="storageValue">—</strong><div id="storageBars"></div></article>
-          <article><small>WAN</small><strong id="wanValue">—</strong><canvas id="wanChart" width="360" height="96"></canvas><div class="wanline"><span>↓ RX <b id="wanRx">0 B/s</b></span><span>↑ TX <b id="wanTx">0 B/s</b></span></div></article>
+        <div class="summary-grid dashboard-grid-109">
+          <article class="dashboard-card-109"><small>CPU</small><strong id="cpuValue">—</strong><canvas id="cpuChart" width="360" height="92"></canvas><div class="metric-top-title">Топ по CPU</div><div id="topCpuProcesses" class="metric-top-list"></div></article>
+          <article class="dashboard-card-109"><small>RAM</small><strong id="ramValue">—</strong><canvas id="ramChart" width="360" height="92"></canvas><div class="metric-top-title">Топ по RAM</div><div id="topRamProcesses" class="metric-top-list"></div></article>
+          <article class="dashboard-card-109 storage-card-109"><small>Хранилище</small><strong id="storageValue">—</strong><div class="storage-visual-109"><canvas id="storageChart" width="180" height="180"></canvas><div id="storageLegend" class="storage-legend-109"></div></div></article>
+          <article class="dashboard-card-109"><small>LAN</small><strong id="lanValue">—</strong><canvas id="lanChart" width="360" height="92"></canvas><div class="wanline"><span>↓ RX <b id="lanRx">0 B/s</b></span><span>↑ TX <b id="lanTx">0 B/s</b></span></div></article>
         </div>
-        <div class="two-col"><article class="section-card"><h3>Топ процессов</h3><div id="topProcesses"></div></article><article class="section-card"><h3>Система</h3><div id="systemDetails" class="detail-list"></div></article></div>
+        <article class="section-card system-card-109"><h3>Система</h3><div id="systemDetails" class="detail-list detail-grid-109"></div></article>
       </section>
 
       <section id="networks" class="panel">
@@ -74,63 +46,35 @@
           <article class="section-card"><div class="card-title-row"><h3>LAN</h3><span id="lanLiveState" class="status-pill compact">—</span></div><label>Интерфейс<select id="lanInterface"></select></label><div class="live-hint" id="lanLiveHint">—</div><div class="radio"><label><input type="radio" name="lanMethod" value="dhcp" checked> DHCP</label><label><input type="radio" name="lanMethod" value="static"> Static</label></div><div id="lanStatic" class="static-fields"><label>IP<input id="lanIp" placeholder="192.168.10.1"></label><label>Маска<input id="lanMask" placeholder="24"></label><label>Шлюз<input id="lanGateway" placeholder="необязательно"></label><label>DNS<input id="lanDns" placeholder="192.168.10.1, 1.1.1.1"></label></div></article>
         </div>
         <div class="button-row"><button class="primary" id="applyNetwork">Проверить и применить</button><span class="inline-message" id="networkMessage"></span></div>
-        <article class="section-card interface-card"><div class="card-title-row"><div><h3>Сетевые интерфейсы</h3><p>Фактическое состояние, считанное с сервера</p></div><button class="secondary compact-button" id="refreshNetworks">Обновить</button></div><div class="table-scroll"><table><thead><tr><th>Роль</th><th>Интерфейс</th><th>Тип</th><th>Состояние</th><th>IPv4</th><th>Шлюз</th><th>DNS</th><th>MAC</th><th>MTU</th><th>Скорость</th></tr></thead><tbody id="interfacesTable"></tbody></table></div></article>
+        <article class="section-card interface-card"><div class="card-title-row"><div><h3>Сетевые интерфейсы</h3><p>Фактическое состояние, считанное с сервера</p></div><button class="secondary compact-button" id="refreshNetworks">Обновить</button></div><div class="table-scroll"><table><thead><tr><th>Роль</th><th>Интерфейс</th><th>Тип</th><th>Состояние</th><th>IPv4</th><th>Шлюз</th><th>DNS</th><th>MAC</th><th>MTU</th><th>Скорость</th></tr></thead><tbody id="interfacesTable"></tbody></table></div><div class="pager" id="interfacesPager"></div></article>
       </section>
 
-      <section id="market" class="panel">
-        <div class="page-head"><div><h1>Маркет</h1><p>Установка и удаление серверных сервисов</p></div></div>
-        <div class="service-grid" id="marketList"></div><div class="inline-message" id="marketMessage"></div>
-      </section>
+      <section id="market" class="panel"><div class="page-head"><div><h1>Маркет</h1><p>Установка и удаление серверных сервисов</p></div></div><div class="service-grid" id="marketList"></div><div class="pager" id="marketPager"></div><div class="inline-message" id="marketMessage"></div></section>
 
       <section id="dhcp" class="panel">
         <div class="page-head"><div><h1>DHCP</h1><p>Текущая конфигурация DHCP Server и дополнительные параметры</p></div><span class="status-pill" id="dhcpServiceStatus">—</span></div>
         <div class="two-col dhcp-layout">
-          <article class="section-card form-card">
-            <div class="card-title-row"><h3>Основные параметры</h3><span class="source-pill" id="dhcpSource">—</span></div>
-            <div class="form-grid">
-              <label>Интерфейс<select id="dhcpInterface"></select></label>
-              <label>Начало диапазона<input id="dhcpStart" placeholder="192.168.10.100"></label>
-              <label>Конец диапазона<input id="dhcpEnd" placeholder="192.168.10.200"></label>
-              <label>Маска<input id="dhcpMask" placeholder="255.255.255.0 или 24"></label>
-              <label>Шлюз<input id="dhcpGateway" placeholder="192.168.10.1"></label>
-              <label>DNS<input id="dhcpDns" placeholder="192.168.10.1, 1.1.1.1"></label>
-              <label>Аренда, минут<input id="dhcpLease" type="number" min="10" max="10080" value="720"></label>
-            </div>
-            <div class="button-row"><button class="primary" id="saveDhcp">Сохранить DHCP</button><button class="secondary" id="checkDhcp">Проверить конфигурацию</button></div>
-            <div class="inline-message" id="dhcpMessage"></div>
-            <pre class="check-output hidden" id="dhcpCheckOutput"></pre>
-          </article>
-          <article class="section-card">
-            <h3>Дополнительные DHCP параметры</h3><p class="section-description">Код DHCP option и его значение. Параметры 1, 3, 6 и 51 управляются основными полями.</p>
-            <div class="option-add"><label>Код<input id="dhcpOptionCode" type="number" min="1" max="254" placeholder="66"></label><label>Значение<input id="dhcpOptionValue" placeholder="192.168.10.2"></label><button class="secondary" id="addDhcpOption">Добавить</button></div>
-            <div class="table-scroll"><table><thead><tr><th>Код</th><th>Значение</th><th></th></tr></thead><tbody id="dhcpOptionsTable"></tbody></table></div>
-            <div class="empty-state hidden" id="dhcpOptionsEmpty">Дополнительные параметры не настроены.</div>
-          </article>
+          <article class="section-card form-card"><div class="card-title-row"><h3>Основные параметры</h3><span class="source-pill" id="dhcpSource">—</span></div><div class="form-grid"><label>Интерфейс<select id="dhcpInterface"></select></label><label>Начало диапазона<input id="dhcpStart" placeholder="192.168.10.100"></label><label>Конец диапазона<input id="dhcpEnd" placeholder="192.168.10.200"></label><label>Маска<input id="dhcpMask" placeholder="255.255.255.0 или 24"></label><label>Шлюз<input id="dhcpGateway" placeholder="192.168.10.1"></label><label>DNS<input id="dhcpDns" placeholder="192.168.10.1, 1.1.1.1"></label><label>Аренда, минут<input id="dhcpLease" type="number" min="10" max="10080" value="720"></label></div><div class="button-row"><button class="primary" id="saveDhcp">Сохранить DHCP</button><button class="secondary" id="checkDhcp">Проверить конфигурацию</button></div><div class="inline-message" id="dhcpMessage"></div><pre class="check-output hidden" id="dhcpCheckOutput"></pre></article>
+          <article class="section-card"><h3>Дополнительные DHCP параметры</h3><p class="section-description">Код DHCP option и его значение. Параметры 1, 3, 6 и 51 управляются основными полями.</p><div class="option-add"><label>Код<input id="dhcpOptionCode" type="number" min="1" max="254" placeholder="66"></label><label>Значение<input id="dhcpOptionValue" placeholder="192.168.10.2"></label><button class="secondary" id="addDhcpOption">Добавить</button></div><div class="table-scroll"><table><thead><tr><th>Код</th><th>Значение</th><th></th></tr></thead><tbody id="dhcpOptionsTable"></tbody></table></div><div class="pager" id="dhcpOptionsPager"></div><div class="empty-state hidden" id="dhcpOptionsEmpty">Дополнительные параметры не настроены.</div></article>
         </div>
       </section>
 
-      <section id="rbac" class="panel">
-        <div class="page-head"><div><h1>RBAC</h1><p>Локальные пользователи и группы Linux</p></div></div>
-        <div class="two-col"><article class="section-card"><h3>Пользователи</h3><div id="users"></div></article><article class="section-card"><h3>Группы</h3><div id="groups"></div></article></div>
-      </section>
+      <section id="rbac" class="panel"><div class="page-head"><div><h1>RBAC</h1><p>Локальные пользователи и группы Linux</p></div></div><div class="two-col"><article class="section-card"><h3>Пользователи</h3><div id="users"></div><div class="pager" id="usersPager"></div></article><article class="section-card"><h3>Группы</h3><div id="groups"></div><div class="pager" id="groupsPager"></div></article></div></section>
 
       <section id="settings" class="panel">
         <div class="page-head"><div><h1>Настройки</h1><p>Редакция, PostgreSQL, Web-панель и обновления</p></div></div>
         <div class="two-col">
           <article class="section-card form-card"><h3>Редакция Control Center</h3><div class="detail-list"><div><span>Текущая редакция</span><b id="licenseEdition">Home</b></div><div><span>Версия</span><b>{{ version }}</b></div><div><span>Сборка</span><b>{{ build }}</b></div><div><span>ID устройства</span><b id="deviceId">—</b></div><div><span>Лицензия</span><b id="licenseId">Не активирована</b></div></div><h3>Активация Professional</h3><label>Payload<input id="licensePayload" placeholder="Код payload" autocomplete="off"></label><label>Signature<input id="licenseSignature" placeholder="Подпись" autocomplete="off"></label><button class="primary" id="activateProfessional">Активировать Professional</button><span class="inline-message" id="licenseMessage"></span></article>
           <article class="section-card form-card"><h3>Обновления Control Center</h3><label class="switch-row">Автоматические обновления <input id="autoUpdates" type="checkbox"></label><label>Интервал проверки, минут<input id="updateInterval" type="number" min="5" max="10080" value="60"></label><div class="button-row"><button class="primary" id="saveSettings">Сохранить</button><button class="secondary" id="checkUpdate">Проверить обновление</button></div><span class="inline-message" id="settingsMessage"></span><hr><h3>Обновления ОС и пакетов</h3><label class="switch-row">Автоматически <input id="autoOsUpdates" type="checkbox"></label><label>Интервал, минут<input id="osUpdateInterval" type="number" min="60" max="10080" value="1440"></label><div class="button-row"><button class="primary" id="saveOsUpdates">Сохранить</button><button class="secondary" id="runOsUpdate">Обновить сейчас</button></div><span class="inline-message" id="osUpdateMessage"></span></article>
-          <article class="section-card form-card"><div class="card-title-row"><h3>Web-панель</h3><span class="status-pill compact" id="webPortStatus">—</span></div><div class="detail-list"><div><span>Текущий порт</span><b id="webRuntimePort">—</b></div><div><span>Сохранённый порт</span><b id="webSavedPort">—</b></div></div><label>Порт Control Center<input id="webPort" type="number" min="1024" max="65535" value="8080"></label><p class="section-description">После изменения Gunicorn будет перезапущен. Текущее соединение с Web UI может прерваться; затем откройте панель на новом порту.</p><button class="primary" id="saveWebPort">Применить порт</button><span class="inline-message" id="webPortMessage"></span></article>
-          <article class="section-card"><div class="card-title-row"><h3>PostgreSQL</h3><span class="status-pill compact" id="dbStatus">—</span></div><div class="detail-list"><div><span>Сервер</span><b id="dbVersion">—</b></div><div><span>База</span><b id="dbName">—</b></div><div><span>Роль</span><b id="dbRole">—</b></div><div><span>Схема</span><b id="dbSchema">—</b></div><div><span>Migration</span><b id="dbMigration">—</b></div><div><span>Узлы</span><b id="dbNodes">—</b></div><div><span>Режим</span><b id="dbMode">—</b></div></div><p class="section-description">Локальная БД работает через Unix socket. Схема 1.0.7 уже содержит модель узлов для будущего Professional Cluster; удалённый PostgreSQL в этом релизе автоматически не открывается.</p></article>
+          <article class="section-card form-card"><div class="card-title-row"><h3>Web-панель</h3><span class="status-pill compact" id="webPortStatus">—</span></div><div class="detail-list"><div><span>Адрес</span><b id="webRuntimeUrl">—</b></div><div><span>Текущий порт</span><b id="webRuntimePort">—</b></div><div><span>SSL</span><b id="webRuntimeSsl">—</b></div></div><label class="switch-row">Стандартный порт (80 / 443 для HTTPS) <input id="webStandardPort" type="checkbox"></label><label class="switch-row">Включить SSL / HTTPS <input id="webSsl" type="checkbox"></label><label id="webCustomPortLabel">Пользовательский порт<input id="webPort" type="number" min="1024" max="65535" value="8080"></label><p class="section-description">HTTP со стандартным портом использует 80. При SSL стандартным становится 443. На первом этапе Control Center создаёт локальный самоподписанный сертификат; браузер может показать предупреждение доверия.</p><div class="detail-list"><div><span>Сертификат</span><b id="webCertificate">—</b></div></div><button class="primary" id="saveWebPort">Применить Web-параметры</button><span class="inline-message" id="webPortMessage"></span></article>
+          <article class="section-card"><div class="card-title-row"><h3>PostgreSQL</h3><span class="status-pill compact" id="dbStatus">—</span></div><div class="detail-list"><div><span>Сервер</span><b id="dbVersion">—</b></div><div><span>База</span><b id="dbName">—</b></div><div><span>Роль</span><b id="dbRole">—</b></div><div><span>Схема</span><b id="dbSchema">—</b></div><div><span>Migration</span><b id="dbMigration">—</b></div><div><span>Узлы</span><b id="dbNodes">—</b></div><div><span>Режим</span><b id="dbMode">—</b></div></div></article>
+          <article class="section-card samba-preflight-card"><div class="card-title-row"><div><h3>Samba AD-DC · подготовка</h3><p>Проверка будущего доменного контроллера без установки Samba.</p></div><span class="status-pill compact neutral-status" id="sambaReadyStatus">—</span></div><div id="sambaPreflightChecks" class="preflight-list"></div><button class="secondary" id="runSambaPreflight">Проверить готовность</button><span class="inline-message" id="sambaPreflightMessage"></span></article>
         </div>
       </section>
     </div>
   </main>
 </div>
 
-<aside class="notification-drawer" id="notificationDrawer" aria-hidden="true">
-  <div class="notification-head"><div><h2>Уведомления</h2><p>Сеть, сервисы, задания и обновления · PostgreSQL</p></div><button id="closeNotifications" class="icon-button" type="button" aria-label="Закрыть">×</button></div>
-  <div class="notification-actions"><button class="secondary" id="markNotificationsRead">Отметить все прочитанными</button></div>
-  <div id="notificationList" class="notification-list"></div>
-</aside>
+<aside class="notification-drawer" id="notificationDrawer" aria-hidden="true"><div class="notification-head"><div><h2>Уведомления</h2><p>Сеть, сервисы, задания и обновления · PostgreSQL</p></div><button id="closeNotifications" class="icon-button" type="button" aria-label="Закрыть">×</button></div><div class="notification-actions"><button class="secondary" id="markNotificationsRead">Отметить все прочитанными</button></div><div id="notificationList" class="notification-list"></div><div class="pager" id="notificationsPager"></div></aside>
 </body>
 </html>

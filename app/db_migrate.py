@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 import hashlib
 import os
+import re
 from pathlib import Path
 
 import psycopg
 
 DSN = os.getenv('CONTROL_CENTER_DB_DSN', 'dbname=control_center user=control-center host=/var/run/postgresql')
 MIGRATIONS = Path(__file__).resolve().parent / 'migrations'
+
+
+def transaction_body(sql: str) -> str:
+    """Execute legacy BEGIN/COMMIT-wrapped files inside the runner transaction.
+
+    The checksum is always calculated from the original file. Only the execution
+    payload is normalized, so already-applied migration checksums remain stable.
+    """
+    match = re.fullmatch(r'\s*BEGIN\s*;\s*(.*?)\s*COMMIT\s*;\s*', sql, flags=re.I | re.S)
+    return match.group(1) if match else sql
 
 
 def main():
@@ -32,10 +43,16 @@ def main():
                 if row[0] != checksum:
                     raise SystemExit(f'Migration {version} checksum mismatch')
                 print(f'SKIP {path.name}')
+                conn.commit()
                 continue
+            # SELECT above starts an implicit transaction. Close it before the
+            # explicit migration transaction so conn.transaction() is top-level,
+            # not a savepoint. This also avoids Psycopg version-dependent nested
+            # transaction behaviour for multi-statement migration scripts.
+            conn.commit()
             try:
                 with conn.transaction():
-                    conn.execute(sql, prepare=False)
+                    conn.execute(transaction_body(sql), prepare=False)
                     conn.execute(
                         'INSERT INTO control_center.schema_migrations(version,name,checksum) VALUES(%s,%s,%s)',
                         (version, path.name, checksum),

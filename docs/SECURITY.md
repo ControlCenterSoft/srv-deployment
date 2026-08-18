@@ -1,26 +1,26 @@
-# Безопасность Control Center 1.0.7
+# Безопасность Control Center 1.0.9
 
 ## Разделение привилегий
 
-Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные изменения выполняются отдельными systemd workers: сеть, Market/DHCP, лицензирование, обновления и новая смена Web-порта.
+Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные изменения выполняются отдельными systemd workers: сеть, Market/DHCP, лицензирование, обновления и Web runtime.
 
-Web UI создаёт pending requests в Web-writable state, но root helpers повторно валидируют критичные параметры перед применением.
+Web UI создаёт pending requests в Web-writable state, а root helpers повторно валидируют критичные параметры перед применением.
 
 ## State
 
 ```text
-/var/lib/control-center          # Web-writable compatibility settings + pending requests
+/var/lib/control-center          # Web-writable settings + pending requests
 /var/lib/control-center-system   # root:control-center applied state/status/modules
 /var/lib/control-center-root     # root:root 0700 rollback
 /var/lib/control-center-license  # root:control-center validated license
-PostgreSQL control_center        # application data, history and management state
+PostgreSQL control_center        # application data/history/management state
 ```
 
-PostgreSQL не заменяет protected root state и системные конфигурационные файлы.
+PostgreSQL не заменяет protected root state и фактические Linux-конфигурации.
 
 ## PostgreSQL
 
-Локальная модель 1.0.7:
+Локальная модель:
 
 ```text
 database: control_center
@@ -29,56 +29,67 @@ transport: Unix socket /var/run/postgresql
 auth: peer
 ```
 
-PostgreSQL роль создаётся как `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION`. Пароль БД в Web-приложении не хранится. Control Center 1.0.7 не меняет `listen_addresses`, не открывает PostgreSQL TCP listener и не создаёт firewall rule для внешней БД.
+Роль: `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION`. Пароль БД в приложении не хранится. Control Center не открывает внешний PostgreSQL listener автоматически.
 
-`/etc/control-center/database.env` хранится `root:root 0600` и содержит локальный DSN, а не пароль.
+## Standard ports без root Web-process
 
-Future Professional Cluster потребует отдельного security design: enrollment, TLS, cluster identity, replication credentials, authorization, quorum/failover и backup policy. Наличие таблицы `cluster_nodes` не означает готового сетевого кластера.
+Для HTTP/HTTPS стандартных портов `80/443` Web service получает только capability:
+
+```text
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+```
+
+`User=control-center` и `NoNewPrivileges=true` сохраняются. Полные root-права Gunicorn не получает.
+
+## HTTPS 1.0.9
+
+При первом включении SSL root helper создаёт локальную пару:
+
+```text
+/etc/control-center/tls/server.crt
+/etc/control-center/tls/server.key
+```
+
+Private key имеет `root:control-center 0640`. Certificate содержит hostname/localhost/IP SAN и используется Gunicorn только для TLS termination Web UI.
+
+Self-signed сертификат **шифрует соединение, но не подтверждает доверие браузера автоматически**. Предупреждение браузера ожидаемо, пока сертификат не добавлен в доверенные либо не внедрён ACME/пользовательский сертификат.
+
+HTTPS **не заменяет authentication/authorization**.
+
+## Web runtime apply/rollback
+
+Root helper проверяет порт, при необходимости создаёт TLS material, обновляет root-owned env/protected config/PostgreSQL settings, перезапускает Web service и выполняет HTTP/HTTPS localhost health-check. При ошибке возвращается предыдущий runtime.
+
+Control Center не меняет внешний firewall, NAT или ACL автоматически.
+
+## Samba AD-DC preparation
+
+Migration `002` создаёт только operational schema/preflight history. Plaintext Administrator/domain secrets туда не записываются.
+
+1.0.9 не выполняет `samba-tool domain provision`, DNS cutover или изменение realm. Это намеренно оставлено отдельному релизу с backup/rollback и secret-handling design.
+
+Preflight проверяет prerequisites, но `ready=true` **не означает**, что домен уже создан или безопасно готов к production provisioning.
 
 ## Database migrations
 
-`schema_migrations` хранит SHA-256 checksum каждого применённого migration. Уже применённый migration нельзя тихо заменить новым SQL под тем же номером: runner завершится ошибкой checksum mismatch.
+`schema_migrations` хранит SHA-256 checksum каждого migration. Изменение уже применённого SQL под тем же номером приводит к checksum mismatch.
 
-## Audit
+## Audit и уведомления
 
-State-changing `/api/*` запросы записываются в `control_center.audit_events`: endpoint/action, HTTP status, remote address и технические details. До появления встроенной Web-аутентификации это не является полноценным user-attribution audit trail.
-
-## Уведомления
-
-Read/unread в 1.0.7 хранится server-side в `control_center.notification_events`, а не localStorage браузера. Это делает состояние единым для разных браузеров, но до пользовательской аутентификации read-state общий для всей установки Control Center.
-
-## Read-only live configuration
-
-Web service имеет только чтение:
-
-```text
-/etc/netplan/90-control-center.yaml
-/etc/dnsmasq.d/control-center-dhcp.conf
-```
-
-Изменение выполняют root helpers.
-
-## Web-порт
-
-Настраиваемый порт `1024–65535` не применяется непосредственно Web-процессом. Root helper:
-
-- повторно проверяет порт;
-- проверяет bind;
-- обновляет root-owned `/etc/control-center/web.env`;
-- синхронизирует PostgreSQL setting;
-- перезапускает Gunicorn;
-- выполняет localhost health-check;
-- возвращает старый порт при ошибке.
-
-Смена порта не включает HTTPS, authentication или firewall rules.
+State-changing `/api/*` запросы записываются в PostgreSQL audit. Read/unread уведомлений также server-side. До появления встроенной Web-аутентификации это не полноценный user-attribution audit trail.
 
 ## Production Web runtime
 
 Gunicorn через `wsgi:app` с CSP `script-src 'self'`, nosniff, frame denial, Referrer/Permissions/COOP headers, no-store для API/HTML, same-origin guard и 64 KiB request limit.
 
-## Systemd hardening Web UI
+## Systemd hardening
 
 ```text
+User=control-center
+Group=control-center
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -89,23 +100,18 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center
-ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
 InaccessiblePaths=/var/lib/control-center-root
 ```
 
 ## Известное ограничение
 
-В 1.0.7 встроенная Web-аутентификация всё ещё отсутствует. PostgreSQL-backed audit и server-side notifications не заменяют authentication/authorization.
-
-Административный Web-порт — 8080 или пользовательский — должен быть доступен только из доверенной LAN/VPN/firewall либо через защищённый reverse proxy.
+Встроенная Web-аутентификация пока отсутствует. Даже при HTTPS административный интерфейс должен быть доступен только из доверенной LAN/VPN/firewall либо через reverse proxy с аутентификацией.
 
 ## Проверка
 
 ```bash
-sudo bash scripts/acceptance-1.0.7.sh
+sudo bash scripts/acceptance-1.0.9.sh
 systemctl cat control-center
 sudo -u control-center psql -d control_center -c 'select current_user,current_database();'
-ss -ltnp | grep postgres
+sudo cat /etc/control-center/web.env
 ```
-
-При стандартной конфигурации Control Center не должен создавать внешний PostgreSQL listener специально для продукта.

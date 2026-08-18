@@ -1,0 +1,33 @@
+{
+  "product": "Control Center",
+  "release": "1.0.9",
+  "build": "20260819.3",
+  "channel": "production",
+  "upgrade_from": ["1.0.8", "1.0.7", "1.0.6", "clean install"],
+  "database": {
+    "engine": "PostgreSQL",
+    "schema_migration": "002",
+    "cluster_ready": true
+  },
+  "components": [
+    "unified-pagination",
+    "cpu-top-processes",
+    "ram-top-processes",
+    "storage-donut",
+    "lan-live-traffic",
+    "standard-http-port-80",
+    "standard-https-port-443",
+    "ssl-self-signed-runtime",
+    "web-runtime-rollback",
+    "samba-ad-dc-schema-preparation",
+    "samba-ad-dc-preflight"
+  ],
+  "notes": [
+    "Long tables and lists use a shared pagination component",
+    "CPU and RAM cards have independent process rankings",
+    "Storage uses a donut visualization and LAN replaces WAN on the overview network card",
+    "Standard port selects 80 for HTTP and 443 for HTTPS",
+    "SSL uses a locally generated self-signed certificate in this release",
+    "Samba AD-DC installation remains disabled; schema and preflight only"
+  ]
+}

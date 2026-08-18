@@ -1,73 +1,73 @@
-# Порт Web-панели Control Center 1.0.7
+# Web-панель, стандартный порт и SSL — Control Center 1.0.9
 
-## Настройка
+## Режимы
 
-В **Настройки → Web-панель** можно изменить TCP-порт административного интерфейса.
+В **Настройки → Web-панель** доступны два переключателя и пользовательский порт:
 
-Допустимый диапазон:
+- **Стандартный порт**;
+- **Включить SSL / HTTPS**;
+- пользовательский порт `1024–65535`.
+
+Логика стандартного режима:
 
 ```text
-1024–65535
+HTTP  -> 80
+HTTPS -> 443
 ```
 
-Значение по умолчанию: `8080`.
+Если стандартный режим выключен, выбранный пользовательский порт используется и для HTTP, и для HTTPS.
 
-## Применение
+## Runtime
 
-Web API не редактирует systemd от root. Он проверяет запрос и создаёт:
+Gunicorn запускается через:
 
 ```text
-/var/lib/control-center/web-pending.json
+/usr/local/sbin/control-center-web-run
 ```
 
-Далее:
+Wrapper читает `/etc/control-center/web.env` и добавляет `--certfile/--keyfile` только при включённом SSL.
+
+Для bind на 80/443 Web-служба получает только:
 
 ```text
-control-center-web-apply.path
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+```
+
+Control Center по-прежнему работает от пользователя `control-center`, а не root.
+
+## SSL 1.0.9
+
+При первом включении HTTPS root helper создаёт локальный self-signed сертификат:
+
+```text
+/etc/control-center/tls/server.crt
+/etc/control-center/tls/server.key
+```
+
+Ключ: `root:control-center 0640`. Сертификат включает hostname, localhost и доступные IPv4 адреса сервера в SAN.
+
+Поскольку сертификат самоподписанный, браузер может показывать предупреждение доверия. Автоматический ACME/Let's Encrypt и импорт пользовательского сертификата не входят в 1.0.9.
+
+## Применение и rollback
+
+```text
+POST /api/settings/web
+  -> /var/lib/control-center/web-pending.json
+  -> control-center-web-apply.path
   -> control-center-web-apply.service
   -> /usr/local/sbin/control-center-web-apply
 ```
 
-Привилегированный helper:
+Helper проверяет запрос и порт, при необходимости генерирует certificate/key, сохраняет env/config/PostgreSQL settings, перезапускает Web service и выполняет HTTP или HTTPS health-check. При любой ошибке возвращаются предыдущие порт, SSL mode и standard-port mode.
 
-1. повторно проверяет диапазон порта;
-2. проверяет, что новый порт можно bind на `0.0.0.0`;
-3. сохраняет `/etc/control-center/web.env`;
-4. синхронизирует `web.port` в PostgreSQL;
-5. перезапускает `control-center.service`;
-6. выполняет `/api/health` на новом порту;
-7. при ошибке возвращает предыдущий env/DB port и перезапускает старую конфигурацию.
-
-Applied status:
+## PostgreSQL settings
 
 ```text
-/var/lib/control-center-system/web-status.json
-/var/lib/control-center-system/web-config.json
+web.port
+web.ssl_enabled
+web.standard_port
 ```
-
-Application setting:
-
-```text
-control_center.settings -> key = web.port
-```
-
-## Важно
-
-После успешного изменения текущее соединение браузера обычно прерывается. Если адрес сервера `192.168.10.1` и порт изменён на `8443`, новый URL при текущем HTTP runtime будет:
-
-```text
-http://192.168.10.1:8443
-```
-
-Смена порта **не включает HTTPS** и не является средством аутентификации. В 1.0.7 Web UI по-прежнему должен быть ограничен административной LAN/VPN/firewall.
-
-Если на сервере используется внешний firewall, reverse proxy или ACL, их правила Control Center 1.0.7 автоматически не переписывает. Убедитесь, что новый порт разрешён до удалённой смены, иначе Web UI может стать недоступен с вашей рабочей станции, даже если локальный health-check проходит.
-
-## Хранение при обновлении
-
-Установщик сначала читает существующий `/etc/control-center/web.env`. Поэтому update/reinstall сохраняет уже выбранный порт. Если env отсутствует, используется PostgreSQL `web.port`, затем fallback `8080`.
-
-Updater также делает backup `web.env` для rollback приложения.
 
 ## Диагностика
 
@@ -75,15 +75,16 @@ Updater также делает backup `web.env` для rollback приложе�
 sudo cat /etc/control-center/web.env
 sudo cat /var/lib/control-center-system/web-config.json 2>/dev/null || true
 sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
-systemctl status control-center-web-apply.path --no-pager
-journalctl -u control-center-web-apply.service -n 100 --no-pager
 systemctl cat control-center
-ss -ltnp | grep gunicorn
+systemctl status control-center-web-apply.path --no-pager
+journalctl -u control-center-web-apply.service -n 150 --no-pager
+ss -ltnp | grep -E ':80 |:443 |gunicorn'
 ```
 
-Текущие настройки через API:
+При HTTPS:
 
 ```bash
-PORT=$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
-curl -fsS "http://127.0.0.1:${PORT}/api/settings/web" | python3 -m json.tool
+openssl x509 -in /etc/control-center/tls/server.crt -noout -subject -issuer -dates -ext subjectAltName
 ```
+
+Control Center не изменяет внешний firewall/NAT автоматически. Перед удалённым переходом на другой порт убедитесь, что он разрешён сетевой политикой.
