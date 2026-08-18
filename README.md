@@ -1,46 +1,32 @@
-# Control Center 1.0.1
+# Control Center 1.0.2
 
 Control Center — web-панель управления Linux-сервером.
 
-## Текущий релиз
+## Что нового в 1.0.2
 
-**1.0.1**
+- раздел **Система** переработан в стиле предыдущего проекта Control Center;
+- в разделе **Сети** добавлены логические роли **WAN** и **LAN**;
+- WAN и LAN можно назначать на обнаруженные сетевые интерфейсы;
+- для каждой роли доступны режимы IPv4 **DHCP** и **Static**;
+- в Static активируются IP, маска, шлюз и DNS;
+- добавлена серверная проверка корректности сетевой конфигурации;
+- WAN и LAN не могут использовать один интерфейс;
+- проверяется IPv4, маска, шлюз, DNS, принадлежность шлюза подсети и пересечение статических WAN/LAN подсетей;
+- применение выполняется отдельным root-helper через Netplan;
+- при ошибке Netplan выполняется rollback предыдущей конфигурации.
 
-### Что нового
+## Сетевое управление
 
-- интерфейс переведен на визуальный стиль предыдущего проекта Control Center;
-- добавлен раздел **Настройки**;
-- добавлен механизм автоматического обновления production-релизов;
-- настройки автообновления вынесены в Web UI;
-- добавлен автоматический rollback при ошибке обновления.
+Web UI работает без root. После успешной проверки он создает `/var/lib/control-center/network-pending.json`. Systemd path-unit запускает `/usr/local/sbin/control-center-network-apply`, который повторно формирует Netplan-конфигурацию, выполняет `netplan generate`, затем `netplan apply`.
 
-## Главное меню
+Службы:
 
-- **Система** — сведения об ОС, CPU, RAM, дисках и мониторинг;
-- **Сети** — интерфейсы, IPv4, MAC и статистика RX/TX;
-- **Маркет** — каталог серверных сервисов;
-- **RBAC** — локальные Linux УЗ и группы;
-- **Настройки** — параметры Control Center и автоматического обновления.
+- `control-center-network-apply.path`;
+- `control-center-network-apply.service`.
 
-## Автоматические обновления
+Файл Netplan Control Center:
 
-После установки создаются:
-
-- `control-center-update.service`;
-- `control-center-update.timer`;
-- `/usr/local/sbin/control-center-update`;
-- `/var/lib/control-center/update-settings.json`;
-- `/var/lib/control-center/update-status.json`.
-
-По умолчанию:
-
-- автоматические обновления включены;
-- канал — `production`;
-- проверка — каждый час.
-
-Systemd timer запускает легкую проверку каждые 15 минут, а фактическая частота определяется настройкой `hourly`, `daily` или `weekly`.
-
-Перед обновлением сохраняется rollback-копия текущего приложения. При неуспешной установке предыдущая версия автоматически восстанавливается.
+- `/etc/netplan/90-control-center.yaml`.
 
 ## Установка
 
@@ -48,7 +34,7 @@ Systemd timer запускает легкую проверку каждые 15 �
 sudo bash install/install.sh
 ```
 
-После установки:
+Web UI:
 
 ```text
 http://SERVER_IP:8080
@@ -58,21 +44,11 @@ http://SERVER_IP:8080
 
 ```bash
 systemctl status control-center --no-pager
+systemctl status control-center-network-apply.path --no-pager
 systemctl status control-center-update.timer --no-pager
 curl http://127.0.0.1:8080/api/health
 ```
 
-## Структура
+## Важно
 
-```text
-app/                  web-приложение
-install/              установка и удаление
-update/               механизм автообновления
-docs/                 документация
-releases/1.0.1/       паспорт релиза
-deployment.json       текущий production-релиз
-```
-
-## Безопасность
-
-Web-процесс работает от отдельной УЗ `control-center` без root-доступа. Настройки обновления сохраняются в `/var/lib/control-center`, а привилегированная установка выполняется только отдельным root systemd-сервисом.
+Изменение адреса интерфейса, через который открыт Web UI/SSH, может оборвать текущую сессию. Поэтому перед применением Static необходимо убедиться, что новый адрес доступен из административной сети.
