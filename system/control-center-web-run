@@ -2,7 +2,10 @@
 set -Eeuo pipefail
 
 ENV_FILE=/etc/control-center/web.env
-[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
+# systemd reads the root-owned 0600 EnvironmentFile before dropping to the
+# control-center user. Source it directly only for privileged/manual runs where
+# the file is readable; the service process uses the already exported values.
+[[ -r "$ENV_FILE" ]] && source "$ENV_FILE"
 
 PORT="${CONTROL_CENTER_PORT:-8080}"
 SSL="${CONTROL_CENTER_SSL:-0}"
