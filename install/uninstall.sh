@@ -37,8 +37,8 @@ PY
   fi
   rm -f /etc/dnsmasq.d/control-center-dhcp.conf
   rm -rf /var/lib/control-center /var/lib/control-center-root /var/lib/control-center-license
+  id control-center >/dev/null 2>&1 && userdel control-center || true
 else
-  echo 'Данные, root rollback state и лицензия сохранены (--keep-data).'
+  echo 'Данные, root rollback state, лицензия и служебная УЗ control-center сохранены (--keep-data).'
 fi
-id control-center >/dev/null 2>&1 && userdel control-center || true
 echo 'Control Center удален.'
