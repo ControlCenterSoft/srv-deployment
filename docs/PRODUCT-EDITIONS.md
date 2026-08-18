@@ -23,16 +23,20 @@ Control Center uses **one shared Control Center Core** and produces two editions
 
 - Home/non-commercial EULA.
 - Single-server/single-domain baseline product model.
+- Maximum **10 domain user accounts** per Home installation.
+- Maximum **10 configured network shares** (SMB/network shared resources) per Home installation.
+- Exceeding either Home limit requires **Control Center Professional**, even when the installation remains physically located in a home environment.
+- Any commercial/business use requires **Control Center Professional regardless of user/share counts**.
 - Enterprise/fleet/HA capabilities may be restricted by entitlements.
 - No artificial CPU/RAM/network-throughput throttling.
 - Minecraft is included as a Home edition module.
 - Core home Samba, DHCP, PXE, monitoring, backup and infrastructure capabilities remain available according to Home entitlements.
 
-The Home EULA defines permitted use. The software must not attempt to infer whether a machine is physically located in a home or business.
+The Home EULA defines permitted use. The software must not attempt to infer whether a machine is physically located in a home or business. Home entitlement enforcement must use explicit edition/license state and configured resource counts, not environmental guessing.
 
 ## Professional Edition
 
-**Control Center Professional** is intended for commercial use.
+**Control Center Professional** is intended for commercial use and for deployments that require capabilities or scale beyond Control Center Home limits.
 
 - Commercial EULA.
 - Activation and signed commercial license.
@@ -83,6 +87,8 @@ The Update Center must use the same signed lifecycle metadata, so UI display and
 
 Edition is selected at build/release time and is not a user-editable UI switch. Entitlements are enforced at UI, API authorization, privileged helper and build-time module levels. The UI is never the sole security boundary.
 
+For Home, edition-aware entitlement checks must account for the canonical limits of **10 domain users** and **10 network shares**. Attempts to exceed either limit must not silently create an unsupported Home configuration; the product must present a clear Professional-upgrade requirement without disrupting already-running critical infrastructure services.
+
 ## Installation identity — VM-safe licensing
 
 Commercial licensing is bound to a **logical product installation**, not physical hardware.
@@ -113,7 +119,7 @@ Home and Professional use edition-aware production channels/artifacts so cross-e
 
 ## EULA
 
-Two agreements are required: Home EULA for personal/non-commercial use and Professional EULA for commercial rights, installation count, activation, transfer/re-host, release-based maintenance/update terms, support and termination. EULA and technical entitlement enforcement are separate layers. Final agreements require professional legal review before external commercial launch.
+Two agreements are required: Home EULA for personal/non-commercial use and Professional EULA for commercial rights, installation count, activation, transfer/re-host, release-based maintenance/update terms, support and termination. The Home EULA must explicitly state the limits of **10 domain users** and **10 network shares**. EULA and technical entitlement enforcement are separate layers. Final agreements require professional legal review before external commercial launch.
 
 ## Roadmap integration
 
