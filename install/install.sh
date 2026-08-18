@@ -18,11 +18,15 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then useradd --system --home "$APP_DIR"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$APP_DIR" "$STATE_DIR" "$STATE_DIR/modules"
 install -d -o root -g root -m 0700 "$ROOT_STATE_DIR"
 install -d -o root -g root -m 0755 "$LICENSE_DIR" /etc/control-center
-# 1.0.5 pre-audit stored license state in a web-writable directory. Never trust or migrate it.
+# Never trust state created by the pre-audit 1.0.5 licensing design.
 rm -f "$STATE_DIR/license.json"
+# Root-sensitive rollback data must not remain in Web-writable state from older builds.
+rm -rf "$STATE_DIR"/rollback-* "$STATE_DIR/90-control-center.yaml.rollback" "$STATE_DIR/control-center-dhcp.conf.rollback"
+# Never replay stale privileged requests after install/update.
+rm -f "$STATE_DIR/network-pending.json" "$STATE_DIR/market-pending.json" "$STATE_DIR/dhcp-pending.json" "$STATE_DIR/license-pending.json" "$STATE_DIR/os-update-now"
 [[ -f "$STATE_DIR/update-settings.json" ]] || printf '%s\n' '{"automatic_updates":true,"interval_minutes":60,"channel":"production"}' >"$STATE_DIR/update-settings.json"
 [[ -f "$STATE_DIR/os-update-settings.json" ]] || printf '%s\n' '{"automatic_updates":false,"interval_minutes":1440}' >"$STATE_DIR/os-update-settings.json"
-chown "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR/update-settings.json" "$STATE_DIR/os-update-settings.json"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR"
 systemctl stop control-center 2>/dev/null || true
 rm -rf "$APP_DIR/app" "$APP_DIR/venv"
 cp -a "$ROOT_DIR/app" "$APP_DIR/app"
@@ -48,10 +52,8 @@ Type=simple
 User=control-center
 Group=control-center
 WorkingDirectory=/opt/control-center/app
-Environment=CONTROL_CENTER_HOST=0.0.0.0
-Environment=CONTROL_CENTER_PORT=8080
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/control-center/venv/bin/python /opt/control-center/app/main.py
+ExecStart=/opt/control-center/venv/bin/gunicorn --workers 2 --threads 2 --timeout 30 --bind 0.0.0.0:8080 --access-logfile - --error-logfile - main:app
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -184,6 +186,7 @@ systemctl enable --now control-center control-center-network-apply.path control-
 sleep 1
 curl -fsS http://127.0.0.1:8080/api/health >/dev/null
 echo "Control Center $VERSION установлен."
+echo 'Web UI: Gunicorn production WSGI, порт 8080.'
 echo 'Редакция по умолчанию: Home. Professional активируется подписанной лицензией.'
 echo 'Обновления Control Center и ОС/пакетов доступны в Настройки.'
 echo 'Откройте: http://SERVER_IP:8080'
