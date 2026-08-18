@@ -4,15 +4,15 @@
 
 ## Production сейчас
 
-Единственный источник опубликованного production target — [`deployment.json`](deployment.json). Сейчас он указывает на **Control Center 2.1.0** (`releases/2.1.0`). Конкретный сервер может временно иметь другую версию после failed deployment/rollback; фактическое состояние такого сервера определяется его `server-state`/`release.json`.
+Единственный источник опубликованного production target — [`deployment.json`](deployment.json). После публикации этого изменения он указывает на **Control Center 2.1.4** (`releases/2.1.4`). Конкретный сервер может временно иметь другую версию после failed deployment/rollback; фактическое состояние такого сервера определяется его `server-state`/`release.json`.
 
-Опубликованные `releases/<version>` **frozen**: исправления выпускаются новой версией, старый payload не редактируется.
+Опубликованные `releases/<version>` **frozen**: исправления выпускаются новой версией, старый payload не редактируется. Номер 2.1.3 не публиковался и не является production release.
 
 ## Возможности текущей линии
 
 Control Center объединяет FastAPI/PostgreSQL web-интерфейс и health/dashboard, системную PAM/NSS-аутентификацию с Samba/winbind для доменных identities, RBAC, защищённые privileged actions, product/OS updates, backup/restore, Samba AD и shares, Minecraft Bedrock, AdGuard VPN, network/system diagnostics и перенесённые DHCP/PXE contracts там, где они реализованы frozen release.
 
-В 2.1.0 Minecraft runtime нормализован в один канонический systemd service с сохранением мира/настроек и транзакционным rollback. Точный scope версии определяется её manifest/acceptance, а не roadmap.
+В 2.1.x Minecraft runtime нормализован в один канонический systemd service, исправлен web privilege path при `NoNewPrivileges=true`, добавлен надёжный ONLINE/OFFLINE status contract. 2.1.4 дополнительно исправляет clean installation после перехода на delta patch releases.
 
 ## Установка
 
@@ -23,7 +23,9 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Installer читает активный `deployment.json` и разворачивает опубликованный self-contained release. Перед установкой используйте [`docs/INSTALL.md`](docs/INSTALL.md).
+Installer читает активный `deployment.json`. Patch-релизы 2.1.x могут быть дельтами, поэтому чистая установка собирает полный application payload по `installer/install-profile.json` из frozen consolidated baseline и последовательных delta-слоёв; она не предполагает, что каталог активного patch release самодостаточен.
+
+Успешная установка проверяет и backend health, и доступ к тому же health endpoint через фактический nginx reverse proxy. Стандартная страница `Welcome to nginx!` после `INSTALL PASS` считается ошибкой установки. Перед установкой используйте [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ## Первый вход и доступ
 
@@ -48,11 +50,13 @@ Updater ориентируется на release metadata/fingerprint; documentat
 
 - [`docs/PRODUCT-MANUAL-RU.md`](docs/PRODUCT-MANUAL-RU.md) — каноническое русскоязычное руководство пользователя и администратора;
 - [`docs/README.md`](docs/README.md) — индекс и правила актуальности;
+- [`docs/INSTALL.md`](docs/INSTALL.md) — clean installation и acceptance;
 - [`docs/SYSTEM-ADMIN.md`](docs/SYSTEM-ADMIN.md) — authentication/RBAC и privileged administration;
 - [`docs/AUTO-UPDATES.md`](docs/AUTO-UPDATES.md) — product updater;
 - [`docs/DEPLOYMENT-RELIABILITY.md`](docs/DEPLOYMENT-RELIABILITY.md) — deployment/rollback;
 - [`docs/RELEASE-HISTORY.md`](docs/RELEASE-HISTORY.md) — опубликованная история;
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — будущий scope, не описание production.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — будущий scope, не описание production;
+- [`docs/2.1/RELEASE-2.1.4.md`](docs/2.1/RELEASE-2.1.4.md) — исправление clean-install/nginx regression.
 
 Release-specific incident/scope документы сохраняются как **исторические**. Если они противоречат `deployment.json`, frozen active release или каноническому руководству, они не являются текущей эксплуатационной инструкцией.
 
