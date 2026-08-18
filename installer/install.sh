@@ -48,39 +48,77 @@ apt-get install -y --no-install-recommends \
     postgresql-client \
     python3 \
     python3-pip \
-    python3-venv
+    python3-venv \
+    sudo
 
 release_info="$(python3 - "$REPO_ROOT/deployment.json" <<'PY'
+import hashlib
 import json
 import pathlib
 import sys
 
-root=pathlib.Path(sys.argv[1]).parent
-config=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+config_path=pathlib.Path(sys.argv[1])
+root=config_path.parent
+config=json.loads(config_path.read_text(encoding="utf-8"))
 release_id=config.get("release_id") or config.get("release")
 release_path=config.get("release_path")
 manifest_path=config.get("manifest")
 if not all(isinstance(v,str) and v for v in (release_id,release_path,manifest_path)):
     raise SystemExit("invalid deployment metadata")
-manifest=json.loads((root/manifest_path).read_text(encoding="utf-8"))
+release_dir=(root/release_path).resolve()
+manifest_file=(root/manifest_path).resolve()
+if root.resolve() not in release_dir.parents:
+    raise SystemExit("release_path escapes repository")
+if root.resolve() not in manifest_file.parents:
+    raise SystemExit("manifest path escapes repository")
+manifest=json.loads(manifest_file.read_text(encoding="utf-8"))
 version=manifest.get("release_version")
 if not isinstance(version,str) or not version:
     raise SystemExit("release_version missing")
+if manifest.get("release_id") != release_id:
+    raise SystemExit("deployment/manifest release_id mismatch")
+scripts=manifest.get("scripts") or {}
+values=[]
+for stage in ("apply","acceptance"):
+    item=scripts.get(stage) or {}
+    path=item.get("path")
+    digest=item.get("sha256")
+    if not isinstance(path,str) or not path or not isinstance(digest,str) or len(digest) != 64:
+        raise SystemExit(f"invalid {stage} metadata")
+    script=(release_dir/path).resolve()
+    if release_dir not in script.parents:
+        raise SystemExit(f"{stage} path escapes release directory")
+    if not script.is_file():
+        raise SystemExit(f"{stage} script missing")
+    actual=hashlib.sha256(script.read_bytes()).hexdigest()
+    if actual != digest.lower():
+        raise SystemExit(f"{stage} sha256 mismatch")
+    values.extend((str(script),actual))
 print(release_id)
 print(release_path)
 print(version)
+for value in values:
+    print(value)
 PY
-)"
+)" || fail "active release metadata validation failed"
 mapfile -t release_meta <<< "$release_info"
 RELEASE_ID="${release_meta[0]:-}"
 RELEASE_PATH="${release_meta[1]:-}"
 RELEASE_VERSION="${release_meta[2]:-}"
+APPLY_SCRIPT="${release_meta[3]:-}"
+APPLY_SHA256="${release_meta[4]:-}"
+ACCEPTANCE_SCRIPT="${release_meta[5]:-}"
+ACCEPTANCE_SHA256="${release_meta[6]:-}"
 PAYLOAD="$REPO_ROOT/$RELEASE_PATH/payload"
 
+[[ -n "$RELEASE_ID" && -n "$RELEASE_VERSION" ]] || fail "release identity is empty"
 [[ -d "$PAYLOAD/app" ]] || fail "active release application payload is missing"
 [[ -d "$PAYLOAD/templates" ]] || fail "active release templates are missing"
 [[ -d "$PAYLOAD/static" ]] || fail "active release static files are missing"
 [[ -s "$PAYLOAD/requirements.lock" ]] || fail "active release requirements.lock is missing"
+[[ -x "$APPLY_SCRIPT" ]] || fail "active release apply script is not executable"
+[[ -x "$ACCEPTANCE_SCRIPT" ]] || fail "active release acceptance script is not executable"
+log "Validated active release ${RELEASE_VERSION}: apply=${APPLY_SHA256} acceptance=${ACCEPTANCE_SHA256}"
 
 systemctl enable --now postgresql.service
 
@@ -100,7 +138,7 @@ install -d -m 0750 -o root -g "$APP_GROUP" "$PROJECT" "$CONFIG_DIR"
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$STATE_DIR" "$CACHE_DIR" "$LOG_DIR"
 install -d -m 0750 -o root -g root "$DEPLOY_STATE" "$AGENT_ROOT"
 
-log "Installing consolidated release ${RELEASE_VERSION}"
+log "Installing base application payload for ${RELEASE_VERSION}"
 cp -a "$PAYLOAD/." "$PROJECT/"
 find "$PROJECT" -type d -exec chmod 0750 {} +
 find "$PROJECT" -type f -exec chmod 0640 {} +
@@ -126,7 +164,7 @@ fi
 canonical_host="$(hostname -f 2>/dev/null || hostname)"
 cat > "$CONFIG_DIR/control.toml" <<EOF
 [application]
-name = "SRV Control Center"
+name = "Control Center"
 
 [web]
 canonical_host = "${canonical_host}"
@@ -141,7 +179,7 @@ EOF
 chown root:"$APP_GROUP" "$CONFIG_DIR/control.toml"
 chmod 0640 "$CONFIG_DIR/control.toml"
 
-log "Applying database migrations"
+log "Applying base database migrations"
 runuser -u "$APP_USER" -- env \
     PYTHONPATH="$PROJECT" \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -152,7 +190,7 @@ runuser -u "$APP_USER" -- env \
 log "Installing Control Center service"
 cat > /etc/systemd/system/srv-control.service <<'EOF'
 [Unit]
-Description=SRV Control Center
+Description=Control Center
 After=network-online.target postgresql.service
 Wants=network-online.target
 Requires=postgresql.service
@@ -220,25 +258,21 @@ EOF
 ln -sfn /etc/nginx/sites-available/srv-control /etc/nginx/sites-enabled/srv-control
 nginx -t
 
-log "Installing privileged system helpers"
+log "Installing authentication bootstrap and base privileged state"
 bash "$SCRIPT_DIR/install-system-admin.sh"
 
-current_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-sync_time="$(date -Is)"
-python3 - "$STATE_DIR/release.json" "$RELEASE_VERSION" "$RELEASE_ID" "$sync_time" "$current_sha" <<'PY'
-import json
-import pathlib
-import sys
-path=pathlib.Path(sys.argv[1])
-path.write_text(json.dumps({
-    "version":sys.argv[2],
-    "release_id":sys.argv[3],
-    "synced_at":sys.argv[4],
-    "git_sha":sys.argv[5],
-},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-PY
-chmod 0644 "$STATE_DIR/release.json"
+systemctl daemon-reload
+systemctl enable --now srv-control.service
+systemctl restart nginx.service
 
+current_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+log "Applying complete active release contract ${RELEASE_VERSION}"
+bash "$APPLY_SCRIPT" "$PROJECT" "$current_sha"
+
+log "Running frozen release acceptance ${RELEASE_VERSION}"
+bash "$ACCEPTANCE_SCRIPT" "$PROJECT" "$current_sha"
+
+sync_time="$(date -Is)"
 cat > "$DEPLOY_STATE/last-result.env" <<EOF
 result=success
 stage=acceptance
@@ -266,21 +300,10 @@ path.write_text(json.dumps({
     "healthchecked_at":datetime.now(timezone.utc).isoformat(),
 },ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
 PY
-chmod 0644 "$STATE_DIR/deployment-status.json"
+chown root:"$APP_GROUP" "$STATE_DIR/deployment-status.json"
+chmod 0640 "$STATE_DIR/deployment-status.json"
 
-systemctl daemon-reload
-systemctl enable srv-control.service
-systemctl restart srv-control.service
-systemctl restart nginx.service
-
-log "Installing release-fingerprint GitHub updater"
-bash "$REPO_ROOT/bootstrap/configure-auto-updates.sh" \
-    --repo "$REPO_URL" \
-    --mode automatic \
-    --interval-minutes 5 \
-    --no-check-now
-
-log "Running installation acceptance"
+log "Running final clean-install acceptance"
 python3 - "$RELEASE_VERSION" "$current_sha" <<'PY'
 import json
 import sys
@@ -305,7 +328,9 @@ PY
 
 systemctl is-active --quiet srv-control.service || fail "srv-control.service is not active"
 systemctl is-active --quiet nginx.service || fail "nginx.service is not active"
+systemctl is-enabled --quiet srvcc-github-agent.timer || fail "GitHub updater timer is not enabled"
 systemctl is-active --quiet srvcc-github-agent.timer || fail "GitHub updater timer is not active"
+systemctl is-active --quiet srv-control-system-agent.path || fail "system action watcher is not active"
 
 server_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 server_ip="${server_ip:-127.0.0.1}"
@@ -315,8 +340,8 @@ else
     access_url="http://${server_ip}:${web_port}/"
 fi
 
-log "INSTALL PASS: SRV Control Center ${RELEASE_VERSION}"
-printf '\nSRV CONTROL CENTER: INSTALLED\n'
+log "INSTALL PASS: Control Center ${RELEASE_VERSION}"
+printf '\nCONTROL CENTER: INSTALLED\n'
 printf 'release=%s\n' "$RELEASE_VERSION"
 printf 'git_sha=%s\n' "$current_sha"
 printf 'url=%s\n' "$access_url"
