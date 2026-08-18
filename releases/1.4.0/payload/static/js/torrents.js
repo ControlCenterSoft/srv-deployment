@@ -16,19 +16,10 @@
     function render(items) {
         grid.textContent = "";
         if (!items.length) {
-            const card = document.createElement("article");
-            card.className = "service-card";
-            const head = document.createElement("div");
-            head.className = "service-card-title";
-            const title = document.createElement("strong");
-            title.textContent = "Сервисы загрузки не обнаружены";
-            const state = document.createElement("span");
-            state.textContent = "Не установлены";
-            head.append(title, state);
-            const details = document.createElement("p");
-            details.textContent = "Control Center не обнаружил управляемые торрент- или медиасервисы на сервере.";
-            card.append(head, details);
-            grid.appendChild(card);
+            const empty = document.createElement("div");
+            empty.className = "empty-state";
+            empty.textContent = "Сервисы загрузки не обнаружены. После установки qBittorrent, TorrServer или другого управляемого сервиса он появится здесь автоматически.";
+            grid.appendChild(empty);
             return;
         }
 
@@ -54,6 +45,7 @@
     }
 
     async function load() {
+        grid.setAttribute("aria-busy", "true");
         try {
             const response = await fetch("/api/v1/torrents", {cache: "no-store"});
             if (response.status === 401) {
@@ -65,23 +57,17 @@
             render((payload.data && payload.data.services) || []);
         } catch (_) {
             grid.textContent = "";
-            const card = document.createElement("article");
-            card.className = "service-card";
-            const head = document.createElement("div");
-            head.className = "service-card-title";
-            const title = document.createElement("strong");
-            title.textContent = "Не удалось получить состояние";
-            const state = document.createElement("span");
-            state.className = "status-error";
-            state.textContent = "Ошибка";
-            head.append(title, state);
-            const details = document.createElement("p");
-            details.textContent = "Повторная проверка будет выполнена автоматически.";
-            card.append(head, details);
-            grid.appendChild(card);
+            const empty = document.createElement("div");
+            empty.className = "empty-state";
+            empty.setAttribute("role", "alert");
+            empty.textContent = "Не удалось получить состояние сервисов загрузки. Повторная проверка будет выполнена автоматически.";
+            grid.appendChild(empty);
+        } finally {
+            grid.setAttribute("aria-busy", "false");
         }
     }
 
+    grid.setAttribute("aria-live", "polite");
     load();
     window.setInterval(load, 15000);
 })();
