@@ -68,11 +68,17 @@ critical_paths=(
     /usr/local/libexec/srv-control-backup-policy
     /usr/local/libexec/srv-control-os-auto-update
     /usr/local/libexec/srv-control-minecraft-repair
+    /usr/local/libexec/srv-control-release14-agent
+    /usr/local/libexec/srv-control-pxe-probe
     /usr/local/sbin/srvcc-update-controller
     /usr/local/sbin/srvcc-github-agent
     /usr/local/sbin/srvcc-configure-auto-updates
     /etc/systemd/system/srv-control-system-agent.service
     /etc/systemd/system/srv-control-system-agent.path
+    /etc/systemd/system/srv-control-release14-agent.service
+    /etc/systemd/system/srv-control-release14-agent.path
+    /etc/systemd/system/srv-control-backup-retention.service
+    /etc/systemd/system/srv-control-backup-retention.path
     /etc/systemd/system/srv-control-os-update.service
     /etc/systemd/system/srv-control-backup.service
     /etc/systemd/system/srv-control-backup.timer
@@ -100,6 +106,8 @@ for unit in \
     srvcc-github-agent.timer \
     srv-control-backup.timer \
     srv-control-os-auto-update.timer \
+    srv-control-release14-agent.path \
+    srv-control-backup-retention.path \
     minecraft-update.timer \
     srv-control-minecraft-auto-update.timer
 do
@@ -114,9 +122,7 @@ GH_INTERVAL="$(json_value "$STATE_DIR/github-update-config.json" interval_minute
 
 # No unconditional user-visible backup is created here. The 2.0 update
 # controller evaluates backup_before_update exactly once before deployment.
-# This fixes the 1.x defect where apply.sh created a pre-release backup even
-# when the administrator explicitly disabled backups before updates. The
-# private snapshot above exists only for transactional rollback.
+# The private snapshot above exists only for transactional rollback.
 log "Internal rollback snapshot completed; user backup policy remains authoritative"
 
 log "Installing Control Center 2.0.0 application payload"
@@ -126,11 +132,20 @@ for rel in app migrations static templates; do
 done
 install -m 0640 "$PAYLOAD/alembic.ini" "$PROJECT/alembic.ini"
 install -m 0640 "$PAYLOAD/requirements.lock" "$PROJECT/requirements.lock"
+
+# The unpublished 1.4 DHCP/PXE implementation was stored in split sources.
+# Assemble it into normal application modules inside the 2.0 payload. The 2.0
+# shell remains authoritative; these modules only add the missing DHCP/PXE API
+# and pages.
+cat "$PROJECT"/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > "$PROJECT/app/core/release14.py"
+cat "$PROJECT"/app/routers/release14.parts/{00,01,02,03}.part > "$PROJECT/app/routers/release14.py"
+
 chown -R root:"$APP_GROUP" \
     "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" \
     "$PROJECT/alembic.ini" "$PROJECT/requirements.lock"
 find "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" -type d -exec chmod 0750 {} +
 find "$PROJECT/app" "$PROJECT/migrations" "$PROJECT/static" "$PROJECT/templates" -type f -exec chmod 0640 {} +
+python3 -m py_compile "$PROJECT/app/core/release14.py" "$PROJECT/app/routers/release14.py"
 
 install -d -m 0755 /usr/local/libexec /usr/local/sbin
 helpers=(
@@ -138,7 +153,7 @@ helpers=(
     srv-control-samba-admin srv-control-samba-agent srv-control-samba-ldif-editor srv-control-samba-monitor srv-control-samba-shares-monitor
     srv-control-minecraft-admin srv-control-minecraft-admin-core srv-control-minecraft-agent srv-control-minecraft-auto-update
     srv-control-minecraft-firewall srv-control-minecraft-monitor srv-control-minecraft-player-admin srv-control-minecraft-runner srv-control-minecraft-update
-    srv-control-minecraft-repair
+    srv-control-minecraft-repair srv-control-pxe-probe
 )
 for helper in "${helpers[@]}"; do
     [[ -s "$SYSTEM/$helper" ]] || fail "managed helper missing: $helper"
@@ -146,8 +161,20 @@ for helper in "${helpers[@]}"; do
 done
 install -m 0755 -o root -g root "$SYSTEM/srvcc-update-controller" /usr/local/sbin/srvcc-update-controller
 
+tmp_release14_agent="$(mktemp)"
+trap 'rm -f -- "$tmp_release14_agent"' EXIT
+cat "$SYSTEM"/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11}.part \
+    "$SYSTEM/srv-control-release14-agent.parts/11a.inc" \
+    "$SYSTEM/srv-control-release14-agent.parts/12.part" > "$tmp_release14_agent"
+python3 -m py_compile "$tmp_release14_agent" "$SYSTEM/srv-control-pxe-probe"
+install -m 0755 -o root -g root "$tmp_release14_agent" /usr/local/libexec/srv-control-release14-agent
+rm -f -- "$tmp_release14_agent"
+trap - EXIT
+
 units=(
     srv-control-system-agent.service srv-control-system-agent.path
+    srv-control-release14-agent.service srv-control-release14-agent.path
+    srv-control-backup-retention.service srv-control-backup-retention.path
     srv-control-os-update.service srv-control-adguard-monitor.service srv-control-adguard-monitor.timer
     srv-control-backup.service srv-control-backup.timer srv-control-os-auto-update.service srv-control-os-auto-update.timer
     srv-control-samba-agent.service srv-control-samba-agent.path srv-control-samba-monitor.service srv-control-samba-monitor.timer
@@ -163,9 +190,15 @@ done
 
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" \
     "$STATE_DIR" "$STATE_DIR/system-actions" "$STATE_DIR/system-results" \
-    "$STATE_DIR/samba-actions" "$STATE_DIR/minecraft-actions"
+    "$STATE_DIR/samba-actions" "$STATE_DIR/minecraft-actions" \
+    "$STATE_DIR/release14-actions" "$STATE_DIR/pxe" "$STATE_DIR/pxe/uploads"
 install -d -m 0700 -o "$APP_USER" -g "$APP_GROUP" "$STATE_DIR/action-secrets" "$STATE_DIR/domain-imports"
-install -d -m 0750 -o root -g "$APP_GROUP" "$STATE_DIR/backups" "$STATE_DIR/domain-backups" "$STATE_DIR/minecraft-backups"
+install -d -m 0750 -o root -g "$APP_GROUP" \
+    "$STATE_DIR/backups" "$STATE_DIR/domain-backups" "$STATE_DIR/minecraft-backups" \
+    /srv/pxe/profiles
+install -d -m 0755 -o root -g "$APP_GROUP" \
+    "$STATE_DIR/release14-results" /srv/pxe /srv/pxe/media /srv/pxe/media/boot \
+    /srv/pxe/media/images /srv/pxe/media/isos /srv/pxe/media/software /srv/tftp
 install -d -m 0750 -o root -g root /var/lib/srvcc-agent /var/lib/srv-deployment
 
 log "Applying database migrations"
@@ -174,6 +207,8 @@ runuser -u "$APP_USER" -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 \
 
 systemctl daemon-reload
 systemctl enable --now srv-control-system-agent.path
+systemctl enable --now srv-control-release14-agent.path
+systemctl enable --now srv-control-backup-retention.path
 systemctl enable --now srv-control-adguard-monitor.timer
 systemctl enable --now srv-control-samba-agent.path
 systemctl enable --now srv-control-samba-monitor.timer
@@ -300,4 +335,4 @@ if [[ "$GH_MODE" == "automatic" ]]; then
     systemctl is-active --quiet srvcc-github-agent.timer || fail "GitHub update timer is not active"
 fi
 
-log "APPLY 2.0.0 PASS: payload installed; updater rebuilt; backup policy preserved; Minecraft healthy"
+log "APPLY 2.0.0 PASS: payload installed; updater rebuilt; backup policy preserved; DHCP/PXE activated; Minecraft healthy"
