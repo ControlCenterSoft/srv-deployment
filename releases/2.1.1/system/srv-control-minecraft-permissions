@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import grp
+import json
+import os
+from pathlib import Path
+import pwd
+import stat
+import subprocess
+import sys
+
+UNIT = 'srv-control-minecraft-bedrock.service'
+TARGET_USER = 'minecraft'
+TARGET_GROUP = 'minecraft'
+MUTABLE_NAMES = (
+    'worlds',
+    'server.properties',
+    'allowlist.json',
+    'permissions.json',
+    'whitelist.json',
+    'logs',
+    'backups',
+)
+
+
+def run(cmd: list[str], *, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=timeout)
+    if check and result.returncode != 0:
+        raise RuntimeError((result.stdout or '')[-4000:] or f'command failed: {cmd}')
+    return result
+
+
+def runtime() -> Path:
+    raw = run(['systemctl', 'show', UNIT, '-p', 'WorkingDirectory', '--value']).stdout.strip()
+    path = Path(raw).resolve() if raw else None
+    if not path or not path.is_dir() or not (path / 'bedrock_server').is_file():
+        raise RuntimeError(f'canonical Bedrock runtime is invalid: {raw!r}')
+    return path
+
+
+def ensure_identity() -> tuple[int, int, bool]:
+    created = False
+    try:
+        user = pwd.getpwnam(TARGET_USER)
+        if user.pw_uid == 0:
+            raise RuntimeError('minecraft account unexpectedly resolves to uid 0')
+        try:
+            group = grp.getgrnam(TARGET_GROUP)
+        except KeyError:
+            raise RuntimeError('existing minecraft account has no matching minecraft group')
+        if user.pw_gid != group.gr_gid:
+            raise RuntimeError('existing minecraft account primary group is not minecraft; refusing to modify an unrelated identity')
+        return user.pw_uid, group.gr_gid, created
+    except KeyError:
+        try:
+            grp.getgrnam(TARGET_GROUP)
+        except KeyError:
+            run(['groupadd', '--system', TARGET_GROUP])
+        rt = runtime()
+        run([
+            'useradd', '--system', '--gid', TARGET_GROUP,
+            '--home-dir', str(rt), '--no-create-home',
+            '--shell', '/usr/sbin/nologin', TARGET_USER,
+        ])
+        created = True
+        user = pwd.getpwnam(TARGET_USER)
+        group = grp.getgrnam(TARGET_GROUP)
+        if user.pw_uid == 0:
+            raise RuntimeError('created minecraft account unexpectedly has uid 0')
+        return user.pw_uid, group.gr_gid, created
+
+
+def chown_mutable_tree(root: Path, uid: int, gid: int) -> tuple[int, int]:
+    changed = 0
+    checked = 0
+    if not root.exists() and not root.is_symlink():
+        return changed, checked
+    paths = [root]
+    if root.is_dir() and not root.is_symlink():
+        for base, dirs, files in os.walk(root, topdown=True, followlinks=False):
+            base_path = Path(base)
+            paths.extend(base_path / name for name in dirs)
+            paths.extend(base_path / name for name in files)
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        checked += 1
+        if info.st_uid != uid or info.st_gid != gid:
+            os.lchown(path, uid, gid)
+            changed += 1
+        if not stat.S_ISLNK(info.st_mode):
+            mode = stat.S_IMODE(info.st_mode)
+            required = (stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR) if stat.S_ISDIR(info.st_mode) else (stat.S_IRUSR | stat.S_IWUSR)
+            if mode & required != required:
+                os.chmod(path, mode | required)
+                changed += 1
+    return changed, checked
+
+
+def ensure_permissions() -> dict:
+    uid, gid, created = ensure_identity()
+    rt = runtime()
+    changed = 0
+    checked = 0
+
+    # Program/runtime root stays privileged. The game user receives only traverse
+    # access, while the executable is root-owned and executable by minecraft group.
+    root_info = rt.stat()
+    checked += 1
+    if root_info.st_uid != 0 or root_info.st_gid != 0:
+        os.chown(rt, 0, 0)
+        changed += 1
+    root_mode = stat.S_IMODE(root_info.st_mode)
+    wanted_root_mode = root_mode | 0o755
+    if wanted_root_mode != root_mode:
+        os.chmod(rt, wanted_root_mode)
+        changed += 1
+
+    binary = rt / 'bedrock_server'
+    binary_info = binary.stat()
+    checked += 1
+    if binary_info.st_uid != 0 or binary_info.st_gid != gid:
+        os.chown(binary, 0, gid)
+        changed += 1
+    binary_mode = stat.S_IMODE(binary_info.st_mode)
+    wanted_binary_mode = (binary_mode | 0o750) & ~0o022
+    if wanted_binary_mode != binary_mode:
+        os.chmod(binary, wanted_binary_mode)
+        changed += 1
+
+    for name in MUTABLE_NAMES:
+        path = rt / name
+        delta, count = chown_mutable_tree(path, uid, gid)
+        changed += delta
+        checked += count
+
+    if not (rt / 'worlds').is_dir():
+        raise RuntimeError('worlds directory is missing')
+    if not (rt / 'server.properties').is_file():
+        raise RuntimeError('server.properties is missing')
+    return {
+        'ok': True,
+        'runtime': str(rt),
+        'uid': uid,
+        'gid': gid,
+        'created': created,
+        'changed': changed,
+        'checked_paths': checked,
+        'policy': 'root-owned-program-minecraft-owned-data',
+    }
+
+
+def audit() -> dict:
+    rt = runtime()
+    try:
+        user = pwd.getpwnam(TARGET_USER)
+        group = grp.getgrnam(TARGET_GROUP)
+    except KeyError:
+        return {'ok': False, 'runtime': str(rt), 'error': 'minecraft identity is missing'}
+
+    mismatches: list[str] = []
+    checked = 0
+    root_info = rt.stat(); checked += 1
+    if root_info.st_uid != 0 or root_info.st_gid != 0:
+        mismatches.append(f'{rt}: runtime root must be root:root')
+
+    binary = rt / 'bedrock_server'
+    binary_info = binary.stat(); checked += 1
+    if binary_info.st_uid != 0 or binary_info.st_gid != group.gr_gid:
+        mismatches.append(f'{binary}: binary must be root:minecraft')
+    if not (stat.S_IMODE(binary_info.st_mode) & stat.S_IXGRP):
+        mismatches.append(f'{binary}: minecraft group cannot execute binary')
+
+    for name in MUTABLE_NAMES:
+        root = rt / name
+        if not root.exists() and not root.is_symlink():
+            continue
+        paths = [root]
+        if root.is_dir() and not root.is_symlink():
+            for base, dirs, files in os.walk(root, topdown=True, followlinks=False):
+                b = Path(base)
+                paths.extend(b / item for item in dirs)
+                paths.extend(b / item for item in files)
+        seen: set[Path] = set()
+        for path in paths:
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            checked += 1
+            if info.st_uid != user.pw_uid or info.st_gid != group.gr_gid:
+                mismatches.append(f'{path}: mutable data owner mismatch')
+                if len(mismatches) >= 50:
+                    break
+        if len(mismatches) >= 50:
+            break
+
+    unit_user = run(['systemctl', 'show', UNIT, '-p', 'User', '--value'], check=False).stdout.strip()
+    unit_group = run(['systemctl', 'show', UNIT, '-p', 'Group', '--value'], check=False).stdout.strip()
+    return {
+        'ok': not mismatches and unit_user == TARGET_USER and unit_group == TARGET_GROUP,
+        'runtime': str(rt),
+        'uid': user.pw_uid,
+        'gid': group.gr_gid,
+        'unit_user': unit_user,
+        'unit_group': unit_group,
+        'checked_paths': checked,
+        'mismatches': mismatches,
+        'policy': 'root-owned-program-minecraft-owned-data',
+    }
+
+
+def main() -> int:
+    operation = sys.argv[1] if len(sys.argv) > 1 else 'audit'
+    try:
+        if operation == 'prepare-user':
+            uid, gid, created = ensure_identity()
+            result = {'ok': True, 'uid': uid, 'gid': gid, 'created': created, 'user': TARGET_USER, 'group': TARGET_GROUP}
+        elif operation == 'ensure':
+            result = ensure_permissions()
+        elif operation == 'audit':
+            result = audit()
+        else:
+            raise RuntimeError('usage: srv-control-minecraft-permissions prepare-user|ensure|audit')
+    except Exception as exc:
+        result = {'ok': False, 'error': str(exc)[-4000:]}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get('ok') else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

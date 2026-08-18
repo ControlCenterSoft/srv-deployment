@@ -1,0 +1,9 @@
+[Unit]
+Description=Control Center Minecraft Bedrock runtime ownership guard
+Before=srv-control-minecraft-bedrock.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/srv-control-minecraft-permissions ensure
