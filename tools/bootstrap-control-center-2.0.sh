@@ -38,6 +38,7 @@ done
 log "Cloning current production repository"
 git clone --quiet --depth 1 --single-branch --branch main "$REPO_URL" "$TMP_ROOT/repo"
 REMOTE_SHA="$(git -C "$TMP_ROOT/repo" rev-parse HEAD)"
+CONFIGURATOR_SOURCE="$TMP_ROOT/repo/releases/${EXPECTED_RELEASE}/system/srvcc-configure-auto-updates"
 
 python3 - "$TMP_ROOT/repo/deployment.json" "$EXPECTED_RELEASE" <<'PY'
 import json,pathlib,sys
@@ -70,16 +71,18 @@ PY
 
 # This recovery path exists specifically because the old automatic 5-minute
 # updater failed and disabled its timer. A legacy config may therefore say
-# manual even though that was not the operator-selected state. Recreate the 2.x
-# configuration atomically instead of merely forcing the timer on behind the
-# UI's back.
-[[ -x "$CONFIGURATOR" ]] || fail "2.x update configurator is unavailable after deployment"
+# manual even though that was not the operator-selected state. Always execute
+# the configurator from the freshly cloned production tree so a transport-layer
+# fix can refresh the installed helpers even when deploy.sh legitimately takes
+# the already-applied/revalidation path and skips apply.
+[[ -s "$CONFIGURATOR_SOURCE" ]] || fail "2.x update configurator source is unavailable after deployment"
 log "Restoring automatic update mode: ${EXPECTED_INTERVAL} min"
-"$CONFIGURATOR" \
+bash "$CONFIGURATOR_SOURCE" \
     --repo "$REPO_URL" \
     --mode automatic \
     --interval-minutes "$EXPECTED_INTERVAL" \
     --no-check-now
+[[ -x "$CONFIGURATOR" ]] || fail "2.x update configurator was not installed by recovery"
 
 systemctl reset-failed srvcc-github-agent.service >/dev/null 2>&1 || true
 systemctl is-enabled --quiet srvcc-github-agent.timer || fail "update timer is not enabled after bootstrap"
