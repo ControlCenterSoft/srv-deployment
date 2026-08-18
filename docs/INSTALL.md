@@ -1,8 +1,23 @@
 # Установка Control Center
 
-## Чистая машина
+> **Назначение:** чистая установка текущего production release на новую Debian/Ubuntu-систему. Активная версия всегда определяется `../deployment.json`; на момент этой редакции production target — **2.0.0**.
 
-Clean installer предназначен для поддерживаемой Debian/Ubuntu-системы с `apt-get` и systemd, где `/opt/srv-control` ещё не содержит установленный Control Center.
+## Требования к новой системе
+
+Clean installer рассчитан на Debian/Ubuntu-систему с `apt-get` и systemd, где `/opt/srv-control` ещё не содержит установленный Control Center.
+
+Перед запуском проверьте:
+
+- рабочее сетевое подключение и DNS;
+- корректное системное время;
+- доступ к GitHub;
+- свободное место для пакетов, Python virtualenv, PostgreSQL, резервных копий и управляемых сервисов;
+- root/sudo доступ;
+- отсутствие существующей установки в `/opt/srv-control`.
+
+Installer намеренно прекращает работу, если `/opt/srv-control` уже содержит файлы. Для установленного продукта используется product updater, а не clean install поверх существующей системы.
+
+## Запуск
 
 ```bash
 curl -fL -o install.sh \
@@ -11,60 +26,106 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Bootstrap получает актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому устанавливается self-contained payload активного `releases/<version>`.
+Внешний `install.sh` устанавливает минимальные bootstrap-зависимости, клонирует текущий `main` во временный каталог и передаёт управление `installer/install.sh` из того же checkout.
 
-Перед установкой проверьте сеть, DNS, время, доступ к GitHub, свободное место и наличие root/sudo. При миграции существующего сервера предварительно создайте независимую резервную копию важных данных.
+## Что делает clean installer
 
-Установщик создаёт/настраивает PostgreSQL role/database, Python virtualenv, Alembic migrations, `srv-control.service`, reverse proxy, system helpers активного release и GitHub updater согласно фактической release implementation.
+Clean installer больше не ограничивается копированием web application payload. Он выполняет полный contract активного frozen release.
 
-## Аутентификация после установки
+Последовательность:
 
-Современная production-линия не создаёт отдельную базу web-паролей Control Center и не требует bootstrap web-user `admin`.
+```text
+bootstrap main
+  → validate deployment.json + manifest
+  → verify active apply/acceptance SHA-256
+  → install OS dependencies
+  → create srv-control identity/state
+  → install base application + venv + PostgreSQL
+  → configure Control Center service + nginx
+  → install PAM/NSS/auth bootstrap state
+  → run active frozen release apply
+  → run active frozen release acceptance
+  → final health/systemd acceptance
+```
 
-Вход использует системную identity chain:
+Для production 2.0.0 это принципиально важно: полный release apply устанавливает не только web-файлы, но и updater controller, backup policy/retention, Samba agents, DHCP/PXE agent, Minecraft compatibility/recovery helpers и соответствующие systemd units. Поэтому успешный HTTP health-check сам по себе больше не считается достаточным доказательством полноценной установки.
 
-- локальные Linux-учётные записи через NSS/PAM;
-- доменные учётные записи через Samba/winbind + NSS/PAM;
+## Проверка release metadata до изменения системы
+
+Installer читает `deployment.json`, затем manifest активного `releases/<version>` и проверяет как минимум:
+
+- `release_id`;
+- `release_path`;
+- `release_version`;
+- отсутствие выхода release/script paths за пределы repository/release directory;
+- SHA-256 активных `apply` и `acceptance` scripts по manifest.
+
+Если metadata противоречива или hash не совпадает, установка прекращается до запуска release apply.
+
+Опубликованные `releases/<version>` являются frozen и installer их не изменяет.
+
+## Устанавливаемые системные зависимости
+
+Базовый clean installer устанавливает через `apt-get`:
+
+```text
+ca-certificates
+curl
+git
+nginx
+postgresql
+postgresql-client
+python3
+python3-pip
+python3-venv
+sudo
+```
+
+Дополнительные пакеты/сервисы могут устанавливаться или настраиваться active release contract в зависимости от версии и включённых модулей.
+
+## Аутентификация и первый вход
+
+Production 2.0.0 не создаёт отдельную базу web-паролей Control Center и не создаёт bootstrap web-user `admin` с отдельным паролем.
+
+Identity chain:
+
+- локальные Linux identities через NSS/PAM;
+- доменные identities через Samba/winbind + NSS/PAM;
 - Kerberos/SPNEGO SSO при корректной доменной конфигурации;
-- RBAC Control Center после успешной authentication.
+- Control Center RBAC после successful authentication.
 
-Первый вход выполняется существующей локальной или доменной учётной записью с необходимыми правами.
+Первый вход выполняется существующей локальной или доменной учётной записью, которой назначены необходимые права. Если authentication проходит, но модуль недоступен, проверяйте RBAC.
 
-При наличии Samba AD DC release installation может настраивать HTTP Kerberos keytab/SPNEGO integration. Если SSO недоступен, интерактивный PAM/winbind login остаётся отдельным путем при условии корректной системной интеграции.
-
-Страница управления правами работает с доступными локальными/доменными identity и RBAC; она не создаёт отдельный парольный каталог Control Center.
+Файл `/var/lib/srv-control/admin-bootstrap.txt` относится к исторической архитектуре и не используется текущим clean installer.
 
 ## Основные пути
 
-Типовые пути production-линии:
-
 ```text
-/opt/srv-control                         приложение
-/etc/srv-control/control.toml            конфигурация
+/opt/srv-control                         application
+/etc/srv-control/control.toml            configuration
 /etc/pam.d/srv-control                    PAM service
-/var/lib/srv-control                     состояние Control Center
-/var/lib/srv-control/backups             резервные копии
-/var/lib/srv-control/session.key          ключ web-сессий
-/var/lib/srv-control/http.keytab          HTTP keytab SSO при наличии
-/var/lib/srv-deployment                   deployment state/rollback state
-/var/lib/srvcc-agent/deploy-repo          updater checkout GitHub main
-/var/lib/srvcc-agent/last-deployed-sha
-/var/lib/srvcc-agent/last-seen-sha
-/var/lib/srvcc-agent/last-release-fingerprint
-/var/log/srvcc-agent.log
+/var/lib/srv-control                     product state
+/var/lib/srv-control/backups             backups
+/var/lib/srv-control/session.key          web session key
+/var/lib/srv-control/http.keytab          HTTP Kerberos keytab, если настроен
+/var/lib/srv-deployment                   deployment/rollback state
+/var/lib/srvcc-agent                      product updater state
+/var/log/srv-control-install.log          clean-install log
 ```
 
-Точный набор файлов/units конкретной версии определяется frozen `releases/<active-version>`.
+Точный набор helpers, units и state files определяется active frozen release.
 
-## GitHub updates
+## Product updater после установки
 
-Режим обновления настраивается из «Система» либо конфигуратором:
+Для 2.0.0 active release apply разворачивает актуальный updater controller/configurator и восстанавливает штатный automatic mode с 5-минутным интервалом для новой установки.
+
+Проверка:
 
 ```bash
-sudo /usr/local/sbin/srvcc-configure-auto-updates \
-  --repo https://github.com/filosoff31/srv-deployment.git \
-  --mode automatic \
-  --interval-minutes 5
+systemctl is-enabled srvcc-github-agent.timer
+systemctl is-active srvcc-github-agent.timer
+cat /var/lib/srv-control/github-update-config.json
+cat /var/lib/srv-control/github-update-status.json
 ```
 
 Ручная проверка без применения:
@@ -73,62 +134,68 @@ sudo /usr/local/sbin/srvcc-configure-auto-updates \
 sudo /usr/local/sbin/srvcc-github-agent check --actor root
 ```
 
-Применение доступного product release:
+Ручное применение доступного product release:
 
 ```bash
 sudo /usr/local/sbin/srvcc-github-agent apply --actor root
 ```
 
-Если включена `backup_before_update`, updater сначала создаёт safety backup и блокирует deployment при ошибке backup. Подробности: `AUTO-UPDATES.md`.
+Подробнее: `AUTO-UPDATES.md`.
 
-## Проверка установки
+## Backup policy
 
-Минимальная проверка:
+`backup_before_update` относится к последующим product/OS updates и не заменяет rollback snapshot release transaction.
+
+На чистой системе installer создаёт необходимое начальное state/config, после чего active release нормализует backup policy. Плановый backup и backup-before-update остаются независимыми настройками.
+
+## Acceptance после установки
+
+Installer запускает **frozen acceptance script активного release**, а затем дополнительный clean-install health check.
+
+Минимально должны подтверждаться:
 
 ```bash
-systemctl status srv-control.service --no-pager -l
-systemctl status srvcc-github-agent.timer --no-pager -l
+systemctl is-active srv-control.service
+systemctl is-active nginx.service
+systemctl is-enabled srvcc-github-agent.timer
+systemctl is-active srvcc-github-agent.timer
+systemctl is-active srv-control-system-agent.path
 curl -fsS http://127.0.0.1:8876/api/v1/health
 cat /var/lib/srv-control/release.json
-cat /var/lib/srv-control/github-update-config.json
-cat /var/lib/srv-control/github-update-status.json
 ```
 
-Проверка identity/admin path:
+Для 2.0.0 frozen acceptance дополнительно проверяет release-specific UI/API/assets/helpers/systemd contracts, включая updater, backups, DHCP/PXE и Minecraft compatibility path.
+
+Если release acceptance завершается ошибкой, installation не должна сообщать `INSTALL PASS`.
+
+## Где смотреть лог
 
 ```bash
-getent passwd <local-user>
-systemctl status srv-control-system-agent.path --no-pager -l
-ls -ld /var/lib/srv-control/backups
+sudo less /var/log/srv-control-install.log
 ```
 
-Если установлен `pamtester`, PAM можно проверять отдельно без публикации пароля в shell history/logs.
+При диагностике не публикуйте session keys, Kerberos key material, passwords, access tokens, private keys или содержимое backup archives.
 
-При настроенном AD/SPNEGO дополнительно проверяйте winbind/NSS, Kerberos ticket/keytab, DNS/FQDN и соответствующую Nginx authentication configuration.
+## Определение версии
 
-## Определение активной версии
-
-Не полагайтесь на номер версии в старой инструкции. Сначала смотрите опубликованный production target:
+Production target репозитория:
 
 ```bash
-# в checkout репозитория
 cat deployment.json
 ```
 
-На установленном сервере отдельно проверяйте:
+Версия установленного сервера:
 
 ```bash
 cat /var/lib/srv-control/release.json
 ```
 
-Эти значения могут временно различаться после failed update и rollback.
+Эти значения могут различаться после failed update/rollback, поэтому при диагностике фиксируйте оба.
 
-## Повторный clean install
+## Повторная установка
 
-Clean installer намеренно не должен безусловно перезаписывать существующий `/opt/srv-control`. Для установленной системы используется product updater. Destructive reinstall выполняется отдельным явно подтверждаемым процессом с резервной копией необходимых данных.
+Не запускайте clean installer поверх существующего `/opt/srv-control`.
 
-## server-state
+Для обычного обновления используйте product updater. Полная destructive reinstall допустима только как отдельная явно подтверждённая процедура с предварительной резервной копией необходимых данных.
 
-`server-state` используется для публикации фактического состояния сервера и диагностики. Публикация требует отдельного write credential; секреты не должны встраиваться в публичный installer или документацию.
-
-После установки переходите к `PRODUCT-MANUAL-RU.md` и `SYSTEM-ADMIN.md`.
+После clean install переходите к `PRODUCT-MANUAL-RU.md`, `SYSTEM-ADMIN.md` и version-specific `2.0/ADMIN-GUIDE.md`.
