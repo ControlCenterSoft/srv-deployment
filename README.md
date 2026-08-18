@@ -26,6 +26,15 @@
 - компактная кнопка перезагрузки находится рядом со статусом «Данные актуальны»;
 - временные UI-заглушки для неготовых функций не отображаются.
 
+## Product roadmap
+
+Канонические документы проекта:
+
+- `docs/ROADMAP.md` — согласованный roadmap 1.4.x–1.8.x, правила развития и границы релизов;
+- `docs/RELEASE-HISTORY.md` — история опубликованных версий и назначение каждой release line.
+
+Roadmap в GitHub является основной точкой фиксации дальнейшего product scope. При изменении требований сначала обновляется roadmap, затем release-specific scope и implementation plan.
+
 ## Структура релизов
 
 ```text
@@ -95,6 +104,8 @@ preflight → backup → apply → acceptance → healthcheck
 
 ## Документация
 
+- `docs/ROADMAP.md` — канонический product roadmap;
+- `docs/RELEASE-HISTORY.md` — история версий;
 - `docs/INSTALL.md` — установка на чистую машину;
 - `docs/AUTO-UPDATES.md` — GitHub updater;
 - `docs/DEPLOYMENT-RELIABILITY.md` — надёжность deployment-канала;
