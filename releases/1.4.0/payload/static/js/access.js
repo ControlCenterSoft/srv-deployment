@@ -32,6 +32,7 @@
     let modules = {};
     let directoryGroups = [];
     let directoryUsers = [];
+    let busyGrantId = null;
 
     function text(value) {
         return value == null || value === "" ? "—" : String(value);
@@ -40,6 +41,8 @@
     function setMessage(value, error = false) {
         message.textContent = value || "";
         message.classList.toggle("error", error);
+        message.setAttribute("role", error ? "alert" : "status");
+        message.setAttribute("aria-live", error ? "assertive" : "polite");
     }
 
     function sourceLabel(value) {
@@ -135,10 +138,13 @@
 
             const actionCell = document.createElement("td");
             const remove = document.createElement("button");
+            const busy = String(busyGrantId) === String(grant.id);
             remove.type = "button";
             remove.className = "remove-grant";
-            remove.textContent = "Удалить";
-            remove.addEventListener("click", () => removeGrant(grant.id));
+            remove.textContent = busy ? "Удаление…" : "Удалить";
+            remove.disabled = busy;
+            remove.setAttribute("aria-busy", busy ? "true" : "false");
+            remove.addEventListener("click", () => removeGrant(grant));
             actionCell.appendChild(remove);
             tr.appendChild(actionCell);
             rows.appendChild(tr);
@@ -197,82 +203,113 @@
     }
 
     async function load() {
-        const statusResponse = await fetch("/api/v1/auth/status", {cache: "no-store"});
-        if (!statusResponse.ok) {
-            window.top.location.replace("/login");
-            return;
-        }
-        const status = await statusResponse.json();
-        const identity = status.data && status.data.identity;
-        csrfToken = (status.data && status.data.csrf_token) || "";
-        identityBadge.textContent = identity ? identity.username : "—";
+        rows.setAttribute("aria-busy", "true");
+        try {
+            const statusResponse = await fetch("/api/v1/auth/status", {cache: "no-store"});
+            if (!statusResponse.ok) {
+                window.top.location.replace("/login");
+                return;
+            }
+            const status = await statusResponse.json();
+            const identity = status.data && status.data.identity;
+            csrfToken = (status.data && status.data.csrf_token) || "";
+            identityBadge.textContent = identity ? identity.username : "—";
 
-        const [grantResponse, directoryResponse] = await Promise.all([
-            fetch("/api/v1/access/grants", {cache: "no-store"}),
-            fetch("/api/v1/access/directory", {cache: "no-store"}),
-        ]);
-        if (grantResponse.status === 403 || directoryResponse.status === 403) {
-            subjectGrid.hidden = true;
-            setMessage("Управление правами доступно полному администратору.", true);
-            return;
-        }
-        if (!grantResponse.ok || !directoryResponse.ok) throw new Error("failed to load access data");
+            const [grantResponse, directoryResponse] = await Promise.all([
+                fetch("/api/v1/access/grants", {cache: "no-store"}),
+                fetch("/api/v1/access/directory", {cache: "no-store"}),
+            ]);
+            if (grantResponse.status === 403 || directoryResponse.status === 403) {
+                subjectGrid.hidden = true;
+                setMessage("Управление правами доступно полному администратору.", true);
+                return;
+            }
+            if (!grantResponse.ok || !directoryResponse.ok) throw new Error("failed to load access data");
 
-        const grants = await grantResponse.json();
-        const directory = await directoryResponse.json();
-        modules = (grants.data && grants.data.modules) || {};
-        renderModuleOptions();
-        renderGrantRows((grants.data && grants.data.grants) || []);
-        renderDirectory(directory.data || {});
+            const grants = await grantResponse.json();
+            const directory = await directoryResponse.json();
+            modules = (grants.data && grants.data.modules) || {};
+            renderModuleOptions();
+            renderGrantRows((grants.data && grants.data.grants) || []);
+            renderDirectory(directory.data || {});
+        } finally {
+            rows.setAttribute("aria-busy", "false");
+        }
     }
 
-    async function removeGrant(id) {
+    async function removeGrant(grant) {
+        const subjectName = grant.subject_name || grant.group_name || "назначение";
+        const scope = grant.access === "admin"
+            ? "роль полного администратора"
+            : `${accessLabel(grant.access)}: ${modules[grant.module] || grant.module || "модуль"}`;
+        if (!window.confirm(`Удалить ${scope} для «${subjectName}»?`)) return;
+
         setMessage("");
-        const response = await fetch(`/api/v1/access/grants/${encodeURIComponent(id)}`, {
-            method: "DELETE",
-            headers: {"X-CSRF-Token": csrfToken},
-        });
-        if (!response.ok) {
-            setMessage("Не удалось удалить назначение.", true);
-            return;
+        busyGrantId = grant.id;
+        try {
+            const response = await fetch(`/api/v1/access/grants/${encodeURIComponent(grant.id)}`, {
+                method: "DELETE",
+                headers: {"X-CSRF-Token": csrfToken},
+            });
+            if (!response.ok) {
+                setMessage("Не удалось удалить назначение.", true);
+                return;
+            }
+            await load();
+            setMessage("Назначение удалено.");
+        } finally {
+            busyGrantId = null;
         }
-        await load();
-        setMessage("Назначение удалено.");
     }
 
     async function submitGrant(type, event) {
         event.preventDefault();
         setMessage("");
         const control = controls[type];
+        const submit = control.form.querySelector("button[type='submit']");
         const subjectName = control.subject.value.trim();
         if (!subjectName) {
             setMessage(type === "group" ? "Выберите группу." : "Выберите пользователя.", true);
             return;
         }
-        const response = await fetch("/api/v1/access/grants", {
-            method: "POST",
-            headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken},
-            body: JSON.stringify({
-                subject_type: type,
-                subject_name: subjectName,
-                source: control.source.value,
-                module: control.access.value === "admin" ? "*" : control.module.value,
-                access: control.access.value,
-            }),
-        });
-        if (!response.ok) {
-            let detail = "";
-            try {
-                const payload = await response.json();
-                detail = payload.detail || payload.error || "";
-            } catch (_) {}
-            setMessage(`Не удалось сохранить назначение.${detail ? ` ${detail}` : ""}`, true);
-            return;
+        if (control.access.value === "admin") {
+            const approved = window.confirm(
+                `Назначить «${subjectName}» роль полного администратора Control Center? Эта роль предоставляет доступ ко всем административным операциям.`
+            );
+            if (!approved) return;
         }
-        await load();
-        setMessage(control.access.value === "admin"
-            ? "Роль полного администратора сохранена."
-            : (type === "group" ? "Права группы сохранены." : "Права пользователя сохранены."));
+
+        submit.disabled = true;
+        submit.setAttribute("aria-busy", "true");
+        try {
+            const response = await fetch("/api/v1/access/grants", {
+                method: "POST",
+                headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken},
+                body: JSON.stringify({
+                    subject_type: type,
+                    subject_name: subjectName,
+                    source: control.source.value,
+                    module: control.access.value === "admin" ? "*" : control.module.value,
+                    access: control.access.value,
+                }),
+            });
+            if (!response.ok) {
+                let detail = "";
+                try {
+                    const payload = await response.json();
+                    detail = payload.detail || payload.error || "";
+                } catch (_) {}
+                setMessage(`Не удалось сохранить назначение.${detail ? ` ${detail}` : ""}`, true);
+                return;
+            }
+            await load();
+            setMessage(control.access.value === "admin"
+                ? "Роль полного администратора сохранена."
+                : (type === "group" ? "Права группы сохранены." : "Права пользователя сохранены."));
+        } finally {
+            submit.removeAttribute("aria-busy");
+            renderSubjectOptions(type);
+        }
     }
 
     for (const type of ["group", "user"]) {
@@ -282,5 +319,6 @@
         control.form.addEventListener("submit", (event) => submitGrant(type, event));
     }
 
+    message.setAttribute("aria-live", "polite");
     load().catch(() => setMessage("Не удалось загрузить права пользователей.", true));
 })();
