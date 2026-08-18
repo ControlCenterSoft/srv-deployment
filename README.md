@@ -25,13 +25,17 @@ Control Center — web-панель управления Linux-сервером.
 
 Web UI работает от отдельной системной УЗ `control-center` без root-доступа. Привилегированные операции выполняются отдельными systemd helpers.
 
-Подтверждённая Professional-лицензия хранится в защищённом каталоге:
+State разделён по уровню доверия:
 
 ```text
-/var/lib/control-center-license/license.json
+/var/lib/control-center          # Web-writable requests/settings/status
+/var/lib/control-center-root     # root-only rollback state, mode 0700
+/var/lib/control-center-license  # root-owned подтверждённая лицензия
 ```
 
-Каталог принадлежит `root:root`; Web-процесс имеет только чтение. Приватный ключ издателя **не хранится в GitHub и не устанавливается на клиентский сервер**.
+Network и DHCP root helpers **повторно валидируют pending JSON** перед привилегированным применением и не полагаются только на Web/API-валидацию. Web service не имеет доступа к root rollback state и имеет только чтение подтверждённой лицензии.
+
+Приватный ключ издателя **не хранится в GitHub и не устанавливается на клиентский сервер**.
 
 ## Обновления пакетов
 
@@ -70,14 +74,16 @@ systemctl status control-center --no-pager
 
 ## Документация
 
+- `docs/README.md` — индекс документации;
 - `docs/INSTALL.md` — установка, обновление существующей установки и удаление;
 - `docs/UPDATE.md` — обновление самого Control Center;
 - `docs/OS_UPDATES.md` — обновление ОС и системных пакетов;
 - `docs/LICENSING.md` — Home/Professional и выпуск/активация лицензий;
 - `docs/NETWORK.md` — WAN/LAN и Netplan;
 - `docs/DHCP.md` — установка и настройка DHCP Server;
-- `docs/SECURITY.md` — модель привилегий, защита лицензии и известные ограничения;
-- `docs/TROUBLESHOOTING.md` — диагностика компонентов.
+- `docs/SECURITY.md` — модель привилегий, zero-trust helpers и известные ограничения;
+- `docs/TROUBLESHOOTING.md` — диагностика компонентов;
+- `docs/AUDIT-1.0.5.md` — результаты аудита и acceptance checklist.
 
 ## Важное ограничение безопасности
 
@@ -91,7 +97,7 @@ systemctl status control-center --no-pager
 sudo bash install/uninstall.sh
 ```
 
-С сохранением состояния и лицензии:
+С сохранением Web-state, root rollback-state и лицензии:
 
 ```bash
 sudo bash install/uninstall.sh --keep-data
@@ -99,4 +105,4 @@ sudo bash install/uninstall.sh --keep-data
 
 ## Исправления текущего аудита
 
-В рамках проверки 1.0.5 исправлены: защищённое root-only хранение Professional-лицензии, валидная пара ключей издателя, ошибка проверки `APP_VERSION` в updater, rollback DHCP-конфигурации, восстановление сохранённых WAN/LAN значений в Web UI, одновременное отображение RX/TX на WAN-графике, общий APT lock и полное удаление всех новых services/helpers.
+В рамках проверки 1.0.5 исправлены: защищённое root-only хранение Professional-лицензии и rollback state, повторная root-валидация network/DHCP requests, валидная пара ключей издателя, ошибка проверки `APP_VERSION` в updater, rollback DHCP-конфигурации, восстановление сохранённых WAN/LAN значений в Web UI, одновременное отображение RX/TX на WAN-графике, общий APT lock, полное удаление всех новых services/helpers, устаревшая документация и кэширование публичного bootstrap.
