@@ -57,13 +57,14 @@ grep -Fq '/api/v1/system/backups/delete-many' "$PROJECT/static/js/system-2.0.js"
 runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 \
     "$PROJECT/venv/bin/python" - <<'PY'
 from app.main import app
-paths={route.path for route in app.routes}
+schema=app.openapi()
+paths=set((schema.get('paths') or {}).keys())
 assert '/api/v1/system/backups/delete-many' in paths, sorted(paths)
 assert '/api/v1/minecraft/legacy/status' in paths, sorted(paths)
 assert '/ui/module/dhcp' in paths, sorted(paths)
 assert '/ui/module/pxe-windows' in paths, sorted(paths)
 assert '/ui/module/pxe-linux' in paths, sorted(paths)
-print('2.0 ROUTE PASS: system, Minecraft, DHCP and PXE routes registered')
+print('2.0 ROUTE PASS: system, Minecraft, DHCP and PXE routes registered through OpenAPI')
 PY
 
 for helper in \
