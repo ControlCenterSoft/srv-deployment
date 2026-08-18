@@ -1,27 +1,52 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 STATE=/var/lib/control-center
+LICENSE_DIR=/var/lib/control-center-license
 REQ="$STATE/license-pending.json"
-OUT="$STATE/license.json"
+STATUS="$STATE/license-status.json"
+OUT="$LICENSE_DIR/license.json"
 PUB=/etc/control-center/license-public.pem
 [[ -f "$REQ" ]] || exit 0
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"; rm -f "$REQ"' EXIT
-python3 - "$REQ" "$TMP" <<'PY'
+mkdir -p "$LICENSE_DIR"
+chown root:root "$LICENSE_DIR"
+chmod 0755 "$LICENSE_DIR"
+TMP=$(mktemp -d)
+cleanup(){ rm -rf "$TMP"; rm -f "$REQ"; }
+trap cleanup EXIT
+write_status(){
+  python3 - "$STATUS" "$1" "$2" <<'PY'
+import json,sys,time
+open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='ok','state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
+PY
+  chown control-center:control-center "$STATUS" 2>/dev/null || true
+}
+if ! python3 - "$REQ" "$TMP" <<'PY'
 import json,sys,base64,pathlib
 r=json.load(open(sys.argv[1])); t=pathlib.Path(sys.argv[2])
-p=str(r.get('payload','')); s=str(r.get('signature',''))
-def dec(x): return base64.urlsafe_b64decode(x+'='*(-len(x)%4))
+def dec(x): return base64.urlsafe_b64decode(str(x)+'='*(-len(str(x))%4))
+p=str(r.get('payload','')).strip(); s=str(r.get('signature','')).strip()
+if not p or not s: raise SystemExit(2)
 (t/'payload.json').write_bytes(dec(p)); (t/'sig.bin').write_bytes(dec(s))
 PY
-openssl dgst -sha256 -verify "$PUB" -signature "$TMP/sig.bin" "$TMP/payload.json" >/dev/null || exit 1
-python3 - "$TMP/payload.json" "$OUT" <<'PY'
-import json,sys,hashlib,time,pathlib
+then write_status error 'Некорректный формат ключа активации'; exit 1; fi
+if ! openssl dgst -sha256 -verify "$PUB" -signature "$TMP/sig.bin" "$TMP/payload.json" >/dev/null 2>&1; then
+  write_status error 'Подпись лицензии недействительна'; exit 1
+fi
+if ! python3 - "$TMP/payload.json" "$OUT" <<'PY'
+import json,sys,hashlib,time,pathlib,re
 p=json.load(open(sys.argv[1])); mid=pathlib.Path('/etc/machine-id').read_text().strip(); device=hashlib.sha256(mid.encode()).hexdigest()[:24]
-if p.get('edition')!='Professional' or p.get('device_id')!=device: raise SystemExit(2)
+if p.get('edition')!='Professional': raise SystemExit(2)
+if p.get('device_id')!=device: raise SystemExit(3)
+lid=str(p.get('license_id','')).strip()
+if not lid or len(lid)>128 or not re.fullmatch(r'[A-Za-z0-9._:-]+',lid): raise SystemExit(4)
 exp=p.get('expires_at')
-if exp and int(exp)<int(time.time()): raise SystemExit(3)
-out={'edition':'Professional','activated':True,'license_id':p.get('license_id',''),'device_id':device,'expires_at':exp,'activated_at':int(time.time())}
-open(sys.argv[2],'w').write(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
+if exp is not None:
+    exp=int(exp)
+    if exp<=int(time.time()): raise SystemExit(5)
+out={'edition':'Professional','activated':True,'license_id':lid,'device_id':device,'expires_at':exp,'activated_at':int(time.time())}
+pathlib.Path(sys.argv[2]).write_text(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
 PY
-chmod 0644 "$OUT"
+then write_status error 'Лицензия не подходит для этого сервера или истекла'; exit 1; fi
 chown root:root "$OUT"
+chmod 0644 "$OUT"
+write_status ok 'Professional активирована'
