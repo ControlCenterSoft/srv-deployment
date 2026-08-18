@@ -4,63 +4,79 @@
 
 ## Область проверки
 
-Проверены структура release/main, Web API и Web UI, installer/uninstaller, обновление Control Center, обновление ОС и пакетов, WAN/LAN, DHCP Market и DHCP configuration helper, Home/Professional licensing, документация, public website и bootstrap installer.
+Проверены release/main, Web API/UI, Python/Bash/JSON, installer/uninstaller, systemd units, обновление Control Center, OS/package update, WAN/LAN, Netplan, DHCP Market/runtime/configuration, Home/Professional licensing, trust boundaries state-файлов, документация, public website/bootstrap и защита от регрессий.
 
-## Исправленные дефекты
+## Критичные исправления
 
-### Критичные
+- **Professional license trust:** подтверждённая лицензия вынесена из Web-writable state в `/var/lib/control-center-license` (`root:control-center 0750`, license `0640`).
+- **Module ownership trust:** DHCP ownership больше не хранится в Web-writable каталоге. Защищённый state находится в `/var/lib/control-center-system/modules/dhcp.json`.
+- **State separation:** добавлен `/var/lib/control-center-system` для applied state/status и `/var/lib/control-center-root` (`0700`) для rollback. Web service получает system/license read-only и полностью лишён доступа к root rollback state.
+- **Root revalidation:** network/DHCP helpers повторно валидируют pending requests перед привилегированным применением; Web API validation не считается границей доверия.
+- **DHCP ownership/runtime:** Control Center не захватывает внешний `dnsmasq`; managed DHCP работает отдельным `control-center-dhcp-server.service`. Пакет удаляется только при защищённом `package_owned=true`.
+- **Professional key chain:** сформирована рабочая RSA-пара издателя, в GitHub хранится только public key. Приватный issuing key не входит в продукт.
+- **Updater parser:** исправлена несовместимость проверки `APP_VERSION`; 1.0.5 остаётся читаемой старым updater 1.0.4.
+- **DHCP rollback:** неудачный `dnsmasq --test`/restart больше не оставляет повреждённую active configuration.
+- **dnsmasq IPv4 netmask:** CIDR из Web/API преобразуется в dotted IPv4 netmask перед формированием `dhcp-range`.
 
-- Подтверждённая Professional-лицензия ранее находилась в Web-writable state directory. Перенесена в `/var/lib/control-center-license`, владелец `root:root`; Web service получает только чтение.
-- Root rollback-копии ранее находились рядом с Web-writable state. Они перенесены в `/var/lib/control-center-root` (`root:root`, `0700`), который Web service не может читать через `InaccessiblePaths`.
-- Network/DHCP root helpers ранее полагались на то, что pending JSON уже проверен Web API. Теперь helpers повторно валидируют все привилегированно значимые параметры перед формированием Netplan/dnsmasq, то есть компрометация Web-процесса не позволяет обойти API-валидацию простой подменой pending-файла.
-- Для Professional создана реальная RSA key pair; в репозитории хранится только публичный ключ. Приватный ключ издателя не должен попадать в GitHub или на клиентские серверы.
-- Старый updater мог отвергать корректный релиз из-за жёсткого шаблона `APP_VERSION`. 1.0.5 совместима со старым parser, новый parser допускает пробелы вокруг `=`.
-- DHCP helper мог оставить повреждённый конфигурационный файл после неудачного `dnsmasq --test`. Добавлен backup/rollback.
+## Web/runtime исправления
 
-### Существенные
+- Flask development server заменён на **Gunicorn production WSGI** (`wsgi:app`).
+- Добавлены CSP, nosniff, frame denial, Referrer/Permissions/COOP headers и `Cache-Control: no-store` для API/HTML.
+- Добавлены same-origin проверки браузерных write requests и request body limit 64 KiB.
+- JSON writes в production переведены на уникальные atomic temp files, устраняя collision между Gunicorn workers.
+- Динамические строки перед `innerHTML` экранируются; устранён XSS-класс через локальные имена процессов/пользователей/системные строки.
+- WAN chart теперь одновременно показывает RX и TX.
+- WAN/LAN форма снова восстанавливает сохранённые параметры.
+- Декоративный `admin` убран: sidebar показывает реальную редакцию. Поиск (`Ctrl+K`) и сворачивание sidebar стали функциональными.
 
-- WAN live chart очищал первую линию при отрисовке второй; теперь RX и TX видны одновременно.
-- Форма WAN/LAN не восстанавливала сохранённые настройки; восстановлено заполнение формы.
-- Установка/удаление DHCP, installer и OS updater могли конкурировать за APT/dpkg; добавлен общий `/run/control-center-apt.lock`.
-- `uninstall.sh` не удалял новые services/path/timers/helpers; теперь удаляет весь набор 1.0.5 и поддерживает `--keep-data`.
-- DHCP validation дополнена запретом шлюза внутри выдаваемого диапазона.
-- OS/package updater использует `upgrade --with-new-pkgs` и сообщает о требуемой перезагрузке.
+## Пакеты и lifecycle
 
-### Документация и сайт
+- Installer, OS updater и Market используют общий `/run/control-center-apt.lock`.
+- OS updater использует `apt-get -y upgrade --with-new-pkgs`, не выполняет release-upgrade и не делает automatic reboot; статус показывает `reboot_required`.
+- `uninstall.sh` удаляет все services/path/timers/helpers; `--keep-data` сохраняет четыре state-каталога и служебную identity `control-center`.
+- Stale privileged pending requests удаляются при install/update и не воспроизводятся после переустановки.
 
-- `docs/INSTALL.md` был зафиксирован на 1.0.0, `docs/UPDATE.md` — на 1.0.1 и старой модели hour/day/week. Документация полностью синхронизирована с 1.0.5.
-- Добавлены руководства Licensing, OS Updates, Network, DHCP, Security, Troubleshooting, отчёт аудита и индекс документации.
-- Публичные страницы сайта статически показывали 1.0.1. Главная, Возможности, Релизы, Документация и Скачать обновлены до 1.0.5; добавлена страница Home/Professional.
-- Bootstrap сайта проверен на `release/1.0.5`.
-- Усилены HTTP security headers сайта, включая CSP.
-- Для `/install.sh` установлен `Cache-Control: no-store`, а для HTML и `assets/app.js` — revalidation, чтобы не повторялась выдача устаревшего bootstrap после deployment.
+## Документация и сайт
+
+- `docs/INSTALL.md` ранее был зафиксирован на 1.0.0, `docs/UPDATE.md` — на 1.0.1 и старой hour/day/week модели. Они полностью переписаны для 1.0.5.
+- Добавлены `LICENSING`, `OS_UPDATES`, `NETWORK`, `DHCP`, `SECURITY`, `TROUBLESHOOTING`, индекс docs и этот audit report.
+- Публичные страницы сайта были статически на 1.0.1; главная, Возможности, Релизы, Документация и Скачать синхронизированы с 1.0.5, добавлена страница Home/Professional.
+- Public bootstrap указывает на `release/1.0.5`.
+- Для `/install.sh` на сайте задан `Cache-Control: no-store`; HTML/app.js требуют revalidation, чтобы не повторялась выдача старого bootstrap из cache.
+- Усилены security headers публичного сайта.
 
 ## Автоматическая защита от регрессий
 
-Добавлен `.github/workflows/validate-release.yml`, который проверяет Python/Bash syntax, JSON, согласованность версий, release manifest, public RSA key, отсутствие приватного signing key и обязательную документацию.
+`.github/workflows/validate-release.yml` проверяет Python/Bash syntax, JSON, version/deployment/manifest consistency, Gunicorn/WSGI, protected state, DHCP isolation/netmask, public RSA key, отсутствие private signing material и обязательную документацию.
 
-Для сайта добавлен `.github/workflows/validate-site.yml`: проверка Bash bootstrap, совпадения bootstrap/fallback версии, обязательных страниц, локальных HTML-ссылок и security headers.
+`.github/workflows/validate-site.yml` проверяет bootstrap syntax/version, fallback release, обязательные страницы, локальные HTML links, security/cache headers.
+
+`scripts/acceptance-1.0.5.sh` выполняет non-destructive server acceptance: API/version/headers, service user, Gunicorn, timers/path units, state permissions, public key, Netplan и managed DHCP runtime/config.
 
 ## Известное ограничение
 
-В 1.0.5 ещё нет полноценной встроенной аутентификации Web UI. TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть. До реализации authentication/session/CSRF доступ должен ограничиваться доверенной LAN/VPN/firewall или защищённым reverse proxy.
+В 1.0.5 ещё **нет полноценной встроенной аутентификации Web UI**. TCP/8080 нельзя публиковать напрямую в Интернет или недоверенную сеть. CSP/same-origin/systemd hardening не заменяют authentication/authorization. До следующего этапа доступ должен ограничиваться доверенной административной LAN/VPN/firewall или reverse proxy с аутентификацией.
 
-## Что не является подтверждённым этим аудитом
+## Что этим аудитом не подтверждено
 
-Аудит исходников и конфигурации не заменяет acceptance-тест на реальном Ubuntu 26.04 сервере. В текущем инструментальном окружении не выполнялась полноценная VM-установка с systemd/Netplan/dnsmasq и не подтверждался фактический Cloudflare deployment публичного URL после последнего коммита.
+Статический/code audit не заменяет end-to-end acceptance на реальном Ubuntu 26.04 с systemd/Netplan/dnsmasq. Полная реальная переустановка, изменение активной сети и DHCP lease выдача в текущем инструментальном окружении не выполнялись.
 
-Криптографическая пара Professional была отдельно проверена локально операцией sign/verify OpenSSL.
+Фактический Cloudflare deployment public URL после последнего website commit также не был независимо подтверждён браузерным инструментом; GitHub source и deployment inputs обновлены.
 
-## Acceptance checklist на сервере
+RSA issuing pair отдельно проверена локальной OpenSSL sign/verify операцией.
+
+## Acceptance на сервере
+
+Из checkout `release/1.0.5`:
 
 ```bash
-cat /opt/control-center/VERSION
-curl -fsS http://127.0.0.1:8080/api/health | python3 -m json.tool
-systemctl status control-center --no-pager
-systemctl list-timers --all | grep control-center
-systemctl list-units --type=path | grep control-center
-ls -ld /var/lib/control-center /var/lib/control-center-root /var/lib/control-center-license
+sudo bash scripts/acceptance-1.0.5.sh
+```
+
+Дополнительно:
+
+```bash
 journalctl -p warning..alert --since '1 hour ago' --no-pager
 ```
 
-Затем отдельно проверить WAN/LAN, установку/настройку/удаление DHCP, manual OS update и тестовую Professional activation.
+После автоматического acceptance отдельно следует функционально проверить изменение WAN/LAN с доступом по резервному каналу, установку/настройку/удаление DHCP, получение lease тестовым клиентом, manual OS update и тестовую Professional activation.
