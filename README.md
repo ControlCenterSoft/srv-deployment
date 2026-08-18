@@ -1,100 +1,82 @@
-# Control Center 1.0.8
+# Control Center 1.0.9
 
-Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.8**, build **20260819.2**.
+Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.9**, build **20260819.3**.
 
-## Главное в 1.0.8
+## Главное в 1.0.9
 
-- постоянные статусы сервисов в **Маркете**: `Установка…`, `Работает`, `Ошибка`, `Не установлен`, `Запланировано`;
-- статус не сбрасывается при обновлении страницы или переходе между разделами;
-- при `Ошибка` diagnostic detail показывается tooltip при наведении мыши;
-- начало, успех и ошибка установки/удаления сервиса сохраняются как отдельные события и отображаются в колокольчике с датой/временем;
-- переработана и реально проверяется установка **DHCP Server / dnsmasq**;
-- recovery незавершённой предыдущей установки DHCP без автоматического захвата внешней DHCP-конфигурации;
-- **Настройки → Обновления Control Center**: кнопка установки активируется только при наличии нового Production release/build;
-- ручная установка обновления запускает root updater через `control-center-update-now.path`;
-- build `20260819.2` добавляет прямую совместимость со старым updater 1.0.6 и предварительное восстановление half-configured `dpkg/apt`;
-- PostgreSQL, Web-port, licensing, network/DHCP configuration и protected state архитектура 1.0.7 сохранены.
+- единая пагинация для длинных перечней и таблиц;
+- CPU dashboard: live chart + отдельный Top CPU;
+- RAM dashboard: live chart + отдельный Top RAM;
+- хранилище: круговая диаграмма заполнения + mount usage;
+- LAN RX/TX вместо WAN-карточки на обзоре;
+- в Web-настройках: **Стандартный порт** и **SSL / HTTPS**;
+- standard HTTP → `80`, standard HTTPS → `443`, custom → `1024–65535`;
+- self-signed TLS certificate с health-check/rollback;
+- PostgreSQL migration `002` под будущий Samba AD-DC;
+- `/api/samba/preflight` и UI проверки FQDN/LAN/time/DNS prerequisites;
+- Samba AD-DC отображается в Маркете как **Подготовлено**, но provisioning пока отключён.
 
-## Восстановление проблемного обновления 1.0.6
+## Пагинация
 
-Если сервер остаётся на 1.0.6, в уведомлениях есть `код 100`, ошибка обновления ОС/пакетов и `dnsmasq, установленный вне Control Center`, используйте:
+Pager автоматически появляется только когда список не помещается на одну страницу. Он используется для сетевых интерфейсов, DHCP options, RBAC users/groups, уведомлений и Маркета.
 
-```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/filosoff31/srv-deployment/release/1.0.8/scripts/repair-upgrade-1.0.6-to-1.0.8.sh \
-  | sudo bash
-```
+## Web-порт и HTTPS
 
-Скрипт сначала сохраняет диагностику и конфигурацию в `/var/lib/control-center-root/manual-repair-<timestamp>/`, затем запускает существующий production updater 1.0.6. Его штатный rollback остаётся активным.
+Control Center по-прежнему работает от системной УЗ `control-center`. Для bind на 80/443 systemd выдаёт только `CAP_NET_BIND_SERVICE`.
 
-Активная внешняя конфигурация `dnsmasq` не удаляется и не захватывается. Автоматическое восстановление DHCP выполняется только для legacy-состояния без пользовательской конфигурации.
-
-## PostgreSQL
-
-PostgreSQL остаётся базовым application data layer. Локальная роль `control-center` подключается через Unix socket/peer authentication. Пароль PostgreSQL в приложении не хранится, внешний PostgreSQL listener автоматически не открывается.
-
-Системные источники состояния Linux не заменяются БД: Netplan, systemd и dnsmasq остаются фактической конфигурацией ОС.
-
-## DHCP install lifecycle
-
-Market worker:
+При первом включении HTTPS создаются:
 
 ```text
-/api/market/dhcp
-  -> /var/lib/control-center/market-pending.json
-  -> control-center-market-apply.path
-  -> control-center-market-apply.service
-  -> /usr/local/sbin/control-center-market-apply
+/etc/control-center/tls/server.crt
+/etc/control-center/tls/server.key
 ```
 
-Защищённые результаты:
+Сертификат self-signed, поэтому браузер может показать предупреждение доверия. ACME/Let's Encrypt и пользовательские certificates будут отдельным этапом.
 
-```text
-/var/lib/control-center-system/market-status.json
-/var/lib/control-center-system/market-events.jsonl
-/var/lib/control-center-system/market-last.log
-/var/lib/control-center-system/modules/dhcp.json
-```
+Изменение Web runtime проходит через root helper с проверкой порта, restart, HTTP/HTTPS health-check и rollback.
 
-Fresh install использует временный `policy-rc.d`, выполняет package check и `dnsmasq --test`. Build 20260819.2 дополнительно умеет восстановить конкретный legacy failure 1.0.6 через явный root-owned recovery marker.
+## PostgreSQL и Samba AD-DC preparation
+
+PostgreSQL остаётся application data layer. Migration `002` создаёт `ad_dc_profiles`, `ad_dc_nodes`, `ad_dc_preflight_runs`. Пароли домена/Administrator не сохраняются в этих таблицах.
+
+1.0.9 не выполняет `samba-tool domain provision` и не меняет DNS/realm автоматически. Это будет отдельный релиз после preflight/backup/rollback архитектуры.
 
 ## Установка
 
 ```bash
-git clone --depth 1 --branch release/1.0.8 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.9 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Web UI по умолчанию:
+По умолчанию Web UI остаётся:
 
 ```text
 http://SERVER_IP:8080
 ```
 
-Если порт ранее изменён в настройках Control Center, installer сохраняет его.
+Далее в **Настройки → Web-панель** можно выбрать standard port и HTTPS.
 
 ## Acceptance
 
 ```bash
-sudo bash scripts/acceptance-1.0.8.sh
+sudo bash scripts/acceptance-1.0.9.sh
 ```
 
-Ожидаемый build:
+Ожидаемо:
 
 ```text
-20260819.2
+VERSION 1.0.9
+BUILD   20260819.3
+PostgreSQL migration 002
 ```
 
-GitHub Actions проверяет legacy updater payload check, PostgreSQL, fresh DHCP install/remove и отдельный legacy DHCP recovery scenario.
+## Наследование 1.0.8
 
-## Home / Professional
-
-- **Home** — домашнее некоммерческое использование;
-- **Professional** — коммерческое использование и расширенные возможности по лицензии.
+Сохраняются persistent Market statuses, исправленный DHCP lifecycle, PostgreSQL notifications, update-install button, recovery старого 1.0.6/dpkg состояния, Home/Professional, protected state и version/build-aware updater.
 
 ## Безопасность
 
-Встроенная Web-аутентификация административной панели пока не реализована. Web-порт Control Center необходимо ограничивать доверенной LAN/VPN/firewall и не публиковать напрямую в Интернет.
+Встроенная Web-аутентификация административной панели пока не реализована. Даже при HTTPS Web UI необходимо ограничивать доверенной LAN/VPN/firewall и не публиковать напрямую в Интернет.
 
-Подробности релиза: `releases/1.0.8/README.md`.
+Подробности: `releases/1.0.9/README.md`, `docs/WEB-PORT.md`, `docs/SAMBA-AD-DC.md`, `docs/UI.md`.
