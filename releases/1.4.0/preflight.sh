@@ -15,6 +15,7 @@ for f in \
   payload/static/js/shares-1.4.js payload/static/js/system-1.4.js payload/static/css/release-1.4.css \
   system/srv-control-release14-agent.service system/srv-control-release14-agent.path \
   system/srv-control-backup-retention.service system/srv-control-backup-retention.path \
+  system/srv-control-release14-agent.parts/11a.inc \
   system/srv-control-pxe-probe system/srv-control-backup \
   tests/pxe_contract.py tests/pxe_transport_contract.py tests/pxe_lifecycle_contract.py tests/pxe_backup_contract.py; do
   [[ -s "$RELEASE_DIR/$f" ]] || fail "release file missing: $f"
@@ -29,7 +30,7 @@ check_parts(){
 }
 check_parts payload/app/core/release14.parts 00.part 01.part 02.part 03.part 04.part 05.part 06.part 07.part
 check_parts payload/app/routers/release14.parts 00.part 01.part 02.part 03.part
-check_parts system/srv-control-release14-agent.parts 00.part 01.part 02.part 03.part 04.part 05.part 06.part 07.part 08.part 09.part 10.part 11.part 11a.part 12.part
+check_parts system/srv-control-release14-agent.parts 00.part 01.part 02.part 03.part 04.part 05.part 06.part 07.part 08.part 09.part 10.part 11.part 12.part
 
 CURRENT="$(python3 - <<'PY'
 import json
@@ -47,7 +48,9 @@ tmp_core="$(mktemp)"; tmp_router="$(mktemp)"; tmp_agent="$(mktemp)"
 trap 'rm -f "$tmp_core" "$tmp_router" "$tmp_agent"' EXIT
 cat "$RELEASE_DIR"/payload/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > "$tmp_core"
 cat "$RELEASE_DIR"/payload/app/routers/release14.parts/{00,01,02,03}.part > "$tmp_router"
-cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,11a,12}.part > "$tmp_agent"
+cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11}.part \
+    "$RELEASE_DIR/system/srv-control-release14-agent.parts/11a.inc" \
+    "$RELEASE_DIR/system/srv-control-release14-agent.parts/12.part" > "$tmp_agent"
 "$PROJECT/venv/bin/python" -m py_compile \
   "$RELEASE_DIR/payload/app/main.py" "$tmp_core" "$tmp_router" \
   "$RELEASE_DIR/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py" \
