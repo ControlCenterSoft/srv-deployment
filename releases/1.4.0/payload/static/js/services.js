@@ -5,6 +5,24 @@
     const message = document.getElementById("serviceMessage");
     let csrfToken = "";
 
+    const visual = {
+        "samba-ad-dc": {icon: "◇", theme: "green", hint: "Directory & Access"},
+        "isc-dhcp-server": {icon: "⇄", theme: "blue", hint: "DHCP Server"},
+        "tftpd-hpa": {icon: "PX", theme: "purple", hint: "PXE / TFTP"},
+        "adguard-vpn": {icon: "◈", theme: "cyan", hint: "VPN & Filtering"},
+    };
+
+    function serviceVisual(item) {
+        const known = visual[item.id];
+        if (known) return known;
+        const id = String(item.id || "").toLowerCase();
+        if (id.includes("pxe") || id.includes("tftp")) return {icon: "PX", theme: "purple", hint: "Network Boot"};
+        if (id.includes("dhcp")) return {icon: "⇄", theme: "blue", hint: "DHCP Server"};
+        if (id.includes("samba") || id.includes("domain")) return {icon: "◇", theme: "green", hint: "Directory & Access"};
+        if (id.includes("vpn") || id.includes("guard")) return {icon: "◈", theme: "cyan", hint: "VPN & Filtering"};
+        return {icon: "▦", theme: "blue", hint: "Managed Service"};
+    }
+
     function setMessage(value, error = false) {
         message.textContent = value || "";
         message.classList.toggle("error", error);
@@ -25,7 +43,7 @@
         setMessage("");
         if (serviceId === "samba-ad-dc" && operation === "remove") {
             const approved = window.confirm(
-                "Удалить пакеты Samba AD DC? Перед удалением Control Center создаст резервную копию домена, а база домена и данные шар не будут очищены."
+                "Удалить пакеты Samba AD DC? Перед удалением Control Center создаст резервную копию домена, а база домена и данные сетевых ресурсов не будут очищены."
             );
             if (!approved) return;
         }
@@ -42,7 +60,7 @@
             setMessage(detail || "Операция не выполнена.", true);
             return;
         }
-        setMessage("Операция запущена.");
+        setMessage("Операция запущена. Состояние будет обновлено автоматически.");
         window.setTimeout(load, 1400);
     }
 
@@ -58,20 +76,38 @@
     function render(items) {
         grid.textContent = "";
         for (const item of items) {
+            const style = serviceVisual(item);
             const card = document.createElement("article");
-            card.className = "service-card";
+            card.className = `service-card theme-${style.theme}`;
+
             const title = document.createElement("div");
             title.className = "service-card-title";
+
+            const icon = document.createElement("span");
+            icon.className = "service-card-icon";
+            icon.textContent = style.icon;
+            icon.setAttribute("aria-hidden", "true");
+
+            const titleCopy = document.createElement("div");
+            titleCopy.className = "service-title-copy";
             const name = document.createElement("strong");
             name.textContent = item.name;
+            const hint = document.createElement("small");
+            hint.textContent = style.hint;
+            titleCopy.append(name, hint);
+
             const state = document.createElement("span");
+            state.className = `service-state-badge ${item.installed ? "status-ok" : "status-error"}`;
             state.textContent = item.installed ? "Установлен" : "Не установлен";
-            title.append(name, state);
+            title.append(icon, titleCopy, state);
+
             const description = document.createElement("p");
-            description.textContent = item.description || "";
+            description.textContent = item.description || "Управляемый компонент Control Center.";
+
             const status = document.createElement("p");
             status.className = "service-status";
             status.textContent = statusText(item);
+
             const actions = document.createElement("div");
             actions.className = "service-actions";
             if (item.can_write) {
@@ -81,7 +117,13 @@
                 button.className = item.installed ? "danger-button" : "action-button";
                 button.addEventListener("click", () => action(item.id, item.installed ? "remove" : "install"));
                 actions.appendChild(button);
+            } else {
+                const locked = document.createElement("span");
+                locked.className = "service-status";
+                locked.textContent = "Только просмотр";
+                actions.appendChild(locked);
             }
+
             card.append(title, description);
             if (status.textContent) card.appendChild(status);
             card.appendChild(actions);
