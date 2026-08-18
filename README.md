@@ -1,66 +1,33 @@
-# SRV Control Center
+# Control Center
 
-`filosoff31/srv-deployment` — production-репозиторий SRV Control Center.
+`filosoff31/srv-deployment` — production-репозиторий Control Center: web-системы управления домашней/серверной инфраструктурой с единым Core, транзакционными product-релизами и централизованным администрированием.
 
-## Стабильный baseline 1.0.0
+## Текущее состояние
 
-Начиная с 1.0.0 ранее накопленные инкрементальные сборки 0.x объединены в самодостаточный baseline. Активный product-релиз определяется `deployment.json`, а каждый каталог `releases/<version>` содержит полный payload, системные helper/unit-файлы и собственные preflight/apply/acceptance/rollback.
+Фактический production target всегда определяется `deployment.json`, а не текстом README. На момент этой редакции `main` публикует **1.3.3**. `RELEASE-HISTORY.md` фиксирует, что реальный сервер остался на рабочем 1.3.1 после preflight failure 1.3.3; исправление готовится отдельным 1.3.4 patch release без изменения frozen 1.3.3.
 
-В 1.0.0 входят уже доведённые до production возможности: FastAPI/PostgreSQL Control Center, dashboard/health, системный обзор, сетевой overview/diagnostics и dry-run WAN/LAN planner, GitHub deployment metadata, защищённые системные действия, обновления ОС, AdGuard VPN CLI, graceful rotation Uvicorn workers, clean installer и GitHub updater.
+Каждый опубликованный `releases/<version>` считается frozen. Ошибки опубликованного релиза исправляются новой patch-версией.
 
-## Release 1.1.0 — переработка администрирования
+## Что представляет собой Control Center
 
-1.1.0 содержит только изменения, утверждённые владельцем проекта в `docs/RELEASE-1.1.0-SCOPE.md`:
+Текущая линия включает FastAPI/PostgreSQL web-панель, dashboard/health, Linux/PAM и доменную Samba/winbind аутентификацию, Kerberos/SPNEGO SSO, групповой RBAC, системное администрирование, GitHub product updater, OS maintenance, backup/restore, Samba Active Directory, Samba shares, AdGuard VPN и Minecraft Bedrock management.
 
-- обязательная авторизация через локальные Linux/PAM или доменные учётные записи без собственной базы пользователей/паролей Control Center;
-- Kerberos/SPNEGO SSO для доменной среды;
-- полный доступ root и серверных администраторов;
-- групповой RBAC Read/Write для «Домен / Samba», PXE Server, Minecraft, Docker, «Сеть» и «Торренты»;
-- отдельный раздел «Права пользователей» с каталогом локальных/доменных пользователей и групп;
-- настройки GitHub source/mode/period, отдельные операции «Проверить обновления» и «Обновить»;
-- ручной/автоматический режим обновления ОС с периодом 1–24 часа;
-- резервные копии БД, state/config и управляемых системных параметров с расписанием, backup-before-update, скачиванием, удалением и восстановлением;
-- «Загрузки» переименованы в «Торренты»;
-- отдельные пункты «AdGuard VPN» и «Сервисы»;
-- каталог сервисов содержит AdGuard VPN и PXE Server с фактическим состоянием и install/remove действиями согласно RBAC;
-- компактная кнопка перезагрузки находится рядом со статусом «Данные актуальны»;
-- временные UI-заглушки для неготовых функций не отображаются.
+Web-приложение не является root-процессом: критические системные операции проходят через специализированные privileged helpers/systemd agents и проверяются backend/RBAC.
 
-## Product roadmap
+## Release и update model
 
-Канонические документы проекта:
+`main` — единственный production update channel. `server-state` используется для публикации фактического состояния сервера. `release/*` — ветки подготовки и validation будущих релизов.
 
-- `docs/ROADMAP.md` — согласованный roadmap 1.4.x–1.8.x, правила развития и границы релизов;
-- `docs/RELEASE-HISTORY.md` — история опубликованных версий и назначение каждой release line.
-
-Roadmap в GitHub является основной точкой фиксации дальнейшего product scope. При изменении требований сначала обновляется roadmap, затем release-specific scope и implementation plan.
-
-## Структура релизов
+Типовая транзакция deployment:
 
 ```text
-deployment.json
-releases/
-├── 1.0.0/
-│   ├── manifest.json
-│   ├── preflight.sh
-│   ├── apply.sh
-│   ├── acceptance.sh
-│   ├── rollback.sh
-│   ├── payload/
-│   └── system/
-└── 1.1.0/
-    ├── manifest.json
-    ├── preflight.sh
-    ├── apply.sh
-    ├── acceptance.sh
-    ├── rollback.sh
-    ├── payload/
-    └── system/
+preflight → backup → apply → acceptance → healthcheck
+                                      ↘ failure → rollback
 ```
 
-`main` является единственным production update channel. `server-state` публикует фактическое состояние SRV. Ветки `release/*` используются только для подготовки и проверки нового product-релиза и production updater их не читает.
+Updater использует product fingerprint, поэтому documentation-only commit не должен повторно применять неизменившийся product release.
 
-## Чистая установка
+## Установка
 
 ```bash
 curl -fL -o install.sh \
@@ -69,45 +36,31 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-`installer/install.sh` читает текущий `deployment.json` и устанавливает полный payload активного релиза. Для 1.1.0 clean install дополнительно устанавливает PAM/NSS authentication, Kerberos/SPNEGO integration, RBAC migration, backup worker и системные update timers.
+Installer читает текущий `deployment.json` и разворачивает активный self-contained release. Перед production установкой ознакомьтесь с `docs/INSTALL.md` и статусом текущей версии в `docs/RELEASE-HISTORY.md`.
 
-## GitHub updater
+## Аутентификация
 
-Настройка выполняется через:
+Современная production-линия **не использует отдельный bootstrap web-пароль Control Center**. Вход выполняется существующей локальной Linux/PAM или доменной Samba/winbind учётной записью; затем применяется RBAC. Для доменной среды поддерживается Kerberos/SPNEGO SSO при корректной клиентской конфигурации.
 
-```text
-/usr/local/sbin/srvcc-configure-auto-updates
-```
-
-Updater хранит отдельно последний просмотренный commit, последний успешно применённый product commit и fingerprint активного релиза. Поэтому документационный commit не приводит к повторному apply неизменившегося product release.
-
-В 1.1.0 операции разделены:
-
-```bash
-sudo /usr/local/sbin/srvcc-github-agent check
-sudo /usr/local/sbin/srvcc-github-agent apply
-```
-
-`check` только обновляет сведения о доступном product-релизе. `apply` выполняет product deployment; если включено резервное копирование перед обновлением, отсутствие успешного backup блокирует apply.
-
-Полное описание: `docs/AUTO-UPDATES.md`.
-
-## Безопасность deployment
-
-Product release проходит:
-
-```text
-preflight → backup → apply → acceptance → healthcheck
-```
-
-При ошибке orchestrator выполняет rollback. Кодовые обновления используют graceful worker rotation, когда это совместимо. Секреты, пользовательские пароли и содержимое резервных копий не публикуются в Git.
+Подробности: `docs/SYSTEM-ADMIN.md` и каноническое `docs/PRODUCT-MANUAL-RU.md`.
 
 ## Документация
 
-- `docs/ROADMAP.md` — канонический product roadmap;
-- `docs/RELEASE-HISTORY.md` — история версий;
-- `docs/INSTALL.md` — установка на чистую машину;
+Начальная точка для пользователя и администратора — **`docs/PRODUCT-MANUAL-RU.md`**, каноническое русскоязычное руководство.
+
+Основные документы:
+
+- `docs/PRODUCT-MANUAL-RU.md` — обзор, доступ, установка, первый вход, интерфейс, администрирование, updates, backup/restore, Samba, shares, Minecraft, диагностика, безопасность и версии;
+- `docs/ROADMAP.md` — согласованный будущий product roadmap;
+- `docs/RELEASE-HISTORY.md` — история опубликованных версий и известный real-server status;
+- `docs/INSTALL.md` — чистая установка;
+- `docs/SYSTEM-ADMIN.md` — PAM/NSS/RBAC и privileged system administration;
 - `docs/AUTO-UPDATES.md` — GitHub updater;
-- `docs/DEPLOYMENT-RELIABILITY.md` — надёжность deployment-канала;
-- `docs/SYSTEM-ADMIN.md` — системные административные функции;
-- `docs/RELEASE-1.1.0-SCOPE.md` — обязательный scope и acceptance 1.1.0.
+- `docs/DEPLOYMENT-RELIABILITY.md` — транзакционная модель deployment/rollback;
+- `docs/PRODUCT-EDITIONS.md` — Home/Professional, licensing architecture и release-based lifecycle.
+
+Release-specific scope и incident/diagnostic документы являются историческими источниками для соответствующих версий и не должны трактоваться как описание текущего интерфейса, если они противоречат активной production metadata или каноническому руководству.
+
+## Развитие
+
+Roadmap является источником будущего scope. Изменения пользовательской архитектуры должны сопровождаться обновлением канонического руководства. Release-specific implementation не должна переписывать уже опубликованные frozen releases.
