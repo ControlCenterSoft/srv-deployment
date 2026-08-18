@@ -18,19 +18,22 @@ DHCP Server устанавливается из **Маркет → DHCP Server �
 - один или несколько DNS;
 - срок аренды от 10 до 10080 минут.
 
-## Проверки
+## Двухуровневая проверка
 
-До передачи root helper проверяются:
+Параметры проверяются Web API, а затем **повторно и независимо** root helper. Pending-файл находится в Web-writable state и поэтому не считается доверенным источником.
 
-- существование интерфейса;
-- корректность начала/конца диапазона;
-- принадлежность обоих адресов одной подсети;
+Root helper проверяет:
+
+- реальное существование интерфейса и безопасный формат его имени;
+- IPv4 начала и конца диапазона;
+- CIDR/mask;
+- принадлежность диапазона одной подсети;
 - порядок `start <= end`;
-- исключение адреса сети и broadcast;
-- корректность шлюза и его принадлежность подсети;
-- шлюз не должен входить в выдаваемый DHCP-диапазон;
-- корректность DNS;
-- срок аренды.
+- исключение network и broadcast;
+- IPv4 шлюза и его принадлежность подсети;
+- шлюз не должен входить в выдаваемый диапазон;
+- каждый DNS-адрес;
+- срок аренды 10–10080 минут.
 
 ## Применение
 
@@ -40,7 +43,7 @@ Web UI создаёт:
 /var/lib/control-center/dhcp-pending.json
 ```
 
-Root helper формирует:
+После привилегированной повторной проверки helper формирует временный файл и заменяет:
 
 ```text
 /etc/dnsmasq.d/control-center-dhcp.conf
@@ -53,7 +56,13 @@ dnsmasq --test
 systemctl restart dnsmasq
 ```
 
-В исправленной 1.0.5 перед заменой создаётся rollback-копия. Если `dnsmasq --test` или restart завершается ошибкой, прежний конфигурационный файл восстанавливается.
+Rollback-копия находится в root-only state:
+
+```text
+/var/lib/control-center-root/control-center-dhcp.conf.rollback
+```
+
+Если `dnsmasq --test` или restart завершается ошибкой, прежняя конфигурация восстанавливается. Невалидный запрос удаляется и получает статус `rejected`.
 
 ## Состояние
 
@@ -72,6 +81,7 @@ journalctl -u control-center-market-apply.service -n 100 --no-pager
 journalctl -u control-center-dhcp-apply.service -n 100 --no-pager
 sudo dnsmasq --test
 sudo cat /etc/dnsmasq.d/control-center-dhcp.conf
+sudo ls -l /var/lib/control-center-root/
 cat /var/lib/control-center/dhcp-status.json
 ```
 
