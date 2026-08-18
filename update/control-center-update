@@ -3,11 +3,13 @@ set -Eeuo pipefail
 REPO_URL="https://github.com/filosoff31/srv-deployment.git"
 DEPLOYMENT_URL="https://raw.githubusercontent.com/filosoff31/srv-deployment/main/deployment.json"
 STATE_DIR="/var/lib/control-center"
+ROOT_STATE="/var/lib/control-center-root"
 SETTINGS="$STATE_DIR/update-settings.json"
 STATUS="$STATE_DIR/update-status.json"
 VERSION_FILE="/opt/control-center/VERSION"
 LOCK_FILE="/run/control-center-update.lock"
 mkdir -p "$STATE_DIR"
+install -d -o root -g root -m 0700 "$ROOT_STATE"
 exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
 write_status(){ local result="$1" message="$2" latest="${3:-}"; python3 - "$STATUS" "$result" "$message" "$latest" <<'PY'
@@ -46,18 +48,18 @@ channel="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("channel"
 current="$(cat "$VERSION_FILE" 2>/dev/null || echo 0.0.0)"
 if ! dpkg --compare-versions "$latest" gt "$current"; then write_status ok "Установлена актуальная версия $current" "$latest"; exit 0; fi
 TMP="$(mktemp -d /tmp/control-center-update.XXXXXX)"
-BACKUP="$STATE_DIR/rollback-$current-$(date +%Y%m%d%H%M%S)"
+BACKUP="$ROOT_STATE/rollback-$current-$(date +%Y%m%d%H%M%S)"
 trap 'rm -rf "$TMP"' EXIT
 git clone --depth 1 --branch "release/$latest" "$REPO_URL" "$TMP/repo" >/dev/null 2>&1 || { write_status error "Не удалось получить release/$latest" "$latest"; exit 1; }
 [[ -x "$TMP/repo/install/install.sh" && -f "$TMP/repo/app/main.py" ]] || { write_status error "Релиз неполный: отсутствует install/install.sh или app/main.py" "$latest"; exit 1; }
 payload_version="$(grep -E '^APP_VERSION[[:space:]]*=' "$TMP/repo/app/main.py" | head -1 | tr -cd '0-9.')"
 [[ "$payload_version" == "$latest" ]] || { write_status error "Версия payload ($payload_version) не совпадает с release metadata ($latest)" "$latest"; exit 1; }
-mkdir -p "$BACKUP"
+mkdir -m 0700 "$BACKUP"
 [[ -d /opt/control-center ]] && cp -a /opt/control-center "$BACKUP/opt-control-center"
 [[ -f /etc/systemd/system/control-center.service ]] && cp -a /etc/systemd/system/control-center.service "$BACKUP/control-center.service"
 if bash "$TMP/repo/install/install.sh" --update-from "$current"; then
   write_status updated "Автоматически обновлено с $current до $latest" "$latest"
-  find "$STATE_DIR" -maxdepth 1 -type d -name 'rollback-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
+  find "$ROOT_STATE" -maxdepth 1 -type d -name 'rollback-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
   exit 0
 fi
 systemctl stop control-center 2>/dev/null || true
