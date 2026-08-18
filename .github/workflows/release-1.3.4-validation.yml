@@ -50,12 +50,15 @@ jobs:
           python3 - <<'PY'
           import pathlib,re
           source=pathlib.Path('releases/1.3.4/preflight.sh').read_text()
-          assert 'current < (1, 2, 0) or current > (1, 3, 0)' in source
           pattern=r'if current < \(1,\s*2,\s*0\) or current > \(1,\s*3,\s*0\):'
+          assert re.search(pattern,source), 'base version-range expression not found'
           patched,count=re.subn(pattern,'if current < (1, 2, 0) or current > (1, 3, 4):',source,count=1)
           assert count == 1
           assert 'current < (1, 2, 0) or current > (1, 3, 4)' in patched
-          print('1.3.3 spacing defect reproduced; 1.3.4 matcher succeeds')
+          spaced=source.replace('(1,2,0)','(1, 2, 0)').replace('(1,3,0)','(1, 3, 0)')
+          _,spaced_count=re.subn(pattern,'if current < (1, 2, 0) or current > (1, 3, 4):',spaced,count=1)
+          assert spaced_count == 1, 'matcher is whitespace-sensitive'
+          print('1.3.4 version matcher accepts compact and spaced tuple formatting')
           PY
       - name: Patch invariants
         run: |
