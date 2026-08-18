@@ -33,7 +33,7 @@ app.mount(
 # service provisioning creates the media directory.
 app.mount(
     "/pxe/files",
-    StaticFiles(directory="/srv/pxe/media", check_dir=False),
+    StaticFiles(directory='/srv/pxe/media', check_dir=False),
     name="pxe-files",
 )
 
@@ -58,7 +58,7 @@ PUBLIC_EXACT = {
     "/api/v1/auth/sso",
     "/api/v1/auth/status",
 }
-PUBLIC_PREFIXES = ("/static/", "/pxe/")
+PUBLIC_PREFIXES = ('/static/', '/pxe/')
 
 
 @app.middleware("http")
