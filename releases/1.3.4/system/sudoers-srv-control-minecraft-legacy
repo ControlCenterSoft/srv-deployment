@@ -1,0 +1,7 @@
+# SRV Control Center 1.3.2 - restored proven Minecraft backend.
+# Narrow access to the legacy helpers that already own validation and filesystem safety.
+srv-control ALL=(root) NOPASSWD: /usr/local/sbin/srv-control-minecraft *
+srv-control ALL=(root) NOPASSWD: /usr/local/sbin/srv-control-minecraft-players
+srv-control ALL=(root) NOPASSWD: /usr/local/sbin/srv-control-minecraft-worlds *
+srv-control ALL=(root) NOPASSWD: /usr/local/sbin/srv-control-minecraft-restore *
+srv-control ALL=(root) NOPASSWD: /usr/local/sbin/srv-control-minecraft-live

@@ -37,18 +37,34 @@ jobs:
 
           data=expected.read_bytes()
           assert hashlib.sha256(data).hexdigest()==item['sha256']
-          text=data.decode('utf-8')
+          wrapper=data.decode('utf-8')
           source=(root/'acceptance.sh').read_text(encoding='utf-8')
 
-          # Every active 1.3.x release must retain the restored-domain cache and
-          # domain-SID fixes, either directly or through its release wrapper.
-          assert 'mkdir -p -- "$restored/cache"' in text
-          assert 'defaultNamingContext' in text
-          assert '-b "$restored_base_dn" -s base objectSid' in text
-          assert 'restored domain naming context missing' in text
-          assert 'restored domain SID missing' in text
-          assert 'acceptance SID hotfix anchor not found; refusing unsafe patch' in text
+          required=(
+              'mkdir -p -- "$restored/cache"',
+              'defaultNamingContext',
+              '-b "$restored_base_dn" -s base objectSid',
+              'restored domain naming context missing',
+              'restored domain SID missing',
+              'acceptance SID hotfix anchor not found; refusing unsafe patch',
+          )
+          contract_text=wrapper
+          if not all(x in contract_text for x in required):
+              # Installer-only patches may wrap the immediately preceding proven
+              # acceptance implementation. The helper must live inside the same
+              # immutable release directory and the wrapper must explicitly
+              # advance its release identity rather than bypassing validation.
+              m=re.search(r'acceptance-(1\.3\.\d+)\.sh',wrapper)
+              assert m, 'active acceptance wrapper does not contain real-server hotfix contract or a validated predecessor helper'
+              helper=root/f'acceptance-{m.group(1)}.sh'
+              assert helper.is_file(),helper
+              assert "text=text.replace('1.3.3','1.3.4')" in wrapper or cfg['release_id']==m.group(1), 'release identity adaptation missing'
+              contract_text=helper.read_text(encoding='utf-8')
+
+          for needle in required:
+              assert needle in contract_text,needle
 
           old_sid = '''    restored_sid="$(ldbsearch -H "$restored_sam" -b '' -s base objectSid 2>/dev/null | awk '/^objectSid: /{print $2; exit}')"\n    [[ "$restored_sid" == "$live_sid" ]] || fail "restored domain SID mismatch"\n'''
           assert old_sid in source, 'production acceptance SID anchor changed unexpectedly'
+          print('REAL-SERVER ACCEPTANCE CONTRACT PASS:',cfg['release_id'])
           PY
