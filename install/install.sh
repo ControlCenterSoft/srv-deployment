@@ -12,6 +12,10 @@ python3 - "$BASE" "$TMP" <<'PY'
 from pathlib import Path
 import sys
 src,dst=map(Path,sys.argv[1:]);text=src.read_text()
+old_root='ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"'
+if old_root not in text:
+    raise SystemExit('Base 1.0.8 ROOT_DIR marker not found')
+text=text.replace(old_root,'ROOT_DIR="${CONTROL_CENTER_RELEASE_ROOT:?}"',1)
 text=text.replace('Control Center 1.0.8 build 20260819.2','Control Center 1.0.9 build 20260819.3')
 text=text.replace("'VERSION=1.0.7','VERSION=1.0.8'","'VERSION=1.0.7','VERSION=1.0.9'")
 text=text.replace("'BUILD=20260818.2','BUILD=20260819.2'","'BUILD=20260818.2','BUILD=20260819.3'")
@@ -19,7 +23,7 @@ text=text.replace('control-center-install-1.0.8.','control-center-install-1.0.9.
 dst.write_text(text)
 PY
 chmod 0755 "$TMP"
-bash "$TMP" "$@"
+CONTROL_CENTER_RELEASE_ROOT="$ROOT_DIR" bash "$TMP" "$@"
 
 install -m 0755 "$ROOT_DIR/system/control-center-web-run" /usr/local/sbin/control-center-web-run
 install -m 0755 "$ROOT_DIR/system/control-center-web-apply" /usr/local/sbin/control-center-web-apply
