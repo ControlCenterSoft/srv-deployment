@@ -2,8 +2,8 @@ from flask import Flask, jsonify, render_template, request
 import os, platform, socket, time, shutil, pwd, grp, json, subprocess, urllib.request, ipaddress, hashlib, re
 from pathlib import Path
 
-APP_VERSION = '1.0.6'
-APP_BUILD = '20260818.1'
+APP_VERSION = '1.0.7'
+APP_BUILD = '20260818.2'
 STATE_DIR = Path('/var/lib/control-center')
 SYSTEM_STATE_DIR = Path('/var/lib/control-center-system')
 LICENSE_DIR = Path('/var/lib/control-center-license')
