@@ -41,29 +41,46 @@ for unit in control-center-network-apply.path control-center-market-apply.path c
 check_file /etc/control-center/license-public.pem
 openssl pkey -pubin -in /etc/control-center/license-public.pem -noout >/dev/null 2>&1 && pass 'Professional public key valid' || fail 'Professional public key invalid'
 
-for d in /var/lib/control-center-root /var/lib/control-center-license; do
-  if [[ -d "$d" ]]; then
-    OWNER=$(stat -c '%U:%G' "$d"); MODE=$(stat -c '%a' "$d")
-    [[ "$OWNER" == root:root ]] && pass "$d owner root:root" || fail "$d owner $OWNER"
-    if [[ "$d" == /var/lib/control-center-root ]]; then [[ "$MODE" == 700 ]] && pass "$d mode 700" || fail "$d mode $MODE (expected 700)"; fi
-  else fail "$d missing"; fi
-done
+if [[ -d /var/lib/control-center-system ]]; then
+  OWNER=$(stat -c '%U:%G' /var/lib/control-center-system); MODE=$(stat -c '%a' /var/lib/control-center-system)
+  [[ "$OWNER" == root:control-center ]] && pass 'system state owner root:control-center' || fail "system state owner $OWNER"
+  [[ "$MODE" == 750 ]] && pass 'system state mode 750' || fail "system state mode $MODE"
+else fail '/var/lib/control-center-system missing'; fi
+
+if [[ -d /var/lib/control-center-root ]]; then
+  OWNER=$(stat -c '%U:%G' /var/lib/control-center-root); MODE=$(stat -c '%a' /var/lib/control-center-root)
+  [[ "$OWNER" == root:root ]] && pass 'root rollback state owner root:root' || fail "root rollback state owner $OWNER"
+  [[ "$MODE" == 700 ]] && pass 'root rollback state mode 700' || fail "root rollback state mode $MODE"
+else fail '/var/lib/control-center-root missing'; fi
+
+if [[ -d /var/lib/control-center-license ]]; then
+  OWNER=$(stat -c '%U:%G' /var/lib/control-center-license); MODE=$(stat -c '%a' /var/lib/control-center-license)
+  [[ "$OWNER" == root:control-center ]] && pass 'license state owner root:control-center' || fail "license state owner $OWNER"
+  [[ "$MODE" == 750 ]] && pass 'license state mode 750' || fail "license state mode $MODE"
+else fail '/var/lib/control-center-license missing'; fi
 
 if [[ -f /var/lib/control-center-license/license.json ]]; then
   OWNER=$(stat -c '%U:%G' /var/lib/control-center-license/license.json); MODE=$(stat -c '%a' /var/lib/control-center-license/license.json)
-  [[ "$OWNER" == root:root ]] && pass 'Professional license owner root:root' || fail "Professional license owner $OWNER"
-  (( (8#$MODE & 0022) == 0 )) && pass 'Professional license not group/world writable' || fail "Professional license unsafe mode $MODE"
+  [[ "$OWNER" == root:control-center ]] && pass 'Professional license owner root:control-center' || fail "Professional license owner $OWNER"
+  [[ "$MODE" == 640 ]] && pass 'Professional license mode 640' || fail "Professional license mode $MODE"
 fi
+
+for link in update-status.json os-update-status.json license-status.json network-config.json network-status.json market-status.json dhcp-config.json dhcp-status.json; do
+  [[ -L "/var/lib/control-center/$link" ]] && pass "$link compatibility link" || fail "$link compatibility link missing"
+done
+[[ -L /var/lib/control-center/modules ]] && pass 'protected modules compatibility link' || fail 'protected modules compatibility link missing'
 
 UNIT=$(systemctl cat control-center 2>/dev/null || true)
 grep -Fq 'NoNewPrivileges=true' <<<"$UNIT" && pass 'NoNewPrivileges enabled' || fail 'NoNewPrivileges missing'
-grep -Fq 'InaccessiblePaths=/var/lib/control-center-root' <<<"$UNIT" && pass 'root state hidden from Web service' || fail 'root state isolation missing'
+grep -Fq 'ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license' <<<"$UNIT" && pass 'system/license state read-only for Web service' || fail 'protected read-only state missing'
+grep -Fq 'InaccessiblePaths=/var/lib/control-center-root' <<<"$UNIT" && pass 'root rollback state hidden from Web service' || fail 'root state isolation missing'
 grep -Fq '/gunicorn ' <<<"$UNIT" && grep -Fq 'wsgi:app' <<<"$UNIT" && pass 'Gunicorn WSGI configured' || fail 'Gunicorn WSGI missing'
 
 if command -v netplan >/dev/null 2>&1; then netplan generate >/dev/null 2>&1 && pass 'netplan generate' || fail 'netplan generate failed'; fi
 
-if [[ -f /var/lib/control-center/modules/dhcp.json ]]; then
-  INSTALLED=$(python3 - /var/lib/control-center/modules/dhcp.json <<'PY'
+MODULE=/var/lib/control-center-system/modules/dhcp.json
+if [[ -f "$MODULE" ]]; then
+  INSTALLED=$(python3 - "$MODULE" <<'PY'
 import json,sys
 try:j=json.load(open(sys.argv[1]))
 except:j={}
@@ -71,6 +88,8 @@ print('true' if j.get('installed') else 'false')
 PY
 )
   if [[ "$INSTALLED" == true ]]; then
+    OWNER=$(stat -c '%U:%G' "$MODULE"); MODE=$(stat -c '%a' "$MODULE")
+    [[ "$OWNER" == root:control-center && "$MODE" == 640 ]] && pass 'DHCP ownership state protected' || fail "DHCP ownership state permissions $OWNER $MODE"
     check_file /etc/dnsmasq.d/control-center-dhcp.conf
     if grep -q '^dhcp-range=' /etc/dnsmasq.d/control-center-dhcp.conf 2>/dev/null; then
       dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf >/dev/null 2>&1 && pass 'Control Center DHCP config valid' || fail 'Control Center DHCP config invalid'
