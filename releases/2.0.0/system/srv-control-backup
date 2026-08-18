@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 import urllib.request
 import uuid
 
-
 APP_USER = "srv-control"
 APP_GROUP = "srv-control"
 BACKUP_DIR = Path("/var/lib/srv-control/backups")
@@ -27,6 +26,11 @@ MANAGED_PATHS = (
     Path("/var/lib/srv-control/github-update-config.json"),
     Path("/var/lib/srv-control/os-update-config.json"),
     Path("/var/lib/srv-control/backup-config.json"),
+    Path("/var/lib/srv-control/network-config.json"),
+    Path("/var/lib/srv-control/pxe/smb-credential.json"),
+    Path("/etc/dnsmasq.d/srv-control.conf"),
+    Path("/etc/default/tftpd-hpa"),
+    Path("/etc/samba/smb.conf"),
     Path("/etc/pam.d/srv-control"),
     Path("/etc/nginx/sites-available/srv-control"),
     Path("/etc/apt/apt.conf.d/20auto-upgrades"),
@@ -39,11 +43,17 @@ MANAGED_PATHS = (
     Path("/etc/systemd/system/srv-control-os-update.service"),
     Path("/etc/systemd/system/srv-control-backup.service"),
     Path("/etc/systemd/system/srv-control-backup.timer"),
+    Path("/etc/systemd/system/srv-control-release14-agent.service"),
+    Path("/etc/systemd/system/srv-control-release14-agent.path"),
+    Path("/etc/systemd/system/srv-control-backup-retention.service"),
+    Path("/etc/systemd/system/srv-control-backup-retention.path"),
     Path("/usr/local/sbin/srvcc-github-agent"),
     Path("/usr/local/sbin/srvcc-configure-auto-updates"),
     Path("/usr/local/libexec/srv-control-system-agent"),
     Path("/usr/local/libexec/srv-control-os-update"),
     Path("/usr/local/libexec/srv-control-os-auto-update"),
+    Path("/usr/local/libexec/srv-control-release14-agent"),
+    Path("/usr/local/libexec/srv-control-pxe-probe"),
 )
 
 
@@ -59,9 +69,7 @@ def run(command: list[str], *, timeout: int = 300) -> str:
     )
     output = result.stdout or ""
     if result.returncode != 0:
-        raise RuntimeError(
-            f"command failed ({result.returncode}): {' '.join(command)}\n{output[-4000:]}"
-        )
+        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}\n{output[-4000:]}")
     return output
 
 
@@ -126,66 +134,42 @@ def _copy_managed(stage: Path) -> None:
 
 def create_backup(actor: str, reason: str) -> dict:
     uid, gid = prepare_backup_dir()
-    backup_id = (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        + "-"
-        + uuid.uuid4().hex[:10]
-    )
+    backup_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:10]
     archive = BACKUP_DIR / f"{backup_id}.tar.gz"
     metadata_path = BACKUP_DIR / f"{backup_id}.json"
-
     root = make_shared_temp("srvcc-backup.")
     try:
         stage = root / "content"
         stage.mkdir(mode=0o750)
         os.chown(stage, uid, gid)
         dump = stage / "srv_control.dump"
-        run(
-            [
-                "runuser",
-                "-u",
-                APP_USER,
-                "--",
-                "pg_dump",
-                "-Fc",
-                "-d",
-                "srv_control",
-                "-f",
-                str(dump),
-            ],
-            timeout=600,
-        )
+        run(["runuser", "-u", APP_USER, "--", "pg_dump", "-Fc", "-d", "srv_control", "-f", str(dump)], timeout=600)
         if not dump.is_file() or dump.stat().st_size == 0:
             raise RuntimeError("database dump was not created")
         os.chown(dump, uid, gid)
         os.chmod(dump, 0o640)
-
         _copy_managed(stage)
         (stage / "backup-info.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "id": backup_id,
-                    "created_at": now(),
-                    "release": release_version(),
-                    "actor": actor,
-                    "reason": reason,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
+            json.dumps({
+                "schema_version": 2,
+                "id": backup_id,
+                "created_at": now(),
+                "release": release_version(),
+                "actor": actor,
+                "reason": reason,
+                "pxe_media_included": False,
+                "pxe_restore_policy": "revoke-active-authorizations",
+            }, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(stage, arcname="content", recursive=True)
     finally:
         remove_tree(root)
-
     os.chown(archive, 0, gid)
     os.chmod(archive, 0o640)
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": backup_id,
         "created_at": now(),
         "release": release_version(),
@@ -194,21 +178,17 @@ def create_backup(actor: str, reason: str) -> dict:
         "archive": archive.name,
         "size": archive.stat().st_size,
         "sha256": sha256(archive),
+        "pxe_media_included": False,
+        "pxe_restore_policy": "revoke-active-authorizations",
     }
-    metadata_path.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chown(metadata_path, 0, gid)
     os.chmod(metadata_path, 0o640)
     return metadata
 
 
 def load_metadata(backup_id: str) -> tuple[dict, Path]:
-    if not backup_id or any(
-        ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-        for ch in backup_id
-    ):
+    if not backup_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in backup_id):
         raise RuntimeError("invalid backup id")
     metadata_path = BACKUP_DIR / f"{backup_id}.json"
     if not metadata_path.is_file():
@@ -263,29 +243,74 @@ def migrate_restored_database() -> None:
     config = PROJECT / "alembic.ini"
     if not alembic.is_file() or not config.is_file():
         raise RuntimeError("current Control Center migration environment is missing")
-    run(
-        [
-            "runuser",
-            "-u",
-            APP_USER,
-            "--",
-            "env",
-            f"PYTHONPATH={PROJECT}",
-            "PYTHONDONTWRITEBYTECODE=1",
-            str(alembic),
-            "-c",
-            str(config),
-            "upgrade",
-            "head",
-        ],
-        timeout=600,
-    )
+    run([
+        "runuser", "-u", APP_USER, "--", "env", f"PYTHONPATH={PROJECT}", "PYTHONDONTWRITEBYTECODE=1",
+        str(alembic), "-c", str(config), "upgrade", "head",
+    ], timeout=600)
+
+
+def invalidate_restored_pxe_authorizations() -> None:
+    """Never reactivate an old installation attempt after restoring a backup."""
+    sql = r"""
+DO $$
+BEGIN
+  IF to_regclass('public.pxe_profiles') IS NOT NULL THEN
+    UPDATE pxe_profiles
+       SET install_authorized = false,
+           status = CASE WHEN status = 'installed' THEN 'installed' ELSE 'disabled' END,
+           consumed_at = NULL,
+           last_result = CASE WHEN status = 'installed' THEN last_result ELSE 'restore-requires-reauthorization' END,
+           config = COALESCE(config, '{}'::jsonb) - 'boot_token' - 'report_token',
+           updated_at = now();
+  END IF;
+END $$;
+"""
+    run(["runuser", "-u", APP_USER, "--", "psql", "-d", "srv_control", "-v", "ON_ERROR_STOP=1", "-c", sql], timeout=60)
+
+
+def _is_active(unit: str) -> bool:
+    return subprocess.run(
+        ["systemctl", "is-active", "--quiet", unit],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def _validate_and_reload_restored_services(previously_active: dict[str, bool]) -> None:
+    """Validate restored configs before restarting only services that were active."""
+    dnsmasq_conf = Path("/etc/dnsmasq.d/srv-control.conf")
+    if dnsmasq_conf.is_file() and shutil.which("dnsmasq"):
+        run(["dnsmasq", "--test"], timeout=30)
+        if previously_active.get("dnsmasq.service"):
+            run(["systemctl", "restart", "dnsmasq.service"], timeout=60)
+
+    samba_conf = Path("/etc/samba/smb.conf")
+    if samba_conf.is_file() and shutil.which("testparm"):
+        run(["testparm", "-s", str(samba_conf)], timeout=30)
+        for unit in ("samba-ad-dc.service", "smbd.service", "samba.service"):
+            if previously_active.get(unit):
+                run(["systemctl", "restart", unit], timeout=90)
+                break
+
+    if previously_active.get("tftpd-hpa.service"):
+        run(["systemctl", "restart", "tftpd-hpa.service"], timeout=60)
+
+    if Path("/etc/nginx/sites-available/srv-control").is_file() and shutil.which("nginx"):
+        run(["nginx", "-t"], timeout=30)
+        if previously_active.get("nginx.service"):
+            run(["systemctl", "reload", "nginx.service"], timeout=60)
 
 
 def _restore_raw(backup_id: str) -> dict:
     uid, gid = service_ids()
     metadata, archive = load_metadata(backup_id)
     root = make_shared_temp("srvcc-restore.")
+    managed_units = (
+        "dnsmasq.service", "tftpd-hpa.service", "samba-ad-dc.service",
+        "smbd.service", "samba.service", "nginx.service",
+    )
+    previously_active = {unit: _is_active(unit) for unit in managed_units}
     try:
         _safe_extract(archive, root)
         content = root / "content"
@@ -299,80 +324,32 @@ def _restore_raw(backup_id: str) -> dict:
 
         run(["systemctl", "stop", "srv-control.service"], timeout=30)
         try:
-            run(
-                [
-                    "runuser",
-                    "-u",
-                    "postgres",
-                    "--",
-                    "psql",
-                    "-d",
-                    "postgres",
-                    "-v",
-                    "ON_ERROR_STOP=1",
-                    "-c",
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname='srv_control' AND pid <> pg_backend_pid();",
-                ]
-            )
-            run(
-                [
-                    "runuser",
-                    "-u",
-                    "postgres",
-                    "--",
-                    "dropdb",
-                    "--if-exists",
-                    "srv_control",
-                ]
-            )
-            run(
-                [
-                    "runuser",
-                    "-u",
-                    "postgres",
-                    "--",
-                    "createdb",
-                    "--owner=srv-control",
-                    "srv_control",
-                ]
-            )
-            run(
-                [
-                    "runuser",
-                    "-u",
-                    APP_USER,
-                    "--",
-                    "pg_restore",
-                    "--no-owner",
-                    "-d",
-                    "srv_control",
-                    str(dump),
-                ],
-                timeout=600,
-            )
+            run([
+                "runuser", "-u", "postgres", "--", "psql", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c",
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='srv_control' AND pid <> pg_backend_pid();",
+            ])
+            run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "srv_control"])
+            run(["runuser", "-u", "postgres", "--", "createdb", "--owner=srv-control", "srv_control"])
+            run(["runuser", "-u", APP_USER, "--", "pg_restore", "--no-owner", "-d", "srv_control", str(dump)], timeout=600)
             migrate_restored_database()
+            invalidate_restored_pxe_authorizations()
             _restore_files(content)
             run(["systemctl", "daemon-reload"])
-            if Path("/etc/nginx/sites-available/srv-control").is_file():
-                run(["nginx", "-t"])
-                subprocess.run(
-                    ["systemctl", "reload", "nginx.service"],
-                    check=False,
-                )
+            _validate_and_reload_restored_services(previously_active)
         finally:
             run(["systemctl", "start", "srv-control.service"], timeout=30)
     finally:
         remove_tree(root)
 
-    with urllib.request.urlopen(
-        "http://127.0.0.1:8876/api/v1/health",
-        timeout=10,
-    ) as response:
+    with urllib.request.urlopen("http://127.0.0.1:8876/api/v1/health", timeout=10) as response:
         health = json.load(response)
     if health.get("ok") is not True:
         raise RuntimeError("Control Center healthcheck failed after restore")
-    return {"restored": backup_id, "backup_release": metadata.get("release")}
+    return {
+        "restored": backup_id,
+        "backup_release": metadata.get("release"),
+        "pxe_authorizations_revoked": True,
+    }
 
 
 def restore_backup(backup_id: str, actor: str) -> dict:
@@ -385,29 +362,21 @@ def restore_backup(backup_id: str, actor: str) -> dict:
         try:
             _restore_raw(str(safety["id"]))
         except Exception as rollback_error:
-            raise RuntimeError(
-                f"restore failed: {original}; safety rollback failed: {rollback_error}"
-            ) from original
-        raise RuntimeError(
-            f"restore failed and safety backup was restored: {original}"
-        ) from original
+            raise RuntimeError(f"restore failed: {original}; safety rollback failed: {rollback_error}") from original
+        raise RuntimeError(f"restore failed and safety backup was restored: {original}") from original
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
-
     create = sub.add_parser("create")
     create.add_argument("--actor", required=True)
     create.add_argument("--reason", default="manual")
-
     delete = sub.add_parser("delete")
     delete.add_argument("backup_id")
-
     restore = sub.add_parser("restore")
     restore.add_argument("backup_id")
     restore.add_argument("--actor", required=True)
-
     args = parser.parse_args()
     if args.command == "create":
         result = create_backup(args.actor, args.reason)
