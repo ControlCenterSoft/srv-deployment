@@ -1,0 +1,67 @@
+name: Release 1.3.4 validation
+
+on:
+  pull_request:
+    paths:
+      - 'deployment.json'
+      - 'releases/1.3.4/**'
+      - '.github/workflows/release-1.3.4-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          set -euxo pipefail
+          for f in \
+            releases/1.3.4/preflight-1.3.4.sh \
+            releases/1.3.4/apply-1.3.4.sh \
+            releases/1.3.4/acceptance-1.3.4.sh \
+            releases/1.3.4/rollback-1.3.4.sh
+          do
+            bash -n "$f"
+          done
+      - name: Metadata and hash contract
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('.')
+          dep=json.loads((root/'deployment.json').read_text())
+          man=json.loads((root/'releases/1.3.4/manifest.json').read_text())
+          assert dep['release_id']=='1.3.4'
+          assert man['release_id']=='1.3.4' and man['release_version']=='1.3.4'
+          release=root/dep['release_path']
+          for stage in ('preflight','apply','acceptance','rollback'):
+              p=root/dep[stage]
+              entry=man['scripts'][stage]
+              assert p == release/entry['path'],(stage,p,entry)
+              actual=hashlib.sha256(p.read_bytes()).hexdigest()
+              print(stage,actual)
+              assert actual == entry['sha256'],(stage,actual,entry['sha256'])
+          PY
+      - name: Preflight anchor regression
+        run: |
+          python3 - <<'PY'
+          import pathlib,re
+          source=(pathlib.Path('releases/1.3.3/preflight.sh').read_text())
+          pattern=r'if current < \(1,\s*2,\s*0\) or current > \(1,\s*3,\s*0\):'
+          patched,count=re.subn(pattern,'if current < (1, 2, 0) or current > (1, 3, 4):',source,count=1)
+          assert count == 1
+          assert 'current < (1, 2, 0) or current > (1, 3, 4)' in patched
+          assert 'current < (1,2,0)' not in source
+          print('1.3.3 spacing regression reproduced and 1.3.4 matcher succeeds')
+          PY
+      - name: Patch invariants
+        run: |
+          set -euxo pipefail
+          grep -q 're.subn' releases/1.3.4/preflight-1.3.4.sh
+          grep -q '../1.3.3' releases/1.3.4/apply-1.3.4.sh
+          grep -q "data\['version'\]='1.3.4'" releases/1.3.4/apply-1.3.4.sh
+          grep -q 'session.key missing after deployment' releases/1.3.3/acceptance-1.3.3.sh
+          grep -q 'minecraft-update.timer is not active' releases/1.3.3/acceptance-1.3.3.sh
