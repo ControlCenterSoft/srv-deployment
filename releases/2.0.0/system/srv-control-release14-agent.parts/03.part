@@ -1,0 +1,41 @@
+        if edition and edition.lower() in str(item.get('name') or '').lower(): index=int(item.get('index') or 1);break
+    token=str((profile.get('config') or {}).get('report_token') or '')
+    diskpart='''select disk 0\nclean\nconvert gpt\ncreate partition efi size=260\nformat quick fs=fat32 label=SYSTEM\nassign letter=S\ncreate partition msr size=16\ncreate partition primary\nformat quick fs=ntfs label=Windows\nassign letter=W\nexit\n'''
+    (target/'diskpart.txt').write_text(diskpart,encoding='utf-8')
+    unattend=f'''<?xml version="1.0" encoding="utf-8"?><unattend xmlns="urn:schemas-microsoft-com:unattend"><settings pass="specialize"><component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"><ComputerName>{profile['computer_name']}</ComputerName></component></settings><settings pass="oobeSystem"><component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"><InputLocale>{profile.get('locale') or 'ru-RU'}</InputLocale><SystemLocale>{profile.get('locale') or 'ru-RU'}</SystemLocale><UILanguage>{profile.get('locale') or 'ru-RU'}</UILanguage><UserLocale>{profile.get('locale') or 'ru-RU'}</UserLocale></component></settings></unattend>'''
+    (target/'unattend.xml').write_text(unattend,encoding='utf-8')
+    setup=[ '@echo off', f'net use Z: \\\\{server}\\PXE$ /user:{cred["username"]} {cred["password"]}', 'if errorlevel 1 exit /b 31' ]
+    setup += _software_commands(int(profile['id']),server,cred)
+    if profile.get('domain_join') and config.get('domain_user') and config.get('domain_password') and profile.get('domain_name'):
+        du=str(config['domain_user']).replace("'","''"); dp=str(config['domain_password']).replace("'","''"); domain=str(profile['domain_name']).replace("'","''")
+        setup += [f'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=ConvertTo-SecureString \'{dp}\' -AsPlainText -Force;$c=New-Object System.Management.Automation.PSCredential(\'{du}\',$p);Add-Computer -DomainName \'{domain}\' -Credential $c -Force"']
+    setup += [f'curl.exe -fsS -X POST http://{server}/pxe/report/{profile["id"]}/{token}/success >NUL 2>NUL', 'exit /b 0']
+    (target/'SetupComplete.cmd').write_text('\r\n'.join(setup)+'\r\n',encoding='utf-8')
+    start=f'''@echo off\r\nwpeinit\r\nwpeutil WaitForNetwork\r\nnet use Z: \\\\{server}\\PXE$ /user:{cred['username']} {cred['password']}\r\nif errorlevel 1 goto failed\r\ndiskpart /s X:\\Windows\\System32\\diskpart.txt\r\ndism /Apply-Image /ImageFile:Z:\\images\\{image_id}\\{install_name} /Index:{index} /ApplyDir:W:\\\r\nif errorlevel 1 goto failed\r\nmkdir W:\\Windows\\Panther 2>NUL\r\ncopy /y X:\\Windows\\System32\\unattend.xml W:\\Windows\\Panther\\Unattend.xml\r\nmkdir W:\\Windows\\Setup\\Scripts 2>NUL\r\ncopy /y X:\\Windows\\System32\\SetupComplete.cmd W:\\Windows\\Setup\\Scripts\\SetupComplete.cmd\r\nbcdboot W:\\Windows /s S: /f UEFI\r\nwpeutil reboot\r\n:failed\r\ncurl.exe -fsS -X POST http://{server}/pxe/report/{profile['id']}/{token}/failed >NUL 2>NUL\r\necho Installation failed.\r\npause\r\n'''
+    (target/'startnet.cmd').write_text(start,encoding='utf-8')
+    (target/'winpeshl.ini').write_text('[LaunchApp]\r\nAppPath = %SYSTEMROOT%\\System32\\startnet.cmd\r\n',encoding='utf-8')
+    base='http://${next-server}/pxe/files'
+    lines=['#!ipxe',f'kernel {base}/boot/wimboot gui',f'initrd {base}/profiles/{profile["id"]}/winpeshl.ini winpeshl.ini',f'initrd {base}/profiles/{profile["id"]}/startnet.cmd startnet.cmd',f'initrd {base}/profiles/{profile["id"]}/diskpart.txt diskpart.txt',f'initrd {base}/profiles/{profile["id"]}/unattend.xml unattend.xml',f'initrd {base}/profiles/{profile["id"]}/SetupComplete.cmd SetupComplete.cmd']
+    if (PXE_ROOT/f'images/{image_id}/BCD').is_file(): lines.append(f'initrd {base}/images/{image_id}/BCD BCD')
+    if (PXE_ROOT/f'images/{image_id}/boot.sdi').is_file(): lines.append(f'initrd {base}/images/{image_id}/boot.sdi boot.sdi')
+    lines += [f'initrd {base}/images/{image_id}/boot.wim boot.wim','boot']
+    (target/'boot.ipxe').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+
+
+def publish_linux(profile: dict, config: dict, target: Path, server: str) -> None:
+    image_id=int(profile['image_id']); meta=profile.get('metadata') or {}; flavor=str(meta.get('flavor') or 'ubuntu'); token=str((profile.get('config') or {}).get('report_token') or '')
+    user=str(config.get('username') or 'admin'); password=str(config.get('password_plain') or '')
+    if not password: raise RuntimeError('Linux PXE profile requires password_plain in an assigned configuration profile')
+    password_hash=run(['openssl','passwd','-6','-stdin'], input_text=password+'\n', timeout=20).strip()
+    if flavor=='ubuntu':
+        seed=target/'seed';seed.mkdir(parents=True,exist_ok=True)
+        packages=config.get('apt_packages') if isinstance(config.get('apt_packages'),list) else []
+        user_data={
+            'autoinstall':{
+                'version':1,'locale':profile.get('locale') or 'ru_RU.UTF-8','keyboard':{'layout':'us'},
+                'identity':{'hostname':profile['computer_name'],'username':user,'password':password_hash},
+                'ssh':{'install-server':bool(config.get('ssh',True))},
+                'packages':[str(x) for x in packages],
+                'late-commands':[f'curtin in-target --target=/target -- sh -c "curl -fsS -X POST http://{server}/pxe/report/{profile["id"]}/{token}/success || true"'],
+            }
+        }

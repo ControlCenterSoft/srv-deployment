@@ -1,0 +1,208 @@
+name: Control Center 2.0 validation
+
+on:
+  push:
+    branches:
+      - release/2.0.0
+  pull_request:
+    paths:
+      - 'releases/2.0.0/**'
+      - 'docs/2.0/**'
+      - 'deployment.json'
+      - '.github/workflows/release-2.0-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  release-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify current main is carried forward
+        run: |
+          set -euo pipefail
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor origin/main HEAD
+          echo 'MAIN CARRY-FORWARD PASS'
+
+      - name: Verify release manifest hashes
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          root = pathlib.Path('releases/2.0.0')
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          assert manifest.get('release_id') == '2.0.0', manifest
+          assert manifest.get('release_version') == '2.0.0', manifest
+          for name in ('preflight', 'apply', 'acceptance', 'rollback'):
+              spec = manifest['scripts'][name]
+              path = root / spec['path']
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              assert actual == spec['sha256'], f'{name}: manifest={spec["sha256"]} actual={actual}'
+              print(f'{name}: {actual} {path}')
+          print('MANIFEST HASH PASS')
+          PY
+
+      - name: Validate release scripts and managed helpers
+        run: |
+          set -euo pipefail
+          for f in \
+            releases/2.0.0/preflight-2.0.0.sh \
+            releases/2.0.0/apply-2.0.0.sh \
+            releases/2.0.0/acceptance-2.0.0.sh \
+            releases/2.0.0/rollback-2.0.0.sh \
+            releases/2.0.0/system/srvcc-configure-auto-updates
+          do bash -n "$f"; done
+          python3 -m py_compile \
+            releases/2.0.0/system/srvcc-update-controller \
+            releases/2.0.0/system/srv-control-backup \
+            releases/2.0.0/system/srv-control-backup-policy \
+            releases/2.0.0/system/srv-control-os-auto-update \
+            releases/2.0.0/system/srv-control-minecraft-repair \
+            releases/2.0.0/system/srv-control-pxe-probe
+          python3 -m compileall -q releases/2.0.0/payload/app
+
+      - name: Validate JavaScript
+        run: |
+          set -euo pipefail
+          for f in releases/2.0.0/payload/static/js/*.js; do node --check "$f"; done
+
+      - name: Validate 2.0 system UI contracts
+        run: |
+          set -euo pipefail
+          system='releases/2.0.0/payload/templates/system.html'
+          client='releases/2.0.0/payload/static/js/system-2.0.js'
+          stamps='releases/2.0.0/payload/static/js/github-update-timestamps.js'
+          grep -Fq 'Последняя проверка обновления' "$system"
+          grep -Fq 'Последнее успешное обновление' "$system"
+          grep -Fq 'id="githubLastUpdateCheck"' "$system"
+          grep -Fq 'id="backupDeleteSelected"' "$system"
+          grep -Fq 'id="backupSelectAll"' "$system"
+          grep -Fq '/api/v1/system/backups/delete-many' "$client"
+          grep -Fq 'requireText: "DELETE"' "$client"
+          grep -Fq 'status.last_check_at || status.checked_at' "$stamps"
+          grep -Fq 'status.last_successful_update_at' "$stamps"
+          ! grep -Fq 'githubLastUpdateAttempt' "$system"
+
+      - name: Validate bulk backup API contracts
+        run: |
+          set -euo pipefail
+          router='releases/2.0.0/payload/app/routers/system_v2.py'
+          main='releases/2.0.0/payload/app/main.py'
+          grep -Fq '@router.post("/backups/delete-many")' "$router"
+          grep -Fq 'MAX_BULK_BACKUPS = 200' "$router"
+          grep -Fq 'backup_archive(backup_id)' "$router"
+          grep -Fq '"backup-delete"' "$router"
+          grep -Fq 'system_v2_router' "$main"
+
+      - name: Validate backup policy regression fixes
+        run: |
+          set -euo pipefail
+          apply='releases/2.0.0/apply-2.0.0.sh'
+          updater='releases/2.0.0/system/srvcc-update-controller'
+          auto_os='releases/2.0.0/system/srv-control-os-auto-update'
+          policy='releases/2.0.0/system/srv-control-backup-policy'
+          ! grep -E 'srv-control-backup.*create.*pre-release|BACKUP_WORKER.*create.*pre-release' "$apply"
+          grep -Fq 'No unconditional user-visible backup is created here' "$apply"
+          grep -Fq 'config.get("backup_before_update") is True' "$updater"
+          grep -Fq 'required-for-update' "$auto_os"
+          grep -Fq 'raw.get("backup_before_update") is True' "$policy"
+          grep -Fq 'srv-control-backup-policy scheduled' "$apply"
+
+      - name: Validate updater failure recovery architecture
+        run: |
+          set -euo pipefail
+          controller='releases/2.0.0/system/srvcc-update-controller'
+          configurator='releases/2.0.0/system/srvcc-configure-auto-updates'
+          apply='releases/2.0.0/apply-2.0.0.sh'
+          grep -Fq '"schema_version": 4' "$controller"
+          grep -Fq 'last_check_at' "$controller"
+          grep -Fq 'last_update_attempt_at' "$controller"
+          grep -Fq 'last_successful_update_at' "$controller"
+          grep -Fq 'blocked-release.json' "$controller"
+          grep -Fq 'automatic apply suppressed' "$controller"
+          ! grep -Fq 'systemctl disable --now srvcc-github-agent.timer' "$controller"
+          grep -Fq 'OnUnitInactiveSec=${INTERVAL_MINUTES}min' "$configurator"
+          grep -Fq 'systemctl reset-failed "$SERVICE"' "$configurator"
+          grep -Fq 'systemctl is-active --quiet srvcc-github-agent.timer' "$apply"
+
+      - name: Validate carried-forward DHCP and PXE contracts
+        run: |
+          set -euo pipefail
+          main='releases/2.0.0/payload/app/main.py'
+          apply='releases/2.0.0/apply-2.0.0.sh'
+          shell='releases/2.0.0/payload/templates/shell.html'
+          grep -Fq 'release14_router' "$main"
+          grep -Fq "PUBLIC_PREFIXES = ('/static/', '/pxe/')" "$main"
+          grep -Fq 'release14.parts/{00,01,02,03,04,05,06,07}.part' "$apply"
+          grep -Fq 'srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11}.part' "$apply"
+          grep -Fq '/ui/module/dhcp' "$shell"
+          grep -Fq '/ui/module/pxe-windows' "$shell"
+          grep -Fq '/ui/module/pxe-linux' "$shell"
+          python3 releases/2.0.0/tests/pxe_contract.py
+          python3 releases/2.0.0/tests/pxe_lifecycle_contract.py
+          python3 releases/2.0.0/tests/pxe_transport_contract.py
+          python3 releases/2.0.0/tests/pxe_backup_contract.py
+
+      - name: Validate Minecraft health-first repair and rollback safety
+        run: |
+          set -euo pipefail
+          preflight='releases/2.0.0/preflight-2.0.0.sh'
+          apply='releases/2.0.0/apply-2.0.0.sh'
+          repair='releases/2.0.0/system/srv-control-minecraft-repair'
+          rollback='releases/2.0.0/rollback-2.0.0.sh'
+          grep -Fq 'Minecraft health is deliberately non-blocking' "$preflight"
+          grep -Fq 'srv-control-minecraft-repair repair --replace-world-on-failure' "$apply"
+          grep -Fq 'already-healthy' "$repair"
+          grep -Fq 'cannot replace world because safety backup failed' "$repair"
+          grep -Fq 'ControlCenter-Recovery-' "$repair"
+          for path in \
+            /opt/minecraft-bedrock/server.properties \
+            /opt/minecraft/server.properties \
+            /srv/minecraft/server.properties \
+            /var/lib/minecraft/server.properties
+          do
+            grep -Fq "$path" "$apply"
+            grep -Fq "$path" "$rollback"
+          done
+
+      - name: Validate clean 2.0 release identity
+        run: |
+          set -euo pipefail
+          grep -Fq 'RELEASE_ID="2.0.0"' releases/2.0.0/apply-2.0.0.sh
+          grep -Fq 'RELEASE_VERSION="2.0.0"' releases/2.0.0/apply-2.0.0.sh
+          grep -Fq "p.get('version') == '2.0.0'" releases/2.0.0/acceptance-2.0.0.sh
+          grep -Fq "p.get('release_id') == '2.0.0'" releases/2.0.0/acceptance-2.0.0.sh
+          ! grep -Fq 'text=text.replace' releases/2.0.0/preflight-2.0.0.sh
+          ! grep -Fq 'text=text.replace' releases/2.0.0/apply-2.0.0.sh
+
+      - name: Validate canonical 2.x documentation
+        run: |
+          set -euo pipefail
+          for f in README.md ADMIN-GUIDE.md UPGRADE-1.x-TO-2.0.md VALIDATION.md RELEASE-2.0.0.md; do
+            test -s "docs/2.0/$f"
+          done
+          grep -Fq 'Последняя проверка обновления' docs/2.0/ADMIN-GUIDE.md
+          grep -Fq 'PXE Windows' docs/2.0/ADMIN-GUIDE.md
+          grep -Fq 'Minecraft Bedrock' docs/2.0/ADMIN-GUIDE.md
+          grep -Fq 'Branch cleanup gate' docs/2.0/VALIDATION.md
+
+      - name: Validate production activation pointer
+        run: |
+          python3 - <<'PY'
+          import json
+          d=json.load(open('deployment.json',encoding='utf-8'))
+          assert d.get('enabled') is True, d
+          assert d.get('channel') == 'production', d
+          assert d.get('release_id') == '2.0.0', d
+          assert d.get('release_path') == 'releases/2.0.0', d
+          assert d.get('manifest') == 'releases/2.0.0/manifest.json', d
+          assert d.get('preflight') == 'releases/2.0.0/preflight-2.0.0.sh', d
+          assert d.get('apply') == 'releases/2.0.0/apply-2.0.0.sh', d
+          assert d.get('acceptance') == 'releases/2.0.0/acceptance-2.0.0.sh', d
+          assert d.get('rollback') == 'releases/2.0.0/rollback-2.0.0.sh', d
+          print('PRODUCTION ACTIVATION POINTER PASS: deployment.json targets 2.0.0')
+          PY

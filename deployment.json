@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "1.3.8",
-  "release_id": "1.3.8",
-  "release_path": "releases/1.3.8",
-  "manifest": "releases/1.3.8/manifest.json",
-  "preflight": "releases/1.3.8/preflight-1.3.8.sh",
-  "apply": "releases/1.3.8/apply-1.3.8.sh",
-  "acceptance": "releases/1.3.8/acceptance-1.3.8.sh",
-  "rollback": "releases/1.3.8/rollback-1.3.8.sh",
-  "description": "Control Center 1.3.8 production repair: app-readable release metadata and reliable privileged system-action watcher recovery."
+  "release": "2.0.0",
+  "release_id": "2.0.0",
+  "release_path": "releases/2.0.0",
+  "manifest": "releases/2.0.0/manifest.json",
+  "preflight": "releases/2.0.0/preflight-2.0.0.sh",
+  "apply": "releases/2.0.0/apply-2.0.0.sh",
+  "acceptance": "releases/2.0.0/acceptance-2.0.0.sh",
+  "rollback": "releases/2.0.0/rollback-2.0.0.sh",
+  "description": "Control Center 2.0.0 production: redesigned interface, rebuilt transactional updater, authoritative backup policy, bulk backup management, DHCP/PXE carry-forward and health-first Minecraft Bedrock recovery."
 }

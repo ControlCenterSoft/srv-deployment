@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import socket
+import struct
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+TFTP_ASSETS = (
+    'undionly.kpxe',
+    'i386/snponly.efi',
+    'x86_64-sb/snponly-shim.efi',
+    'arm32/snponly.efi',
+    'arm64-sb/snponly-shim.efi',
+    'autoexec.ipxe',
+)
+HTTP_BINARY_ASSETS = (
+    '/pxe/files/httpboot/i386/snponly.efi',
+    '/pxe/files/httpboot/x86_64-sb/snponly-shim.efi',
+    '/pxe/files/httpboot/arm32/snponly.efi',
+    '/pxe/files/httpboot/arm64-sb/snponly-shim.efi',
+)
+FORBIDDEN_DENY_TOKENS = ('\nkernel ', '\ninitrd ', '\nshim ', '\nimgfetch ', 'autoinstall', 'preseed/url', '/pxe/consume/')
+
+
+def run(cmd: list[str], timeout: int = 20) -> str:
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=timeout, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError(f"command failed ({completed.returncode}): {' '.join(cmd)}\n{completed.stdout[-2000:]}")
+    return completed.stdout
+
+
+def discover_server() -> tuple[str, str]:
+    query = "SELECT interface,network,netmask FROM dhcp_configs WHERE id=1 AND enabled=true"
+    out = run(['runuser', '-u', 'srv-control', '--', 'psql', '-d', 'srv_control', '-At', '-F', '|', '-c', query]).strip()
+    if not out:
+        raise RuntimeError('enabled DHCP configuration is required for live PXE probe')
+    fields = out.split('|')
+    if len(fields) != 3 or not fields[0] or not fields[1] or not fields[2]:
+        raise RuntimeError(f'invalid DHCP configuration row for PXE probe: {out!r}')
+    interface, network, netmask = fields
+    subnet = ipaddress.ip_network(f'{network}/{netmask}', strict=False)
+    addr_out = run(['ip', '-4', '-o', 'addr', 'show', 'dev', interface, 'scope', 'global'])
+    addresses: list[str] = []
+    for line in addr_out.splitlines():
+        parts = line.split()
+        try:
+            index = parts.index('inet')
+            value = parts[index + 1].split('/', 1)[0]
+            parsed = ipaddress.ip_address(value)
+        except Exception:
+            continue
+        if parsed in subnet and not parsed.is_loopback and not parsed.is_unspecified:
+            addresses.append(str(parsed))
+    addresses = list(dict.fromkeys(addresses))
+    if len(addresses) != 1:
+        raise RuntimeError(f'expected exactly one PXE server IPv4 on {interface} inside {subnet}, found {addresses}')
+    return interface, addresses[0]
+
+
+def tftp_get(server: str, filename: str, timeout: float = 2.0, retries: int = 3, max_bytes: int = 16 * 1024 * 1024) -> int:
+    request = b'\x00\x01' + filename.encode('ascii') + b'\x00octet\x00'
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        peer: tuple[str, int] | None = None
+        expected = 1
+        total = 0
+        last_ack: bytes | None = None
+        try:
+            sock.sendto(request, (server, 69))
+            while True:
+                try:
+                    packet, address = sock.recvfrom(65535)
+                except socket.timeout:
+                    if last_ack is not None and peer is not None:
+                        sock.sendto(last_ack, peer)
+                        continue
+                    raise
+                if len(packet) < 4:
+                    continue
+                if peer is None:
+                    peer = address
+                if address != peer:
+                    continue
+                opcode = struct.unpack('!H', packet[:2])[0]
+                if opcode == 5:
+                    code = struct.unpack('!H', packet[2:4])[0]
+                    message = packet[4:-1].decode('utf-8', errors='replace')
+                    raise RuntimeError(f'TFTP error {code} for {filename}: {message}')
+                if opcode != 3:
+                    raise RuntimeError(f'unexpected TFTP opcode {opcode} for {filename}')
+                block = struct.unpack('!H', packet[2:4])[0]
+                payload = packet[4:]
+                if block == expected:
+                    total += len(payload)
+                    if total > max_bytes:
+                        raise RuntimeError(f'TFTP asset exceeds probe limit: {filename}')
+                    last_ack = struct.pack('!HH', 4, block)
+                    sock.sendto(last_ack, peer)
+                    expected = (expected + 1) & 0xFFFF
+                    if len(payload) < 512:
+                        if total <= 0:
+                            raise RuntimeError(f'TFTP returned empty file: {filename}')
+                        return total
+                elif block == ((expected - 1) & 0xFFFF):
+                    duplicate_ack = struct.pack('!HH', 4, block)
+                    sock.sendto(duplicate_ack, peer)
+        except Exception as exc:
+            last_error = exc
+        finally:
+            sock.close()
+    raise RuntimeError(f'TFTP probe failed after {retries} attempts for {filename}: {last_error}')
+
+
+def http_get(server: str, path: str, max_bytes: int = 16 * 1024 * 1024) -> tuple[bytes, dict[str, str]]:
+    url = f'http://{server}{path}'
+    request = urllib.request.Request(url, headers={'User-Agent': 'SRV-Control-Center-PXE-Probe/1.4'})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            if response.status != 200:
+                raise RuntimeError(f'HTTP {response.status}: {url}')
+            length = response.headers.get('Content-Length')
+            if length and int(length) > max_bytes:
+                raise RuntimeError(f'HTTP asset exceeds probe limit: {url}')
+            data = response.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise RuntimeError(f'HTTP asset exceeds probe limit: {url}')
+            return data, dict(response.headers.items())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f'HTTP {exc.code}: {url}') from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f'HTTP transport failed: {url}: {exc.reason}') from exc
+
+
+def probe(server: str) -> dict:
+    result: dict[str, object] = {'server': server, 'tftp': {}, 'http': {}, 'deny': {}}
+    for filename in TFTP_ASSETS:
+        size = tftp_get(server, filename)
+        result['tftp'][filename] = size
+
+    entry, _ = http_get(server, '/pxe/files/boot/entry.ipxe', max_bytes=256 * 1024)
+    entry_text = entry.decode('utf-8', errors='replace')
+    if not entry_text.startswith('#!ipxe'):
+        raise RuntimeError('HTTP PXE entry does not start with #!ipxe')
+    for anchor in ('${netX/ip}', '${netX/mac}', '/pxe/boot.ipxe'):
+        if anchor not in entry_text:
+            raise RuntimeError(f'HTTP PXE entry is missing {anchor}')
+    result['http']['/pxe/files/boot/entry.ipxe'] = len(entry)
+
+    for path in HTTP_BINARY_ASSETS:
+        data, _ = http_get(server, path)
+        if len(data) < 32768:
+            raise RuntimeError(f'HTTP boot NBP is unexpectedly small: {path} ({len(data)} bytes)')
+        result['http'][path] = len(data)
+
+    params = urllib.parse.urlencode({
+        'mac': '02:00:00:FE:ED:01',
+        'platform': 'efi',
+        'buildarch': 'x86_64',
+    })
+    deny, _ = http_get(server, '/pxe/boot.ipxe?' + params, max_bytes=256 * 1024)
+    deny_text = deny.decode('utf-8', errors='replace')
+    if 'not authorized' not in deny_text.lower():
+        raise RuntimeError('unknown synthetic MAC was not denied by live PXE endpoint')
+    lowered = deny_text.lower()
+    for token in FORBIDDEN_DENY_TOKENS:
+        if token.lower() in lowered:
+            raise RuntimeError(f'unknown synthetic MAC received installation payload token: {token}')
+    result['deny'] = {'synthetic_mac': '02:00:00:FE:ED:01', 'bytes': len(deny)}
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='SRV Control Center 1.4 live PXE transport probe')
+    parser.add_argument('--server', help='override PXE server IPv4; otherwise derive it from enabled DHCP config')
+    parser.add_argument('--json', action='store_true', help='print machine-readable JSON')
+    args = parser.parse_args()
+
+    interface = None
+    if args.server:
+        server = str(ipaddress.ip_address(args.server))
+    else:
+        interface, server = discover_server()
+    result = probe(server)
+    if interface:
+        result['interface'] = interface
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f'PXE LIVE PROBE PASS server={server} interface={interface or "override"}')
+        print('TFTP: ' + ', '.join(f'{name}={size}' for name, size in result['tftp'].items()))
+        print('HTTP: ' + ', '.join(f'{name}={size}' for name, size in result['http'].items()))
+        print('DENY: synthetic unknown MAC rejected without install payload')
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f'PXE LIVE PROBE FAIL: {exc}', file=sys.stderr)
+        raise SystemExit(1)

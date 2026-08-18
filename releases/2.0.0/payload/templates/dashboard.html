@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Обзор — Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui1">
+    <link rel="stylesheet" href="/static/css/dashboard-1.4.css?v=1.4.0-ui1">
+</head>
+<body>
+<div class="overview-page">
+    <header class="overview-header">
+        <div>
+            <h1>Обзор системы</h1>
+            <p>Состояние и управление сервером в реальном времени</p>
+        </div>
+        <div class="overview-status" id="overviewStatus">
+            <span class="live-dot" id="streamDot"></span>
+            <span id="streamText">Подключение</span>
+        </div>
+    </header>
+
+    <section class="summary-grid" aria-label="Краткое состояние">
+        <article class="summary-card summary-blue">
+            <div class="summary-icon" aria-hidden="true">▰</div>
+            <div class="summary-copy">
+                <span>Сервисы</span>
+                <strong id="serviceCount">—</strong>
+                <small id="serviceMeta">проверка состояния</small>
+            </div>
+        </article>
+        <article class="summary-card summary-green">
+            <div class="summary-icon" aria-hidden="true">◇</div>
+            <div class="summary-copy">
+                <span>Доступ</span>
+                <strong>RBAC</strong>
+                <small id="accessMeta">единые права</small>
+            </div>
+        </article>
+        <article class="summary-card summary-purple">
+            <div class="summary-icon" aria-hidden="true">↻</div>
+            <div class="summary-copy">
+                <span>Канал обновлений</span>
+                <strong>Stable</strong>
+                <small id="releaseMeta">под контролем</small>
+            </div>
+        </article>
+        <article class="summary-card summary-amber">
+            <div class="summary-icon" aria-hidden="true">◷</div>
+            <div class="summary-copy">
+                <span>Аптайм</span>
+                <strong id="uptime">—</strong>
+                <small id="uptimeDetail">с момента запуска</small>
+            </div>
+        </article>
+    </section>
+
+    <section class="primary-grid">
+        <article class="dashboard-panel services-panel">
+            <div class="panel-heading">
+                <div>
+                    <h2>Состояние сервисов</h2>
+                    <p>Ключевые службы Control Center</p>
+                </div>
+            </div>
+            <div class="service-list" id="serviceGrid"></div>
+            <a class="panel-action" href="/ui/module/services">Все сервисы</a>
+        </article>
+
+        <article class="dashboard-panel network-panel">
+            <div class="panel-heading">
+                <div>
+                    <h2>Сеть</h2>
+                    <p>Основной маршрут и локальный интерфейс</p>
+                </div>
+            </div>
+
+            <div class="network-path">
+                <div class="network-node network-node-wan">
+                    <div class="node-icon" aria-hidden="true">◎</div>
+                    <div class="node-copy">
+                        <strong>WAN</strong>
+                        <span id="wanName">—</span>
+                    </div>
+                    <div class="node-value">
+                        <strong id="wanAddress">—</strong>
+                        <span id="wanState">Проверка</span>
+                    </div>
+                </div>
+                <div class="network-link" aria-hidden="true"></div>
+                <div class="network-node">
+                    <div class="node-icon node-icon-server" aria-hidden="true">C</div>
+                    <div class="node-copy">
+                        <strong>Control Center</strong>
+                        <span id="serverHostname">—</span>
+                    </div>
+                    <div class="node-value">
+                        <strong id="serverAddress">—</strong>
+                        <span>Сервер</span>
+                    </div>
+                </div>
+                <div class="network-link" aria-hidden="true"></div>
+                <div class="network-node">
+                    <div class="node-icon node-icon-lan" aria-hidden="true">⌘</div>
+                    <div class="node-copy">
+                        <strong>LAN</strong>
+                        <span id="lanName">—</span>
+                    </div>
+                    <div class="node-value">
+                        <strong id="lanAddress">—</strong>
+                        <span id="dnsValue">DNS: —</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="traffic-grid">
+                <div class="traffic-card traffic-out">
+                    <span>↑ Исходящий</span>
+                    <strong id="networkTx">—</strong>
+                    <canvas id="networkTxChart" aria-label="График исходящего трафика"></canvas>
+                </div>
+                <div class="traffic-card traffic-in">
+                    <span>↓ Входящий</span>
+                    <strong id="networkRx">—</strong>
+                    <canvas id="networkRxChart" aria-label="График входящего трафика"></canvas>
+                </div>
+            </div>
+        </article>
+    </section>
+
+    <section class="secondary-grid">
+        <article class="dashboard-panel process-panel">
+            <div class="panel-heading compact-heading">
+                <div>
+                    <h2>Процессы</h2>
+                    <p>Максимальная нагрузка сейчас</p>
+                </div>
+            </div>
+            <div class="process-columns">
+                <div>
+                    <span class="subheading">CPU</span>
+                    <div id="cpuProcesses" class="process-list"></div>
+                </div>
+                <div>
+                    <span class="subheading">RAM</span>
+                    <div id="ramProcesses" class="process-list"></div>
+                </div>
+            </div>
+        </article>
+
+        <article class="dashboard-panel storage-panel">
+            <div class="panel-heading compact-heading">
+                <div>
+                    <h2>Хранилище</h2>
+                    <p id="storageSummary">Использование дисков</p>
+                </div>
+            </div>
+            <div class="storage-list" id="storageList"></div>
+        </article>
+
+        <article class="dashboard-panel system-panel">
+            <div class="panel-heading compact-heading">
+                <div>
+                    <h2>Система</h2>
+                    <p id="systemOs">—</p>
+                </div>
+            </div>
+            <div class="system-rows">
+                <div class="system-row"><span>Ядро системы</span><strong id="kernelValue">—</strong></div>
+                <div class="system-row"><span>Load average</span><strong id="loadAverage">—</strong></div>
+                <div class="system-row"><span>PostgreSQL</span><strong id="databaseStatus">—</strong></div>
+                <div class="resource-row">
+                    <div><span>Загрузка CPU</span><strong id="cpuValue">—</strong></div>
+                    <div class="resource-track"><span id="cpuBar"></span></div>
+                </div>
+                <div class="resource-row">
+                    <div><span>Память</span><strong id="ramValue">—</strong></div>
+                    <div class="resource-track"><span id="ramBar"></span></div>
+                </div>
+                <div class="system-row system-row-muted"><span>Память</span><strong id="ramDetail">—</strong></div>
+            </div>
+        </article>
+    </section>
+
+    <footer class="overview-footer">
+        <span id="footerProduct">Control Center</span>
+        <span id="footerVersion">Версия —</span>
+        <span id="serverTime">Время сервера: —</span>
+    </footer>
+</div>
+<script src="/static/js/dashboard.js?v=1.4.0-ui1"></script>
+</body>
+</html>

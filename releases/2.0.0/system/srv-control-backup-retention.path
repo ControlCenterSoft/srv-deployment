@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch SRV Control Center backups for retention
+
+[Path]
+PathChanged=/var/lib/srv-control/backups
+Unit=srv-control-backup-retention.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,114 @@
+        raise ValueError('неподдерживаемый тип перенаправления')
+    row = _one(
+        '''INSERT INTO folder_redirect_profiles (name,source_path,target_path,mode,enabled,metadata)
+           VALUES (:name,:source,:target,:mode,true,CAST(:metadata AS jsonb))
+           RETURNING id,name,source_path,target_path,mode,enabled,metadata,created_at,updated_at''',
+        {'name': name, 'source': source, 'target': target, 'mode': mode, 'metadata': json.dumps(payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {})},
+    )
+    return row or {}
+
+
+def folder_redirect_script(profile_id: int) -> str:
+    row = _one(
+        'SELECT id,name,source_path,target_path,mode,enabled FROM folder_redirect_profiles WHERE id=:id',
+        {'id': profile_id},
+    )
+    if not row:
+        raise ValueError('профиль перенаправления не найден')
+    if not row.get('enabled'):
+        raise ValueError('профиль перенаправления отключён')
+
+    def ps(value: object) -> str:
+        return "'" + str(value or '').replace("'", "''") + "'"
+
+    values = {
+        'name': ps(row['name']),
+        'mode': ps(row['mode']),
+        'source': ps(row['source_path']),
+        'target': ps(row['target_path']),
+    }
+    script = r'''# SRV Control Center 1.4.0 - folder redirect profile
+$ErrorActionPreference = 'Stop'
+$ProfileName = __NAME__
+$Mode = __MODE__
+$SourceTemplate = __SOURCE__
+$TargetTemplate = __TARGET__
+
+function Expand-SrvPath([string]$Value) {
+    return [Environment]::ExpandEnvironmentVariables($Value)
+}
+
+$Source = Expand-SrvPath $SourceTemplate
+$Target = Expand-SrvPath $TargetTemplate
+if ([string]::IsNullOrWhiteSpace($Source) -or [string]::IsNullOrWhiteSpace($Target)) { throw 'Source or target path is empty.' }
+
+if ($Mode -eq 'folder-redirection') {
+    $known = @{
+        ([Environment]::ExpandEnvironmentVariables('%USERPROFILE%\Desktop')).ToLowerInvariant() = 'Desktop'
+        ([Environment]::ExpandEnvironmentVariables('%USERPROFILE%\Documents')).ToLowerInvariant() = 'Personal'
+        ([Environment]::ExpandEnvironmentVariables('%USERPROFILE%\Pictures')).ToLowerInvariant() = 'My Pictures'
+        ([Environment]::ExpandEnvironmentVariables('%USERPROFILE%\Music')).ToLowerInvariant() = 'My Music'
+        ([Environment]::ExpandEnvironmentVariables('%USERPROFILE%\Videos')).ToLowerInvariant() = 'My Video'
+        ([Environment]::ExpandEnvironmentVariables('%USERPROFILE%\Favorites')).ToLowerInvariant() = 'Favorites'
+    }
+    $key = $Source.TrimEnd('\').ToLowerInvariant()
+    if (-not $known.ContainsKey($key)) { throw 'Folder Redirection mode supports standard user folders only. Use symlink/auto for application folders.' }
+    New-Item -ItemType Directory -Force -Path $Target | Out-Null
+    $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    Set-ItemProperty -Path $reg -Name $known[$key] -Value $Target
+    Write-Host "SRV redirect applied: $Source -> $Target (User Shell Folder)"
+    exit 0
+}
+
+if (-not (Test-Path -LiteralPath $Target)) { New-Item -ItemType Directory -Force -Path $Target | Out-Null }
+if (Test-Path -LiteralPath $Source) {
+    $item = Get-Item -LiteralPath $Source -Force
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Get-ChildItem -LiteralPath $Source -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $Target -Recurse -Force
+        }
+        Remove-Item -LiteralPath $Source -Recurse -Force
+    }
+}
+$parent = Split-Path -Parent $Source
+if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+
+$effective = $Mode
+if ($effective -eq 'auto') { $effective = if ($Target.StartsWith('\\')) { 'symlink' } else { 'junction' } }
+if ($effective -eq 'smb') { $effective = 'symlink' }
+if ($effective -eq 'junction' -and $Target.StartsWith('\\')) { throw 'Directory junction cannot target UNC. Use auto/smb/symlink.' }
+if ($effective -eq 'junction') {
+    New-Item -ItemType Junction -Path $Source -Target $Target | Out-Null
+} elseif ($effective -eq 'symlink') {
+    New-Item -ItemType SymbolicLink -Path $Source -Target $Target | Out-Null
+} else {
+    throw "Unsupported redirect mode: $Mode"
+}
+Write-Host "SRV redirect applied: $Source -> $Target ($effective)"
+'''
+    for marker, value in (
+        ('__NAME__', values['name']),
+        ('__MODE__', values['mode']),
+        ('__SOURCE__', values['source']),
+        ('__TARGET__', values['target']),
+    ):
+        script = script.replace(marker, value)
+    return script
+
+
+def delete_folder_redirect(profile_id: int) -> None:
+    _execute('DELETE FROM folder_redirect_profiles WHERE id=:id', {'id': profile_id})
+
+
+def add_folder_assignment(profile_id: int, payload: dict) -> dict:
+    subject_type = str(payload.get('subject_type') or '').strip().lower()
+    subject_name = str(payload.get('subject_name') or '').strip()
+    if subject_type not in {'user', 'group', 'computer', 'pxe-profile'} or not subject_name:
+        raise ValueError('некорректное назначение профиля')
+    row = _one('INSERT INTO folder_redirect_assignments (profile_id,subject_type,subject_name) VALUES (:p,:t,:n) RETURNING id,profile_id,subject_type,subject_name,created_at', {'p': profile_id, 't': subject_type, 'n': subject_name})
+    return row or {}
+
+
+def delete_folder_assignment(assignment_id: int) -> None:
+    _execute('DELETE FROM folder_redirect_assignments WHERE id=:id', {'id': assignment_id})
+

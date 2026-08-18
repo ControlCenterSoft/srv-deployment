@@ -1,0 +1,447 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+import uuid
+
+
+STATE_DIR = Path("/var/lib/srv-control")
+AGENT_DIR = Path("/var/lib/srvcc-agent")
+PROJECT = Path("/opt/srv-control")
+CONFIG = STATE_DIR / "github-update-config.json"
+STATUS = STATE_DIR / "github-update-status.json"
+RELEASE_META = STATE_DIR / "release.json"
+BACKUP_CONFIG = STATE_DIR / "backup-config.json"
+BACKUP_WORKER = Path("/usr/local/libexec/srv-control-backup")
+DEPLOY_REPO = AGENT_DIR / "deploy-repo"
+ACCEPTED_FINGERPRINT = AGENT_DIR / "accepted-release-fingerprint"
+BLOCKED_RELEASE = AGENT_DIR / "blocked-release.json"
+LOCK = AGENT_DIR / "update.lock"
+LOG = Path("/var/log/srvcc-agent.log")
+STATE_PUBLISHER = Path("/usr/local/sbin/srvcc-github-agent.state-publisher")
+DEFAULT_SOURCE = "https://github.com/filosoff31/srv-deployment.git"
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def log(message: str) -> None:
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with LOG.open("a", encoding="utf-8") as handle:
+        handle.write(f"{datetime.now().astimezone().isoformat()} {message}\n")
+
+
+def read_json(path: Path, default: dict | None = None) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else dict(default or {})
+    except Exception:
+        return dict(default or {})
+
+
+def atomic_json(path: Path, payload: dict, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def run(command: list[str], *, timeout: int = 1200, check: bool = True) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive", "HOME": "/root"},
+    )
+    if check and completed.returncode != 0:
+        tail = (completed.stdout or "")[-8000:]
+        raise RuntimeError(f"command failed ({completed.returncode}): {' '.join(command)}\n{tail}")
+    return completed
+
+
+def git(*args: str, timeout: int = 120) -> str:
+    return run(["git", "-C", str(DEPLOY_REPO), *args], timeout=timeout).stdout.strip()
+
+
+def validate_source(value: object) -> str:
+    source = str(value or DEFAULT_SOURCE).strip()
+    parsed = urlparse(source)
+    if parsed.scheme != "https" or parsed.hostname not in {"github.com", "www.github.com"}:
+        raise RuntimeError("update source must be an https://github.com repository URL")
+    if parsed.path.count("/") < 2:
+        raise RuntimeError("invalid GitHub repository URL")
+    return source
+
+
+def publish_state() -> None:
+    if STATE_PUBLISHER.is_file() and os.access(STATE_PUBLISHER, os.X_OK):
+        run([str(STATE_PUBLISHER)], timeout=120, check=False)
+
+
+def status_update(**changes: object) -> None:
+    previous = read_json(STATUS)
+    payload = {
+        "schema_version": 4,
+        "source": previous.get("source") or DEFAULT_SOURCE,
+        "checked_at": previous.get("last_check_at") or previous.get("checked_at"),
+        "result": previous.get("result") or "unknown",
+        "detail": previous.get("detail"),
+        "remote_sha": previous.get("remote_sha"),
+        "release_id": previous.get("release_id"),
+        "release_version": previous.get("release_version"),
+        "update_available": bool(previous.get("update_available", False)),
+        "last_check_at": previous.get("last_check_at") or previous.get("checked_at"),
+        "last_check_result": previous.get("last_check_result"),
+        "last_update_attempt_at": previous.get("last_update_attempt_at"),
+        "last_update_result": previous.get("last_update_result"),
+        "last_successful_update_at": previous.get("last_successful_update_at"),
+        "transaction_id": previous.get("transaction_id"),
+        "stage": previous.get("stage") or "idle",
+        "blocked_fingerprint": previous.get("blocked_fingerprint"),
+    }
+    payload.update(changes)
+    if payload.get("last_check_at"):
+        payload["checked_at"] = payload["last_check_at"]
+    atomic_json(STATUS, payload)
+
+
+def discover(source: str) -> dict:
+    AGENT_DIR.mkdir(parents=True, exist_ok=True)
+    if not (DEPLOY_REPO / ".git").is_dir():
+        shutil.rmtree(DEPLOY_REPO, ignore_errors=True)
+        run(["git", "clone", "--no-tags", "--single-branch", "--branch", "main", source, str(DEPLOY_REPO)], timeout=300)
+    git("remote", "set-url", "origin", source)
+    git("fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main", timeout=300)
+    remote_sha = git("rev-parse", "origin/main")
+    deployment_text = git("show", "origin/main:deployment.json")
+    deployment = json.loads(deployment_text)
+    if deployment.get("schema_version") != 1 or deployment.get("enabled") is not True:
+        raise RuntimeError("production deployment metadata is disabled or unsupported")
+    release_id = str(deployment.get("release_id") or deployment.get("release") or "").strip()
+    release_path = str(deployment.get("release_path") or "").strip()
+    manifest_path = str(deployment.get("manifest") or "").strip()
+    if not release_id or not release_path or not manifest_path:
+        raise RuntimeError("production deployment metadata is incomplete")
+    manifest = json.loads(git("show", f"origin/main:{manifest_path}"))
+    release_version = str(manifest.get("release_version") or "").strip()
+    if manifest.get("release_id") != release_id or not release_version:
+        raise RuntimeError("release manifest identity mismatch")
+    deployment_blob = git("rev-parse", "origin/main:deployment.json")
+    release_tree = git("rev-parse", f"origin/main:{release_path}")
+    fingerprint = hashlib.sha256(
+        f"{release_id}\n{release_version}\n{deployment_blob}\n{release_tree}\n".encode("utf-8")
+    ).hexdigest()
+    return {
+        "remote_sha": remote_sha,
+        "release_id": release_id,
+        "release_version": release_version,
+        "release_path": release_path,
+        "manifest_path": manifest_path,
+        "release_tree": release_tree,
+        "fingerprint": fingerprint,
+    }
+
+
+def current_release() -> dict:
+    return read_json(RELEASE_META)
+
+
+def installed_candidate(candidate: dict) -> bool:
+    current = current_release()
+    return (
+        current.get("release_id") == candidate["release_id"]
+        and current.get("version") == candidate["release_version"]
+    )
+
+
+def candidate_is_adoptable(candidate: dict) -> bool:
+    if not installed_candidate(candidate):
+        return False
+    current_sha = str(current_release().get("git_sha") or "")
+    if current_sha == candidate["remote_sha"]:
+        return True
+    if not current_sha:
+        return False
+    completed = run(
+        ["git", "-C", str(DEPLOY_REPO), "rev-parse", f"{current_sha}:{candidate['release_path']}"],
+        timeout=30,
+        check=False,
+    )
+    return completed.returncode == 0 and completed.stdout.strip() == candidate["release_tree"]
+
+
+def accepted_fingerprint() -> str:
+    try:
+        return ACCEPTED_FINGERPRINT.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def set_accepted(candidate: dict) -> None:
+    ACCEPTED_FINGERPRINT.parent.mkdir(parents=True, exist_ok=True)
+    ACCEPTED_FINGERPRINT.write_text(candidate["fingerprint"] + "\n", encoding="utf-8")
+    os.chmod(ACCEPTED_FINGERPRINT, 0o640)
+
+
+def blocked_fingerprint() -> str:
+    return str(read_json(BLOCKED_RELEASE).get("fingerprint") or "")
+
+
+def set_blocked(candidate: dict, transaction_id: str, detail: str) -> None:
+    atomic_json(
+        BLOCKED_RELEASE,
+        {
+            "schema_version": 1,
+            "fingerprint": candidate["fingerprint"],
+            "release_id": candidate["release_id"],
+            "release_version": candidate["release_version"],
+            "remote_sha": candidate["remote_sha"],
+            "transaction_id": transaction_id,
+            "failed_at": utcnow(),
+            "detail": detail[-4000:],
+        },
+        0o640,
+    )
+
+
+def clear_blocked() -> None:
+    BLOCKED_RELEASE.unlink(missing_ok=True)
+
+
+def backup_required() -> bool:
+    config = read_json(BACKUP_CONFIG, {"backup_before_update": True})
+    # Only an explicit true enables the pre-update copy in 2.0. This prevents
+    # missing/legacy truthy strings from silently overriding an operator's false.
+    return config.get("backup_before_update") is True
+
+
+def create_preupdate_backup(actor: str) -> None:
+    if not backup_required():
+        log("Pre-update backup skipped by effective backup policy.")
+        return
+    if not BACKUP_WORKER.is_file() or not os.access(BACKUP_WORKER, os.X_OK):
+        raise RuntimeError("pre-update backup is enabled but backup worker is unavailable")
+    run([str(BACKUP_WORKER), "create", "--actor", actor, "--reason", "pre-control-center-update"], timeout=900)
+
+
+def acquire_lock(actor: str):
+    AGENT_DIR.mkdir(parents=True, exist_ok=True)
+    handle = LOCK.open("a+")
+    deadline = time.monotonic() + (180 if actor != "system" else 0)
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except BlockingIOError:
+            if actor == "system" or time.monotonic() >= deadline:
+                handle.close()
+                return None
+            time.sleep(1)
+
+
+def fail_status(candidate: dict | None, transaction_id: str | None, stage: str, detail: str) -> None:
+    now = utcnow()
+    values: dict[str, object] = {
+        "result": "error",
+        "detail": detail[-4000:],
+        "stage": stage,
+        "last_update_result": "failed" if transaction_id else None,
+        "transaction_id": transaction_id,
+    }
+    if candidate:
+        values.update(
+            remote_sha=candidate["remote_sha"],
+            release_id=candidate["release_id"],
+            release_version=candidate["release_version"],
+            update_available=True,
+            blocked_fingerprint=candidate["fingerprint"] if transaction_id else None,
+        )
+    if transaction_id:
+        values["last_update_attempt_at"] = read_json(STATUS).get("last_update_attempt_at") or now
+    status_update(**values)
+    publish_state()
+
+
+def main() -> int:
+    operation = sys.argv[1] if len(sys.argv) > 1 else "apply"
+    if operation not in {"check", "apply"}:
+        print("usage: srvcc-update-controller check|apply [--actor USER]", file=sys.stderr)
+        return 2
+    actor = "system"
+    if "--actor" in sys.argv[2:]:
+        index = sys.argv.index("--actor")
+        if index + 1 >= len(sys.argv):
+            return 2
+        actor = sys.argv[index + 1].strip() or "system"
+    if os.geteuid() != 0:
+        print("update controller must run as root", file=sys.stderr)
+        return 1
+
+    config = read_json(
+        CONFIG,
+        {"source": DEFAULT_SOURCE, "mode": "automatic", "interval_minutes": 5},
+    )
+    try:
+        source = validate_source(config.get("source"))
+    except Exception as exc:
+        status_update(result="error", stage="configuration", detail=str(exc), last_check_at=utcnow(), last_check_result="error")
+        return 1
+
+    lock_handle = acquire_lock(actor)
+    if lock_handle is None:
+        if actor != "system":
+            status_update(result="busy", stage="lock", detail="another update transaction is active")
+            publish_state()
+            return 1
+        log("Scheduled update skipped because another transaction owns the lock.")
+        return 0
+
+    candidate: dict | None = None
+    transaction_id: str | None = None
+    try:
+        check_at = utcnow()
+        status_update(source=source, result="checking", stage="discover", detail="checking production release", last_check_at=check_at)
+        candidate = discover(source)
+
+        if candidate_is_adoptable(candidate):
+            set_accepted(candidate)
+            clear_blocked()
+
+        is_current = installed_candidate(candidate) and accepted_fingerprint() == candidate["fingerprint"]
+        if is_current:
+            status_update(
+                source=source,
+                result="ok",
+                detail="repository checked; installed product release is current",
+                stage="idle",
+                remote_sha=candidate["remote_sha"],
+                release_id=candidate["release_id"],
+                release_version=candidate["release_version"],
+                update_available=False,
+                last_check_at=check_at,
+                last_check_result="up-to-date",
+                blocked_fingerprint=None,
+            )
+            publish_state()
+            return 0
+
+        status_update(
+            source=source,
+            result="update-available",
+            detail="new product release is available",
+            stage="ready",
+            remote_sha=candidate["remote_sha"],
+            release_id=candidate["release_id"],
+            release_version=candidate["release_version"],
+            update_available=True,
+            last_check_at=check_at,
+            last_check_result="update-available",
+            blocked_fingerprint=blocked_fingerprint() or None,
+        )
+        publish_state()
+        if operation == "check":
+            return 0
+
+        if actor == "system" and blocked_fingerprint() == candidate["fingerprint"]:
+            status_update(
+                result="blocked",
+                stage="blocked",
+                detail="automatic apply suppressed for a release fingerprint that previously failed; checks remain active",
+                last_check_result="blocked",
+                update_available=True,
+                blocked_fingerprint=candidate["fingerprint"],
+            )
+            publish_state()
+            log(f"Automatic apply suppressed for blocked release {candidate['release_id']}; timer remains active.")
+            return 0
+
+        transaction_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:10]}"
+        attempt_at = utcnow()
+        status_update(
+            result="updating",
+            detail="product update transaction started",
+            stage="backup-policy",
+            transaction_id=transaction_id,
+            last_update_attempt_at=attempt_at,
+            last_update_result="running",
+        )
+        publish_state()
+
+        create_preupdate_backup(actor)
+        status_update(result="updating", stage="deploy", detail="validated deployment transaction is running")
+        git("reset", "--hard", "origin/main")
+        git("clean", "-fd")
+        deploy = DEPLOY_REPO / "deploy" / "deploy.sh"
+        if not deploy.is_file():
+            raise RuntimeError("deploy/deploy.sh is missing")
+        run(["bash", str(deploy), str(PROJECT), candidate["remote_sha"]], timeout=2400)
+
+        healthcheck = DEPLOY_REPO / "deploy" / "healthcheck.sh"
+        if healthcheck.is_file():
+            status_update(result="updating", stage="healthcheck", detail="post-deployment healthcheck is running")
+            run(["bash", str(healthcheck), str(PROJECT), candidate["remote_sha"]], timeout=600)
+
+        set_accepted(candidate)
+        clear_blocked()
+        success_at = utcnow()
+        status_update(
+            source=source,
+            result="updated",
+            detail="product release applied and accepted",
+            stage="accepted",
+            remote_sha=candidate["remote_sha"],
+            release_id=candidate["release_id"],
+            release_version=candidate["release_version"],
+            update_available=False,
+            last_check_result="update-available",
+            last_update_result="success",
+            last_successful_update_at=success_at,
+            transaction_id=transaction_id,
+            blocked_fingerprint=None,
+        )
+        publish_state()
+        log(f"Update transaction {transaction_id} accepted release={candidate['release_id']} sha={candidate['remote_sha']}.")
+        return 0
+    except Exception as exc:
+        detail = str(exc)
+        if candidate is not None and transaction_id:
+            set_blocked(candidate, transaction_id, detail)
+        fail_status(candidate, transaction_id, "failed", detail)
+        log(f"Update transaction failed actor={actor}: {detail[-3000:]}")
+        return 1
+    finally:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
