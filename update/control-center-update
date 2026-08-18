@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
 REPO_URL="https://github.com/filosoff31/srv-deployment.git"
 DEPLOYMENT_URL="https://raw.githubusercontent.com/filosoff31/srv-deployment/main/deployment.json"
 STATE_DIR="/var/lib/control-center"
@@ -8,42 +7,32 @@ SETTINGS="$STATE_DIR/update-settings.json"
 STATUS="$STATE_DIR/update-status.json"
 VERSION_FILE="/opt/control-center/VERSION"
 LOCK_FILE="/run/control-center-update.lock"
-
 mkdir -p "$STATE_DIR"
 exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
-
-write_status(){
-  local result="$1" message="$2" latest="${3:-}"
-  python3 - "$STATUS" "$result" "$message" "$latest" <<'PY'
+write_status(){ local result="$1" message="$2" latest="${3:-}"; python3 - "$STATUS" "$result" "$message" "$latest" <<'PY'
 import json,sys,time
 p,result,msg,latest=sys.argv[1:]
 data={'last_check':int(time.time()),'result':result,'message':msg}
 if latest:data['latest_version']=latest
 open(p,'w').write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
 PY
-  chown control-center:control-center "$STATUS" 2>/dev/null || true
-}
-
+chown control-center:control-center "$STATUS" 2>/dev/null || true; }
 [[ -f "$SETTINGS" ]] || cat >"$SETTINGS" <<'JSON'
-{
-  "automatic_updates": true,
-  "frequency": "hourly",
-  "channel": "production"
-}
+{"automatic_updates":true,"interval_minutes":60,"channel":"production"}
 JSON
-chown control-center:control-center "$SETTINGS" 2>/dev/null || true
-
 readarray -t cfg < <(python3 - "$SETTINGS" "$STATUS" <<'PY'
-import json,sys,os,time
+import json,sys
 s=json.load(open(sys.argv[1]))
 try: st=json.load(open(sys.argv[2]))
 except: st={}
-f=s.get('frequency','hourly')
-interval={'hourly':3600,'daily':86400,'weekly':604800}.get(f,3600)
+legacy={'hourly':60,'daily':1440,'weekly':10080}
+try: mins=int(s.get('interval_minutes',legacy.get(s.get('frequency'),60)))
+except: mins=60
+mins=max(5,min(mins,10080))
 print('1' if s.get('automatic_updates',True) else '0')
 print(s.get('channel','production'))
-print(interval)
+print(mins*60)
 print(int(st.get('last_check',0)))
 PY
 )
@@ -51,41 +40,16 @@ PY
 [[ "${cfg[1]}" == "production" ]] || { write_status error "Неподдерживаемый канал обновлений"; exit 1; }
 now=$(date +%s)
 if (( now - ${cfg[3]} < ${cfg[2]} )); then exit 0; fi
-
 remote_json="$(curl -fsSL --connect-timeout 8 --max-time 20 "$DEPLOYMENT_URL")" || { write_status error "Не удалось получить deployment.json"; exit 1; }
 latest="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("release",""))' <<<"$remote_json")"
 channel="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("channel",""))' <<<"$remote_json")"
 [[ "$channel" == "production" && "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { write_status error "Некорректные metadata релиза" "$latest"; exit 1; }
 current="$(cat "$VERSION_FILE" 2>/dev/null || echo 0.0.0)"
-
-if ! dpkg --compare-versions "$latest" gt "$current"; then
-  write_status ok "Установлена актуальная версия $current" "$latest"
-  exit 0
-fi
-
-TMP="$(mktemp -d /tmp/control-center-update.XXXXXX)"
-BACKUP="$STATE_DIR/rollback-$current-$(date +%Y%m%d%H%M%S)"
-trap 'rm -rf "$TMP"' EXIT
-
+if ! dpkg --compare-versions "$latest" gt "$current"; then write_status ok "Установлена актуальная версия $current" "$latest"; exit 0; fi
+TMP="$(mktemp -d /tmp/control-center-update.XXXXXX)"; BACKUP="$STATE_DIR/rollback-$current-$(date +%Y%m%d%H%M%S)"; trap 'rm -rf "$TMP"' EXIT
 git clone --depth 1 --branch "release/$latest" "$REPO_URL" "$TMP/repo" >/dev/null 2>&1 || { write_status error "Не удалось получить release/$latest" "$latest"; exit 1; }
 [[ -x "$TMP/repo/install/install.sh" ]] || { write_status error "В релизе отсутствует install/install.sh" "$latest"; exit 1; }
 [[ "$(grep -E '^APP_VERSION = ' "$TMP/repo/app/main.py" | head -1 | tr -cd '0-9.')" == "$latest" ]] || { write_status error "Версия payload не совпадает с release metadata" "$latest"; exit 1; }
-
-mkdir -p "$BACKUP"
-[[ -d /opt/control-center ]] && cp -a /opt/control-center "$BACKUP/opt-control-center"
-[[ -f /etc/systemd/system/control-center.service ]] && cp -a /etc/systemd/system/control-center.service "$BACKUP/control-center.service"
-
-if bash "$TMP/repo/install/install.sh" --update-from "$current"; then
-  write_status updated "Автоматически обновлено с $current до $latest" "$latest"
-  find "$STATE_DIR" -maxdepth 1 -type d -name 'rollback-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
-  exit 0
-fi
-
-systemctl stop control-center 2>/dev/null || true
-rm -rf /opt/control-center
-[[ -d "$BACKUP/opt-control-center" ]] && cp -a "$BACKUP/opt-control-center" /opt/control-center
-[[ -f "$BACKUP/control-center.service" ]] && cp -a "$BACKUP/control-center.service" /etc/systemd/system/control-center.service
-systemctl daemon-reload
-systemctl restart control-center 2>/dev/null || true
-write_status rollback "Обновление до $latest завершилось ошибкой; восстановлена версия $current" "$latest"
-exit 1
+mkdir -p "$BACKUP"; [[ -d /opt/control-center ]] && cp -a /opt/control-center "$BACKUP/opt-control-center"; [[ -f /etc/systemd/system/control-center.service ]] && cp -a /etc/systemd/system/control-center.service "$BACKUP/control-center.service"
+if bash "$TMP/repo/install/install.sh" --update-from "$current"; then write_status updated "Автоматически обновлено с $current до $latest" "$latest"; find "$STATE_DIR" -maxdepth 1 -type d -name 'rollback-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf; exit 0; fi
+systemctl stop control-center 2>/dev/null || true; rm -rf /opt/control-center; [[ -d "$BACKUP/opt-control-center" ]] && cp -a "$BACKUP/opt-control-center" /opt/control-center; [[ -f "$BACKUP/control-center.service" ]] && cp -a "$BACKUP/control-center.service" /etc/systemd/system/control-center.service; systemctl daemon-reload; systemctl restart control-center 2>/dev/null || true; write_status rollback "Обновление до $latest завершилось ошибкой; восстановлена версия $current" "$latest"; exit 1
