@@ -54,8 +54,8 @@ grep -Fq 'AmbientCapabilities=CAP_NET_BIND_SERVICE' <<<"$UNIT" && pass 'standard
 [[ -x /usr/local/sbin/control-center-web-run ]] && pass 'Web runtime wrapper installed' || fail 'Web runtime wrapper not installed'
 
 JS="$(curl "${CURL[@]}" "$SCHEME://127.0.0.1:${PORT}/static/app.js?v=$EXPECTED" 2>/dev/null || true)"
-for token in paginate109 topCpuProcesses topRamProcesses storageDonut109 lanChart webStandardPort webSsl sambaPreflight; do grep -Fq "$token" <<<"$JS" || fail "UI token missing: $token"; done
-(( FAIL == 0 )) && pass 'pagination/dashboard/SSL UI assets'
+for token in paginate109 topCpuProcesses topRamProcesses storageDonut109 lanChart webStandardPort webSsl runSambaPreflight; do grep -Fq "$token" <<<"$JS" || fail "UI token missing: $token"; done
+(( FAIL == 0 )) && pass 'pagination/dashboard/SSL/Samba UI assets'
 
 if [[ "$SSL" == 1 || "$SSL" == true ]]; then
   [[ -r /etc/control-center/tls/server.crt && -r /etc/control-center/tls/server.key ]] && pass 'SSL certificate/key present' || fail 'SSL certificate/key missing'
