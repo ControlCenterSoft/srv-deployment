@@ -11,6 +11,8 @@
 ### Критичные
 
 - Подтверждённая Professional-лицензия ранее находилась в Web-writable state directory. Перенесена в `/var/lib/control-center-license`, владелец `root:root`; Web service получает только чтение.
+- Root rollback-копии ранее находились рядом с Web-writable state. Они перенесены в `/var/lib/control-center-root` (`root:root`, `0700`), который Web service не может читать через `InaccessiblePaths`.
+- Network/DHCP root helpers ранее полагались на то, что pending JSON уже проверен Web API. Теперь helpers повторно валидируют все привилегированно значимые параметры перед формированием Netplan/dnsmasq, то есть компрометация Web-процесса не позволяет обойти API-валидацию простой подменой pending-файла.
 - Для Professional создана реальная RSA key pair; в репозитории хранится только публичный ключ. Приватный ключ издателя не должен попадать в GitHub или на клиентские серверы.
 - Старый updater мог отвергать корректный релиз из-за жёсткого шаблона `APP_VERSION`. 1.0.5 совместима со старым parser, новый parser допускает пробелы вокруг `=`.
 - DHCP helper мог оставить повреждённый конфигурационный файл после неудачного `dnsmasq --test`. Добавлен backup/rollback.
@@ -27,22 +29,17 @@
 ### Документация и сайт
 
 - `docs/INSTALL.md` был зафиксирован на 1.0.0, `docs/UPDATE.md` — на 1.0.1 и старой модели hour/day/week. Документация полностью синхронизирована с 1.0.5.
-- Добавлены руководства Licensing, OS Updates, Network, DHCP, Security, Troubleshooting и индекс документации.
+- Добавлены руководства Licensing, OS Updates, Network, DHCP, Security, Troubleshooting, отчёт аудита и индекс документации.
 - Публичные страницы сайта статически показывали 1.0.1. Главная, Возможности, Релизы, Документация и Скачать обновлены до 1.0.5; добавлена страница Home/Professional.
 - Bootstrap сайта проверен на `release/1.0.5`.
 - Усилены HTTP security headers сайта, включая CSP.
+- Для `/install.sh` установлен `Cache-Control: no-store`, а для HTML и `assets/app.js` — revalidation, чтобы не повторялась выдача устаревшего bootstrap после deployment.
 
 ## Автоматическая защита от регрессий
 
-Добавлен `.github/workflows/validate-release.yml`, который проверяет:
+Добавлен `.github/workflows/validate-release.yml`, который проверяет Python/Bash syntax, JSON, согласованность версий, release manifest, public RSA key, отсутствие приватного signing key и обязательную документацию.
 
-- Python syntax;
-- Bash syntax;
-- валидность JSON;
-- согласованность `APP_VERSION`, `deployment.json`, release manifest и installer VERSION;
-- public RSA key;
-- отсутствие приватного signing key в Git;
-- наличие обязательных документов.
+Для сайта добавлен `.github/workflows/validate-site.yml`: проверка Bash bootstrap, совпадения bootstrap/fallback версии, обязательных страниц, локальных HTML-ссылок и security headers.
 
 ## Известное ограничение
 
@@ -52,6 +49,8 @@
 
 Аудит исходников и конфигурации не заменяет acceptance-тест на реальном Ubuntu 26.04 сервере. В текущем инструментальном окружении не выполнялась полноценная VM-установка с systemd/Netplan/dnsmasq и не подтверждался фактический Cloudflare deployment публичного URL после последнего коммита.
 
+Криптографическая пара Professional была отдельно проверена локально операцией sign/verify OpenSSL.
+
 ## Acceptance checklist на сервере
 
 ```bash
@@ -60,6 +59,7 @@ curl -fsS http://127.0.0.1:8080/api/health | python3 -m json.tool
 systemctl status control-center --no-pager
 systemctl list-timers --all | grep control-center
 systemctl list-units --type=path | grep control-center
+ls -ld /var/lib/control-center /var/lib/control-center-root /var/lib/control-center-license
 journalctl -p warning..alert --since '1 hour ago' --no-pager
 ```
 
