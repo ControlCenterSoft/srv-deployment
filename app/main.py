@@ -1,10 +1,9 @@
-APP_VERSION = '1.0.8'
-APP_BUILD = '20260819.2'
+APP_VERSION = '1.0.9'
+APP_BUILD = '20260819.3'
 
-# Compatibility shim for legacy updaters (<= 1.0.6) that read APP_VERSION
-# directly from app/main.py before running the installer. The actual 1.0.7
-# application is kept byte-for-byte in main_base_107.py and aliased here so
-# all route functions keep a single module-global state.
+# Compatibility shim for legacy updaters that read APP_VERSION directly from
+# app/main.py before running the installer. The application implementation is
+# kept in main_base_107.py; release extensions upgrade runtime behavior.
 import os
 import sys
 import main_base_107 as _base
