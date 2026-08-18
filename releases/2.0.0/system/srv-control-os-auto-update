@@ -7,7 +7,7 @@ import subprocess
 
 
 CONFIG = Path("/var/lib/srv-control/os-update-config.json")
-BACKUP_CONFIG = Path("/var/lib/srv-control/backup-config.json")
+POLICY = "/usr/local/libexec/srv-control-backup-policy"
 BACKUP = "/usr/local/libexec/srv-control-backup"
 UPDATE = "/usr/local/libexec/srv-control-os-update"
 
@@ -20,16 +20,22 @@ def load(path: Path, default: dict) -> dict:
         return dict(default)
 
 
-def run(command: list[str]) -> None:
-    subprocess.run(command, check=True)
+def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(command, check=check)
+
+
+def backup_required() -> bool:
+    result = run([POLICY, "required-for-update"], check=False)
+    if result.returncode not in {0, 1}:
+        raise RuntimeError("backup policy helper failed")
+    return result.returncode == 0
 
 
 def main() -> int:
     config = load(CONFIG, {"mode": "manual", "interval_hours": 24})
     if config.get("mode") != "automatic":
         return 0
-    backup = load(BACKUP_CONFIG, {"backup_before_update": True})
-    if bool(backup.get("backup_before_update", True)):
+    if backup_required():
         run([BACKUP, "create", "--actor", "system", "--reason", "pre-os-update"])
     run([UPDATE])
     return 0
