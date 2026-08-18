@@ -7,7 +7,7 @@
   "scripts": {
     "preflight": {
       "path": "preflight.sh",
-      "sha256": "da3575163a3434cac85f923cb2e62191c208727b91e6c044cb443e87c9c286d5"
+      "sha256": "b07e99e9d27ab376ebb8ba488ff1c29e3065ff1afa21ee3ed563c7f799d3b5bb"
     },
     "apply": {
       "path": "apply.sh",
@@ -15,7 +15,7 @@
     },
     "acceptance": {
       "path": "acceptance.sh",
-      "sha256": "a4f1c456068d0ca7d3ee3a797babbf08260d6a77329bb9a628c08885672101fd"
+      "sha256": "7ec6984ac9239c617269b60ee32fd16e1fb1d88255aad55c07be6fb716d6d3e2"
     },
     "rollback": {
       "path": "rollback.sh",
