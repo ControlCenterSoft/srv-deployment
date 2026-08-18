@@ -28,13 +28,22 @@ jobs:
           git merge-base --is-ancestor origin/main HEAD
           echo 'MAIN CARRY-FORWARD PASS'
 
-      - name: Print release script hashes
+      - name: Verify release manifest hashes
         run: |
-          sha256sum \
-            releases/2.0.0/preflight-2.0.0.sh \
-            releases/2.0.0/apply-2.0.0.sh \
-            releases/2.0.0/acceptance-2.0.0.sh \
-            releases/2.0.0/rollback-2.0.0.sh
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          root = pathlib.Path('releases/2.0.0')
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          assert manifest.get('release_id') == '2.0.0', manifest
+          assert manifest.get('release_version') == '2.0.0', manifest
+          for name in ('preflight', 'apply', 'acceptance', 'rollback'):
+              spec = manifest['scripts'][name]
+              path = root / spec['path']
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              assert actual == spec['sha256'], f'{name}: manifest={spec["sha256"]} actual={actual}'
+              print(f'{name}: {actual} {path}')
+          print('MANIFEST HASH PASS')
+          PY
 
       - name: Validate release scripts and managed helpers
         run: |
@@ -48,6 +57,7 @@ jobs:
           do bash -n "$f"; done
           python3 -m py_compile \
             releases/2.0.0/system/srvcc-update-controller \
+            releases/2.0.0/system/srv-control-backup \
             releases/2.0.0/system/srv-control-backup-policy \
             releases/2.0.0/system/srv-control-os-auto-update \
             releases/2.0.0/system/srv-control-minecraft-repair \
@@ -167,6 +177,17 @@ jobs:
           grep -Fq "p.get('release_id') == '2.0.0'" releases/2.0.0/acceptance-2.0.0.sh
           ! grep -Fq 'text=text.replace' releases/2.0.0/preflight-2.0.0.sh
           ! grep -Fq 'text=text.replace' releases/2.0.0/apply-2.0.0.sh
+
+      - name: Validate canonical 2.x documentation
+        run: |
+          set -euo pipefail
+          for f in README.md ADMIN-GUIDE.md UPGRADE-1.x-TO-2.0.md VALIDATION.md RELEASE-2.0.0.md; do
+            test -s "docs/2.0/$f"
+          done
+          grep -Fq 'Последняя проверка обновления' docs/2.0/ADMIN-GUIDE.md
+          grep -Fq 'PXE Windows' docs/2.0/ADMIN-GUIDE.md
+          grep -Fq 'Minecraft Bedrock' docs/2.0/ADMIN-GUIDE.md
+          grep -Fq 'Branch cleanup gate' docs/2.0/VALIDATION.md
 
       - name: Validate production is not switched prematurely
         run: |
