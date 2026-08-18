@@ -10,6 +10,7 @@ RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${RELEASE_DIR}/../.." && pwd -P)"
 BASE_RELEASE="${REPO_ROOT}/releases/2.1.0"
 SYSTEM="${RELEASE_DIR}/system"
+PAYLOAD="${RELEASE_DIR}/payload"
 STATE_DIR="/var/lib/srv-control"
 RELEASE_META="${STATE_DIR}/release.json"
 BACKUP_DIR="/var/lib/srv-deployment/backups/${REMOTE_SHA}-${RELEASE_ID}"
@@ -68,13 +69,17 @@ backup_path "/usr/local/libexec/srv-control-minecraft-permissions"
 backup_path "/usr/local/libexec/srv-control-minecraft-bedrock-update"
 backup_path "/usr/local/libexec/srv-control-minecraft-dispatch"
 backup_path "/usr/local/libexec/srv-control-minecraft-2.1.0"
+backup_path "/usr/local/libexec/srv-control-minecraft-agent"
+backup_path "$PROJECT/app/core/minecraft_privileged.py"
+backup_path "$PROJECT/app/routers/minecraft_legacy.py"
 for role in "${ROLES[@]}"; do backup_path "/usr/local/sbin/$role"; done
 
 for unit in \
     "$CANONICAL_UNIT" \
     minecraft-update.timer \
     srv-control-minecraft-auto-update.timer \
-    "$UPDATE_TIMER"
+    "$UPDATE_TIMER" \
+    srv-control-minecraft-agent.path
 do
     systemctl is-enabled "$unit" > "$BACKUP_DIR/state/${unit}.enabled" 2>/dev/null || true
     systemctl is-active "$unit" > "$BACKUP_DIR/state/${unit}.active" 2>/dev/null || true
@@ -111,12 +116,28 @@ print('RUNTIME METADATA SNAPSHOT PASS:',len(seen))
 PY
 chmod 0600 "$BACKUP_DIR/state/runtime-metadata.jsonl"
 
-install -d -m 0755 /usr/local/libexec /usr/local/sbin
+install -d -m 0755 /usr/local/libexec /usr/local/sbin "$PROJECT/app/core"
 install -m 0755 -o root -g root "$SYSTEM/srv-control-minecraft-permissions" /usr/local/libexec/srv-control-minecraft-permissions
 install -m 0755 -o root -g root "$SYSTEM/srv-control-minecraft-bedrock-update" /usr/local/libexec/srv-control-minecraft-bedrock-update
+install -m 0755 -o root -g root "$SYSTEM/srv-control-minecraft-agent" /usr/local/libexec/srv-control-minecraft-agent
 install -m 0644 -o root -g root "$SYSTEM/$PERMISSIONS_UNIT" "/etc/systemd/system/$PERMISSIONS_UNIT"
 install -m 0644 -o root -g root "$SYSTEM/$UPDATE_SERVICE" "/etc/systemd/system/$UPDATE_SERVICE"
 install -m 0644 -o root -g root "$SYSTEM/$UPDATE_TIMER" "/etc/systemd/system/$UPDATE_TIMER"
+install -m 0644 -o root -g root "$PAYLOAD/app/core/minecraft_privileged.py" "$PROJECT/app/core/minecraft_privileged.py"
+
+# The web service intentionally keeps NoNewPrivileges=true. Legacy Minecraft UI
+# code from 2.0/2.1.0 tried sudo from that sandbox, which can never elevate and
+# produces the exact "no new privileges" error. Patch only the known helper launch
+# function so all privileged operations cross the already-existing root agent.
+python3 "$SYSTEM/srv-control-minecraft-router-bridge-patch" "$PROJECT/app/routers/minecraft_legacy.py"
+python3 -m py_compile "$PROJECT/app/core/minecraft_privileged.py" "$PROJECT/app/routers/minecraft_legacy.py"
+! grep -Fq '["/usr/bin/sudo", "-n", str(helper), *args]' "$PROJECT/app/routers/minecraft_legacy.py" \
+    || fail "sudo remains in the installed Minecraft legacy router"
+
+install -d -m 0770 -o root -g srv-control /var/lib/srv-control/minecraft-actions
+install -d -m 0755 -o root -g srv-control /var/lib/srv-control/system-results
+systemctl daemon-reload
+systemctl enable --now srv-control-minecraft-agent.path
 
 # Preserve the frozen 2.1.0 public dispatcher under role-correct basenames so the
 # 2.1.1 wrapper can delegate every established operation without forking its logic.
@@ -225,4 +246,15 @@ finally:
     except FileNotFoundError: pass
 PY
 
-log "APPLY 2.1.1 PASS: Bedrock runs as minecraft; runtime ownership guarded; one canonical update timer enabled; source=$ORIGINAL_SOURCE"
+# Reload the web workers only after all app/runtime changes and release metadata are
+# complete. NoNewPrivileges remains enabled; the UI now reaches root only via the
+# audited file-backed privileged Minecraft agent.
+systemctl restart srv-control.service
+for _ in $(seq 1 30); do
+    curl -fsS --max-time 5 http://127.0.0.1:8876/api/v1/health >/dev/null 2>&1 && break
+    sleep 1
+done
+curl -fsS --max-time 10 http://127.0.0.1:8876/api/v1/health >/dev/null \
+    || fail "Control Center did not become healthy after Minecraft UI bridge activation"
+
+log "APPLY 2.1.1 PASS: Bedrock runs as minecraft; UI privileged bridge avoids sudo/NoNewPrivileges conflict; runtime ownership guarded; canonical update timer enabled; source=$ORIGINAL_SOURCE"
