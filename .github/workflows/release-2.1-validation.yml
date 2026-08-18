@@ -14,162 +14,126 @@ permissions:
   contents: read
 
 jobs:
-  minecraft-stabilization-contract:
+  minecraft-2-1-1-hardening-contract:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Validate activated production descriptor
+      - name: Preserve frozen 2.1.0 production while staging
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json,pathlib
+          import json
           data=json.load(open('deployment.json',encoding='utf-8'))
           assert data.get('enabled') is True,data
           assert data.get('channel') == 'production',data
-          assert data.get('release') == '2.1.0',data
           assert data.get('release_id') == '2.1.0',data
           assert data.get('release_path') == 'releases/2.1.0',data
-          assert data.get('manifest') == 'releases/2.1.0/manifest.json',data
-          for stage in ('preflight','apply','acceptance','rollback'):
-              assert data.get(stage) == f'releases/2.1.0/{stage}-2.1.0.sh',(stage,data.get(stage))
-          print('PRODUCTION DESCRIPTOR PASS: Control Center 2.1.0')
+          print('STAGING GUARD PASS: production remains frozen 2.1.0')
           PY
+          git diff --exit-code origin/main -- releases/2.1.0
 
-      - name: Validate 2.1.x release train policy
-        run: |
-          set -euo pipefail
-          grep -Fq '`2.1.0` is the base stabilization release.' docs/2.1/README.md
-          grep -Fq '`2.1.1`, `2.1.2`, `2.1.3`' docs/2.1/README.md
-          grep -Fq 'Published/frozen releases are never edited in place.' docs/2.1/README.md
-          grep -Fq 'direct upgrade from the real production state `1.3.8`' docs/2.1/README.md
-          grep -Fq 'published `2.0.0`' docs/2.1/README.md
-
-      - name: Print 2.1.0 release script hashes
-        run: |
-          set -euo pipefail
-          sha256sum \
-            releases/2.1.0/preflight-2.1.0.sh \
-            releases/2.1.0/apply-2.1.0.sh \
-            releases/2.1.0/acceptance-2.1.0.sh \
-            releases/2.1.0/rollback-2.1.0.sh
-
-      - name: Validate 2.1.0 manifest hashes
+      - name: Revalidate frozen 2.1.0 manifest
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import hashlib,json,pathlib
           root=pathlib.Path('releases/2.1.0')
           manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
-          assert manifest.get('release_id') == '2.1.0',manifest
-          assert manifest.get('release_version') == '2.1.0',manifest
-          for stage,item in manifest.get('scripts',{}).items():
-              path=root/item['path']
-              digest=hashlib.sha256(path.read_bytes()).hexdigest()
+          assert manifest['release_id'] == manifest['release_version'] == '2.1.0'
+          for stage,item in manifest['scripts'].items():
+              digest=hashlib.sha256((root/item['path']).read_bytes()).hexdigest()
               assert digest == item['sha256'],(stage,digest,item['sha256'])
-          print('2.1.0 MANIFEST PASS')
+          print('FROZEN 2.1.0 MANIFEST PASS')
           PY
 
-      - name: Validate 2.1.0 release syntax
+      - name: Print 2.1.1 release script hashes
         run: |
           set -euo pipefail
-          for script in \
-            releases/2.1.0/preflight-2.1.0.sh \
-            releases/2.1.0/apply-2.1.0.sh \
-            releases/2.1.0/acceptance-2.1.0.sh \
-            releases/2.1.0/rollback-2.1.0.sh
-          do
-            bash -n "$script"
-          done
+          sha256sum \
+            releases/2.1.1/preflight-2.1.1.sh \
+            releases/2.1.1/apply-2.1.1.sh \
+            releases/2.1.1/acceptance-2.1.1.sh \
+            releases/2.1.1/rollback-2.1.1.sh
+
+      - name: Validate 2.1.1 syntax
+        run: |
+          set -euo pipefail
+          bash -n releases/2.1.1/preflight-2.1.1.sh
+          bash -n releases/2.1.1/apply-2.1.1.sh
+          bash -n releases/2.1.1/acceptance-2.1.1.sh
+          bash -n releases/2.1.1/rollback-2.1.1.sh
           python3 -m py_compile \
-            releases/2.1.0/system/srv-control-minecraft-normalize \
-            releases/2.1.0/system/srv-control-minecraft-dispatch
+            releases/2.1.1/system/srv-control-minecraft-permissions \
+            releases/2.1.1/system/srv-control-minecraft-bedrock-update \
+            releases/2.1.1/system/srv-control-minecraft-dispatch
 
-      - name: Validate direct upgrade contracts
+      - name: Validate direct upgrade and frozen-base chaining
         run: |
           set -euo pipefail
-          preflight='releases/2.1.0/preflight-2.1.0.sh'
-          apply='releases/2.1.0/apply-2.1.0.sh'
-          grep -Fq 'current not in {(1,3,8),(2,0,0)}' "$preflight"
-          grep -Fq 'bash "$BASE_RELEASE/preflight-2.0.0.sh"' "$preflight"
-          grep -Fq 'if [[ "$SOURCE_VERSION" == "1.3.8" ]]' "$apply"
-          grep -Fq 'bash "$BASE_RELEASE/apply-2.0.0.sh"' "$apply"
-          grep -Fq 'bash "$BASE_RELEASE/acceptance-2.0.0.sh"' "$apply"
-          grep -Fq 'RELEASE_ID="2.1.0"' "$apply"
-          grep -Fq 'RELEASE_VERSION="2.1.0"' "$apply"
+          preflight=releases/2.1.1/preflight-2.1.1.sh
+          apply=releases/2.1.1/apply-2.1.1.sh
+          rollback=releases/2.1.1/rollback-2.1.1.sh
+          grep -Fq "{'1.3.8','2.0.0','2.1.0'}" "$preflight"
+          grep -Fq 'bash "$BASE_RELEASE/preflight-2.1.0.sh"' "$preflight"
+          grep -Fq 'bash "$BASE_RELEASE/apply-2.1.0.sh"' "$apply"
+          grep -Fq 'bash "$BASE_RELEASE/rollback-2.1.0.sh"' "$rollback"
+          grep -Fq 'original-source-version' "$apply"
+          grep -Fq 'original-source-version' "$rollback"
 
-      - name: Validate canonical service contract
+      - name: Validate unprivileged runtime ownership contract
         run: |
           set -euo pipefail
-          helper='releases/2.1.0/system/srv-control-minecraft-normalize'
-          dispatcher='releases/2.1.0/system/srv-control-minecraft-dispatch'
-          grep -Fq "UNIT = 'srv-control-minecraft-bedrock.service'" "$helper"
-          grep -Fq "bedrock_server" "$helper"
-          grep -Fq "server.properties" "$helper"
-          grep -Fq "level-name" "$helper"
-          grep -Fq "server-port" "$helper"
-          grep -Fq "LD_LIBRARY_PATH=." "$helper"
-          grep -Fq "Restart=on-failure" "$helper"
-          grep -Fq "KillSignal=SIGINT" "$helper"
-          grep -Fq "UNIT = 'srv-control-minecraft-bedrock.service'" "$dispatcher"
-          grep -Fq "operation == 'service'" "$dispatcher"
-          grep -Fq "operation == 'update'" "$dispatcher"
-          grep -Fq "ROLE == 'srv-control-minecraft-worlds'" "$dispatcher"
-          grep -Fq "ROLE == 'srv-control-minecraft-restore'" "$dispatcher"
-          grep -Fq "UDP" docs/2.1/README.md
+          helper=releases/2.1.1/system/srv-control-minecraft-permissions
+          apply=releases/2.1.1/apply-2.1.1.sh
+          acceptance=releases/2.1.1/acceptance-2.1.1.sh
+          rollback=releases/2.1.1/rollback-2.1.1.sh
+          grep -Fq "TARGET_USER = 'minecraft'" "$helper"
+          grep -Fq "TARGET_GROUP = 'minecraft'" "$helper"
+          grep -Fq 'minecraft account unexpectedly resolves to uid 0' "$helper"
+          grep -Fq 'runtime-metadata.jsonl' "$apply"
+          grep -Fq 'User=minecraft' "$apply"
+          grep -Fq 'Group=minecraft' "$apply"
+          grep -Fq 'srv-control-minecraft-permissions.service' "$apply"
+          grep -Fq 'User=minecraft' "$acceptance"
+          grep -Fq 'Group=minecraft' "$acceptance"
+          grep -Fq '.control-center-2.1.1-permission-probe' "$acceptance"
+          grep -Fq 'runtime-metadata.jsonl' "$rollback"
+          grep -Fq 'os.lchown' "$rollback"
 
-      - name: Validate non-destructive normalization and rollback safety
+      - name: Validate canonical updater contract
         run: |
           set -euo pipefail
-          helper='releases/2.1.0/system/srv-control-minecraft-normalize'
-          apply='releases/2.1.0/apply-2.1.0.sh'
-          rollback='releases/2.1.0/rollback-2.1.0.sh'
-          grep -Fq "safety_backup(runtime, 'pre-service-normalization')" "$helper"
-          grep -Fq "refusing automatic normalization" "$helper"
-          grep -Fq "refusing SIGKILL" "$helper"
-          ! grep -Fq "os.kill(pid, signal.SIGKILL)" "$helper"
-          grep -Fq "active world is missing" "$helper"
-          grep -Fq "multiple Bedrock runtime directories are active" "$helper"
-          grep -Fq "multiple bedrock_server processes" "$helper"
-          grep -Fq 'backup_path "/etc/systemd/system/$CANONICAL_UNIT"' "$apply"
-          grep -Fq 'canonical-unit.generated' "$apply"
-          grep -Fq 'minecraft-normalize.json' "$apply"
-          grep -Fq 'if [[ "$previous_unit" != "$CANONICAL_UNIT" ]]' "$rollback"
-          grep -Fq 'canonical-unit.generated' "$rollback"
-          grep -Fq 'availability fallback' "$rollback"
-          grep -Fq 'source-version' "$rollback"
-
-      - name: Validate real runtime acceptance gates
-        run: |
-          set -euo pipefail
-          acceptance='releases/2.1.0/acceptance-2.1.0.sh'
-          grep -Fq "p.get('version') == '2.1.0'" "$acceptance"
-          grep -Fq 'systemctl is-enabled --quiet "$CANONICAL_UNIT"' "$acceptance"
-          grep -Fq 'systemctl is-active --quiet "$CANONICAL_UNIT"' "$acceptance"
-          grep -Fq "assert len(p.get('pids') or []) == 1" "$acceptance"
-          grep -Fq "assert p.get('port_listening') is True" "$acceptance"
-          grep -Fq "assert p.get('world_exists') is True" "$acceptance"
-          grep -Fq '/usr/local/sbin/srv-control-minecraft backup' "$acceptance"
-          grep -Fq '/usr/local/sbin/srv-control-minecraft-restore inspect' "$acceptance"
-          grep -Fq '/usr/local/sbin/srv-control-minecraft service restart' "$acceptance"
-          grep -Fq '/usr/local/sbin/srv-control-minecraft logs 60' "$acceptance"
-          grep -Fq '/usr/local/sbin/srv-control-minecraft updater' "$acceptance"
-          grep -Fq "srv-control-minecraft-auto-update.timer" "$acceptance"
-
-      - name: Validate conflicting scheduler handling
-        run: |
-          set -euo pipefail
-          helper='releases/2.1.0/system/srv-control-minecraft-normalize'
-          apply='releases/2.1.0/apply-2.1.0.sh'
-          grep -Fq "srv-control-minecraft-auto-update.timer" "$helper"
-          grep -Fq "minecraft-update.timer" "$helper"
+          worker=releases/2.1.1/system/srv-control-minecraft-bedrock-update
+          dispatcher=releases/2.1.1/system/srv-control-minecraft-dispatch
+          apply=releases/2.1.1/apply-2.1.1.sh
+          acceptance=releases/2.1.1/acceptance-2.1.1.sh
+          grep -Fq "TIMER = 'srv-control-minecraft-bedrock-update.timer'" "$worker"
+          grep -Fq 'skipped-version-unknown' "$worker"
+          grep -Fq 'journal_version' "$worker"
+          grep -Fq "CANONICAL_TIMER = 'srv-control-minecraft-bedrock-update.timer'" "$dispatcher"
+          grep -Fq "'canonical_update_path': True" "$dispatcher"
           grep -Fq 'systemctl disable --now srv-control-minecraft-auto-update.timer' "$apply"
-          grep -Fq 'systemctl enable --now minecraft-update.timer' "$apply"
+          grep -Fq 'systemctl disable --now minecraft-update.timer' "$apply"
+          grep -Fq 'systemctl enable --now "$UPDATE_TIMER"' "$apply"
+          grep -Fq "decision_ready') is True" "$acceptance"
+          grep -Fq 'legacy minecraft-update.timer remains enabled' "$acceptance"
+          grep -Fq 'conflicting multi-instance Minecraft timer remains enabled' "$acceptance"
 
-      - name: Validate server-state evidence contract
+      - name: Validate 2.1.1 manifest shape
         run: |
           set -euo pipefail
-          grep -Fq 'multi-instance automatic updater previously reported zero automatic instances' docs/2.1/README.md
-          grep -Fq 'live `bedrock_server` listening on UDP `19132`' docs/2.1/README.md
+          python3 - <<'PY'
+          import json,pathlib,re
+          root=pathlib.Path('releases/2.1.1')
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          assert manifest.get('release_id') == manifest.get('release_version') == '2.1.1',manifest
+          assert manifest.get('upgrade_from') == '>=1.3.8,<2.1.1',manifest
+          for stage in ('preflight','apply','acceptance','rollback'):
+              item=manifest['scripts'][stage]
+              assert item['path'] == f'{stage}-2.1.1.sh',item
+              assert re.fullmatch(r'[0-9a-f]{64}',item['sha256']),item
+          print('2.1.1 MANIFEST SHAPE PASS')
+          PY
