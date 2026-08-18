@@ -21,7 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Preserve frozen 2.1.0 production while staging
+      - name: Validate activated 2.1.1 descriptor and frozen 2.1.0
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -29,9 +29,13 @@ jobs:
           data=json.load(open('deployment.json',encoding='utf-8'))
           assert data.get('enabled') is True,data
           assert data.get('channel') == 'production',data
-          assert data.get('release_id') == '2.1.0',data
-          assert data.get('release_path') == 'releases/2.1.0',data
-          print('STAGING GUARD PASS: production remains frozen 2.1.0')
+          assert data.get('release') == '2.1.1',data
+          assert data.get('release_id') == '2.1.1',data
+          assert data.get('release_path') == 'releases/2.1.1',data
+          assert data.get('manifest') == 'releases/2.1.1/manifest.json',data
+          for stage in ('preflight','apply','acceptance','rollback'):
+              assert data.get(stage) == f'releases/2.1.1/{stage}-2.1.1.sh',(stage,data.get(stage))
+          print('PRODUCTION DESCRIPTOR PASS: Control Center 2.1.1')
           PY
           git diff --exit-code origin/main -- releases/2.1.0
 
