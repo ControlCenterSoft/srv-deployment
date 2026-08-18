@@ -7,19 +7,19 @@
   "scripts": {
     "preflight": {
       "path": "preflight-1.3.4.sh",
-      "sha256": "c3b5a0f8aba39d44698ea658b8abf49f80a68d944af0daf4c932ef949dd5eb69"
+      "sha256": "d939fcb55a6264f270185e9ef96dd74d962e60d43a3812fda461456a1fe10ef9"
     },
     "apply": {
       "path": "apply-1.3.4.sh",
-      "sha256": "339cafb7acaa4718b4b68722e6edf10a9e38fd13123ff12ba6f12bb53e9e9b92"
+      "sha256": "5a474c7281907641fd3126bb874c2901dcc659244cf98d123b3c8ba2ebec6f75"
     },
     "acceptance": {
       "path": "acceptance-1.3.4.sh",
-      "sha256": "c5acf9b6fe3a1d2251a30cb30fadf479c749e18ab15b6ff8969d9447d221e0da"
+      "sha256": "eceb9ee6ac69eca5155dbaf1b7c1f9a2ef93fec010f729941101a3b1c22280c7"
     },
     "rollback": {
       "path": "rollback-1.3.4.sh",
-      "sha256": "f2a0fe77837547a0164d181fa546858e816e8fea75ec7df6ff2eaadc86f2e681"
+      "sha256": "fb54b2a746479bfa3c2baabd3e5d060f89b656b4e6f6ff3426056ffd9adef85b"
     }
   }
 }
