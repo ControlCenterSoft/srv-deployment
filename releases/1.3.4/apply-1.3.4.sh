@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../1.3.3" && pwd -P)"
+SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 bash "${SOURCE_DIR}/apply-1.3.3.sh" "$@"
 
 # 1.3.4 is installer-only. Keep the proven 1.3.3 payload and mark the patch
