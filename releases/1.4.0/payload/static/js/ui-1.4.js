@@ -190,26 +190,30 @@
         });
     }
 
+    function syncTableRows(table, headers) {
+        for (const row of table.querySelectorAll("tbody tr")) {
+            const cells = Array.from(row.children).filter((node) => node.tagName === "TD");
+            row.classList.toggle("cc-empty-row", cells.length === 1 && Number(cells[0]?.colSpan || 1) > 1);
+            cells.forEach((cell, index) => {
+                cell.setAttribute("data-cc-label", headers[index] || "");
+            });
+        }
+    }
+
     function enhanceTable(table) {
-        if (!table || table.dataset.ccResponsive === "1") return;
+        if (!table) return;
         const headers = Array.from(table.querySelectorAll("thead th")).map((node) => String(node.textContent || "").trim());
         if (!headers.length) return;
         table.classList.add("cc-responsive-table");
-        table.dataset.ccResponsive = "1";
-
-        const syncRows = () => {
-            for (const row of table.querySelectorAll("tbody tr")) {
-                const cells = Array.from(row.children).filter((node) => node.tagName === "TD");
-                if (cells.length === 1 && Number(cells[0].colSpan || 1) > 1) row.classList.add("cc-empty-row");
-                cells.forEach((cell, index) => {
-                    if (!cell.hasAttribute("data-cc-label")) cell.setAttribute("data-cc-label", headers[index] || "");
-                });
+        if (table.dataset.ccResponsive !== "1") {
+            table.dataset.ccResponsive = "1";
+            const body = table.tBodies[0];
+            if (body) {
+                const observer = new MutationObserver(() => syncTableRows(table, headers));
+                observer.observe(body, {childList: true, subtree: true});
             }
-        };
-        syncRows();
-        const observer = new MutationObserver(syncRows);
-        const body = table.tBodies[0];
-        if (body) observer.observe(body, {childList: true, subtree: true});
+        }
+        syncTableRows(table, headers);
     }
 
     api.enhanceTables = function enhanceTables(root = document) {
