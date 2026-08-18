@@ -1,0 +1,19 @@
+[Unit]
+Description=SRV Control Center privileged Samba action agent
+After=local-fs.target network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/srv-control-samba-agent
+ExecStartPost=/usr/bin/systemctl start --no-block srv-control-samba-monitor.service
+ExecStartPost=/usr/bin/systemctl start --no-block srv-control-samba-shares-monitor.service
+User=root
+Group=root
+UMask=0027
+Nice=5
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=false
+
+[Install]
+WantedBy=multi-user.target
