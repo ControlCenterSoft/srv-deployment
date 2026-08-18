@@ -14,21 +14,67 @@
     const searchInput = document.getElementById("globalSearch");
     const refreshButton = document.getElementById("refreshButton");
     let csrfToken = "";
+    let refreshFallbackTimer = null;
+
+    function menuItems() {
+        return Array.from(menu.querySelectorAll(".nav-item")).filter((item) => !item.hidden);
+    }
 
     function visibleItems() {
-        return Array.from(menu.querySelectorAll(".nav-item")).filter((item) => !item.hidden && !item.classList.contains("search-hidden"));
+        return menuItems().filter((item) => !item.classList.contains("search-hidden"));
+    }
+
+    function itemLabel(item) {
+        const label = item && item.querySelector(".nav-label");
+        return String(label ? label.textContent : item?.textContent || "Control Center").trim();
+    }
+
+    function syncDocumentTitle(item) {
+        const label = itemLabel(item);
+        frame.title = label ? `${label} — Control Center` : "Control Center";
+        document.title = label ? `${label} — Control Center` : "Control Center";
     }
 
     function activate(item) {
         if (!item || item.hidden) return;
-        for (const link of menu.querySelectorAll(".nav-item")) link.classList.remove("active");
+        for (const link of menuItems()) {
+            link.classList.remove("active");
+            link.removeAttribute("aria-current");
+        }
         item.classList.add("active");
+        item.setAttribute("aria-current", "page");
+        syncDocumentTitle(item);
+    }
+
+    function focusRelative(current, delta) {
+        const items = visibleItems();
+        if (!items.length) return;
+        const index = Math.max(0, items.indexOf(current));
+        const target = items[(index + delta + items.length) % items.length];
+        target.focus();
     }
 
     if (menu) {
         menu.addEventListener("click", (event) => {
             const item = event.target.closest(".nav-item");
             if (item) activate(item);
+        });
+        menu.addEventListener("keydown", (event) => {
+            const item = event.target.closest(".nav-item");
+            if (!item) return;
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                focusRelative(item, 1);
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                focusRelative(item, -1);
+            } else if (event.key === "Home") {
+                event.preventDefault();
+                visibleItems()[0]?.focus();
+            } else if (event.key === "End") {
+                event.preventDefault();
+                visibleItems().at(-1)?.focus();
+            }
         });
     }
 
@@ -110,10 +156,13 @@
 
     function applySearch() {
         const query = String(searchInput.value || "").trim().toLocaleLowerCase("ru-RU");
-        for (const item of menu.querySelectorAll(".nav-item")) {
+        for (const item of menuItems()) {
             const haystack = `${item.textContent || ""} ${item.dataset.search || ""}`.toLocaleLowerCase("ru-RU");
             item.classList.toggle("search-hidden", Boolean(query) && !haystack.includes(query));
         }
+        searchInput.setAttribute("aria-label", query
+            ? `Поиск по разделам. Найдено: ${visibleItems().length}`
+            : "Поиск по разделам");
     }
 
     searchInput.addEventListener("input", applySearch);
@@ -122,6 +171,14 @@
             searchInput.value = "";
             applySearch();
             searchInput.blur();
+            return;
+        }
+        if (event.key === "ArrowDown") {
+            const first = visibleItems()[0];
+            if (first) {
+                event.preventDefault();
+                first.focus();
+            }
             return;
         }
         if (event.key === "Enter") {
@@ -144,7 +201,22 @@
         }
     });
 
+    function finishRefresh() {
+        window.clearTimeout(refreshFallbackTimer);
+        refreshFallbackTimer = null;
+        refreshButton.disabled = false;
+        refreshButton.classList.remove("is-loading");
+        refreshButton.setAttribute("aria-busy", "false");
+        refreshButton.title = "Обновить текущий раздел";
+    }
+
     refreshButton.addEventListener("click", () => {
+        refreshButton.disabled = true;
+        refreshButton.classList.add("is-loading");
+        refreshButton.setAttribute("aria-busy", "true");
+        refreshButton.title = "Обновление раздела...";
+        window.clearTimeout(refreshFallbackTimer);
+        refreshFallbackTimer = window.setTimeout(finishRefresh, 5000);
         try {
             frame.contentWindow.location.reload();
         } catch (_) {
@@ -152,14 +224,27 @@
         }
     });
 
-    logoutButton.addEventListener("click", async () => {
-        const response = await fetch("/api/v1/auth/logout", {
-            method: "POST",
-            headers: {"X-CSRF-Token": csrfToken},
-        });
-        if (response.ok) window.location.replace("/login");
+    frame.addEventListener("load", () => {
+        finishRefresh();
+        const active = menu.querySelector(".nav-item.active");
+        if (active) syncDocumentTitle(active);
     });
 
+    logoutButton.addEventListener("click", async () => {
+        logoutButton.disabled = true;
+        try {
+            const response = await fetch("/api/v1/auth/logout", {
+                method: "POST",
+                headers: {"X-CSRF-Token": csrfToken},
+            });
+            if (response.ok) window.location.replace("/login");
+        } finally {
+            logoutButton.disabled = false;
+        }
+    });
+
+    const initial = menu.querySelector(".nav-item.active");
+    if (initial) activate(initial);
     loadIdentity();
     checkBackend();
     window.setInterval(checkBackend, 10000);
