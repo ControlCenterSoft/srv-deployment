@@ -1,0 +1,103 @@
+name: Control Center clean install validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'installer/**'
+      - 'deployment.json'
+      - 'docs/INSTALL.md'
+      - '.github/workflows/clean-install-validation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'installer/**'
+      - 'deployment.json'
+      - '.github/workflows/clean-install-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  installer-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          bash -n installer/install.sh
+          bash -n installer/install-system-admin.sh
+
+      - name: Validate active release installer contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+
+          root = pathlib.Path('.').resolve()
+          dep = json.loads((root / 'deployment.json').read_text(encoding='utf-8'))
+          assert dep.get('enabled') is True, dep
+          assert dep.get('channel') == 'production', dep
+          release_id = dep.get('release_id') or dep.get('release')
+          release_path = dep.get('release_path')
+          manifest_path = dep.get('manifest')
+          assert isinstance(release_id, str) and release_id
+          assert isinstance(release_path, str) and release_path
+          assert isinstance(manifest_path, str) and manifest_path
+
+          release_dir = (root / release_path).resolve()
+          manifest_file = (root / manifest_path).resolve()
+          assert root in release_dir.parents, release_dir
+          assert root in manifest_file.parents, manifest_file
+          manifest = json.loads(manifest_file.read_text(encoding='utf-8'))
+          assert manifest.get('release_id') == release_id, (manifest, dep)
+
+          for stage in ('apply', 'acceptance'):
+              item = (manifest.get('scripts') or {}).get(stage) or {}
+              path = item.get('path')
+              expected = item.get('sha256')
+              assert isinstance(path, str) and path, (stage, item)
+              assert isinstance(expected, str) and len(expected) == 64, (stage, item)
+              script = (release_dir / path).resolve()
+              assert release_dir in script.parents, script
+              assert script.is_file(), script
+              actual = hashlib.sha256(script.read_bytes()).hexdigest()
+              assert actual == expected.lower(), (stage, actual, expected)
+
+          installer = (root / 'installer/install.sh').read_text(encoding='utf-8')
+          required = (
+              'for stage in ("apply","acceptance")',
+              'actual=hashlib.sha256(script.read_bytes()).hexdigest()',
+              'bash "$APPLY_SCRIPT" "$PROJECT" "$current_sha"',
+              'bash "$ACCEPTANCE_SCRIPT" "$PROJECT" "$current_sha"',
+              'systemctl is-enabled --quiet srvcc-github-agent.timer',
+              'systemctl is-active --quiet srv-control-system-agent.path',
+              'name = "Control Center"',
+              'Description=Control Center',
+              'CONTROL CENTER: INSTALLED',
+          )
+          for item in required:
+              assert item in installer, item
+
+          forbidden = (
+              'name = "SRV Control Center"',
+              'Description=SRV Control Center',
+              'SRV CONTROL CENTER: INSTALLED',
+          )
+          for item in forbidden:
+              assert item not in installer, item
+
+          # Clean install must not overwrite the release metadata written by
+          # the active frozen apply contract after that contract has run.
+          after_apply = installer.split('bash "$APPLY_SCRIPT" "$PROJECT" "$current_sha"', 1)[1]
+          assert 'release.json" "$RELEASE_VERSION"' not in after_apply
+
+          print('CLEAN INSTALL CONTRACT PASS:', release_id)
+          PY
