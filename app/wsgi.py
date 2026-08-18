@@ -30,9 +30,6 @@ def atomic_write_json(path, data):
         raise
 
 
-# Flask route functions resolve this module global at call time, so replacing
-# the writer here keeps the development module simple while production Gunicorn
-# receives collision-safe atomic state writes.
 main._write_json = atomic_write_json
 
 
@@ -42,7 +39,7 @@ def protect_state_changing_requests():
         return None
     origin = request.headers.get('Origin')
     if not origin:
-        return None  # CLI/API clients such as curl do not have to send Origin.
+        return None
     parsed = urlparse(origin)
     if parsed.scheme not in {'http', 'https'} or parsed.netloc != request.host:
         abort(403)
@@ -58,7 +55,7 @@ def add_security_headers(response):
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
         "style-src 'self'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
