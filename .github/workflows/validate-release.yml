@@ -37,7 +37,8 @@ jobs:
             network/control-center-network-apply \
             market/control-center-market-apply \
             market/control-center-dhcp-apply \
-            license/control-center-license-apply; do
+            license/control-center-license-apply \
+            scripts/acceptance-1.0.5.sh; do
             bash -n "$f"
           done
 
@@ -75,9 +76,18 @@ jobs:
 
           installer = (root/'install/install.sh').read_text()
           assert re.search(rf'^VERSION={re.escape(version)}$', installer, re.M), 'installer VERSION mismatch'
+          assert '/var/lib/control-center-root' in installer, 'protected root state missing from installer'
+          assert 'InaccessiblePaths=/var/lib/control-center-root' in installer, 'Web service root-state isolation missing'
 
           updater = (root/'update/control-center-update').read_text()
           assert "^APP_VERSION[[:space:]]*=" in updater, 'updater APP_VERSION parser regressed'
+          assert '/var/lib/control-center-root' in updater, 'updater rollback is not protected'
+
+          network = (root/'network/control-center-network-apply').read_text()
+          dhcp = (root/'market/control-center-dhcp-apply').read_text()
+          assert '/var/lib/control-center-root' in network
+          assert '/var/lib/control-center-root' in dhcp
+          assert 'net.netmask' in dhcp, 'dnsmasq IPv4 netmask conversion missing'
 
           readme = (root/'README.md').read_text()
           assert f'Control Center {version}' in readme
@@ -112,6 +122,7 @@ jobs:
             docs/NETWORK.md \
             docs/DHCP.md \
             docs/SECURITY.md \
-            docs/TROUBLESHOOTING.md; do
+            docs/TROUBLESHOOTING.md \
+            docs/AUDIT-1.0.5.md; do
             test -s "$f"
           done
