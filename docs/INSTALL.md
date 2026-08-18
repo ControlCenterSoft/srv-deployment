@@ -11,11 +11,19 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Bootstrap получает актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому устанавливается self-contained payload активного `releases/<version>`.
+Bootstrap получает актуальный `main` и читает `deployment.json`, чтобы определить опубликованную версию. Начиная с линии 2.1.x patch-релизы могут быть **дельтами**, поэтому clean installer больше не предполагает, что `releases/<active-version>/payload` самодостаточен. Он читает `installer/install-profile.json`, собирает временный полный installation payload из зафиксированного consolidated baseline и последовательных опубликованных delta-слоёв, затем применяет только явно перечисленные детерминированные post-assembly patches.
+
+Для 2.1.4 install lineage зафиксирован как `2.1.0 payload → 2.1.1 delta → 2.1.2 delta`. Опубликованные каталоги релизов при этом не изменяются.
 
 Перед установкой проверьте сеть, DNS, время, доступ к GitHub, свободное место и наличие root/sudo. При миграции существующего сервера предварительно создайте независимую резервную копию важных данных.
 
-Установщик создаёт/настраивает PostgreSQL role/database, Python virtualenv, Alembic migrations, `srv-control.service`, reverse proxy, system helpers активного release и GitHub updater согласно фактической release implementation.
+Установщик создаёт/настраивает PostgreSQL role/database, Python virtualenv, Alembic migrations, `srv-control.service`, reverse proxy, системную authentication/privileged-action основу и GitHub updater. После установки он обязан проверить не только backend `127.0.0.1:8876`, но и health endpoint через фактический nginx reverse proxy.
+
+### Nginx на чистой Ubuntu
+
+Пакет `nginx` обычно запускает стандартный сайт сразу после установки. Clean installer останавливает этот package-default экземпляр **до проверки занятости порта 80**, удаляет `/etc/nginx/sites-enabled/default`, создаёт сайт Control Center и только затем запускает nginx. Поэтому страница `Welcome to nginx!` после успешно завершённой установки считается ошибкой acceptance, а не допустимым результатом.
+
+Если порт 80 после остановки package-default nginx действительно занят другой службой, installer выберет резервный порт и напечатает точный `url=` в финальном `INSTALL PASS`.
 
 ## Аутентификация после установки
 
@@ -42,6 +50,7 @@ Bootstrap получает актуальный `main`. `installer/install.sh` �
 /opt/srv-control                         приложение
 /etc/srv-control/control.toml            конфигурация
 /etc/pam.d/srv-control                    PAM service
+/etc/nginx/sites-available/srv-control    reverse proxy
 /var/lib/srv-control                     состояние Control Center
 /var/lib/srv-control/backups             резервные копии
 /var/lib/srv-control/session.key          ключ web-сессий
@@ -51,10 +60,11 @@ Bootstrap получает актуальный `main`. `installer/install.sh` �
 /var/lib/srvcc-agent/last-deployed-sha
 /var/lib/srvcc-agent/last-seen-sha
 /var/lib/srvcc-agent/last-release-fingerprint
+/var/log/srv-control-install.log          журнал clean installation
 /var/log/srvcc-agent.log
 ```
 
-Точный набор файлов/units конкретной версии определяется frozen `releases/<active-version>`.
+Точный runtime-контракт конкретной версии определяется её frozen manifest/acceptance. Clean-install lineage отдельно определяется `installer/install-profile.json`.
 
 ## GitHub updates
 
@@ -87,12 +97,16 @@ sudo /usr/local/sbin/srvcc-github-agent apply --actor root
 
 ```bash
 systemctl status srv-control.service --no-pager -l
+systemctl status nginx.service --no-pager -l
 systemctl status srvcc-github-agent.timer --no-pager -l
 curl -fsS http://127.0.0.1:8876/api/v1/health
+nginx -T 2>/dev/null | grep 'proxy_pass http://127.0.0.1:8876'
 cat /var/lib/srv-control/release.json
 cat /var/lib/srv-control/github-update-config.json
 cat /var/lib/srv-control/github-update-status.json
 ```
+
+Дополнительно откройте именно `url=`, напечатанный установщиком. На стандартной чистой машине без конфликта порта это `http://<IP-сервера>/`. Стандартная welcome-page nginx означает незавершённую/непринятую установку.
 
 Проверка identity/admin path:
 
@@ -126,6 +140,8 @@ cat /var/lib/srv-control/release.json
 ## Повторный clean install
 
 Clean installer намеренно не должен безусловно перезаписывать существующий `/opt/srv-control`. Для установленной системы используется product updater. Destructive reinstall выполняется отдельным явно подтверждаемым процессом с резервной копией необходимых данных.
+
+После failed clean installation сначала сохраните `/var/log/srv-control-install.log`. Если `/opt/srv-control` уже содержит частично установленное приложение, повторный clean installer остановится, чтобы не маскировать повреждённое состояние.
 
 ## server-state
 
