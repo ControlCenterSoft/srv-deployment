@@ -195,7 +195,8 @@
             const cells = Array.from(row.children).filter((node) => node.tagName === "TD");
             row.classList.toggle("cc-empty-row", cells.length === 1 && Number(cells[0]?.colSpan || 1) > 1);
             cells.forEach((cell, index) => {
-                cell.setAttribute("data-cc-label", headers[index] || "");
+                const label = headers[index] || "";
+                if (cell.getAttribute("data-cc-label") !== label) cell.setAttribute("data-cc-label", label);
             });
         }
     }
