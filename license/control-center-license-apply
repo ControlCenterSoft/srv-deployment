@@ -5,6 +5,7 @@ SYSTEM_STATE=/var/lib/control-center-system
 LICENSE_DIR=/var/lib/control-center-license
 REQ="$STATE/license-pending.json"
 STATUS="$SYSTEM_STATE/license-status.json"
+STATUS_LINK="$STATE/license-status.json"
 OUT="$LICENSE_DIR/license.json"
 PUB=/etc/control-center/license-public.pem
 [[ -f "$REQ" ]] || exit 0
@@ -18,6 +19,7 @@ import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='ok','state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
   chown root:control-center "$STATUS"; chmod 0640 "$STATUS"
+  rm -f "$STATUS_LINK"; ln -s "$STATUS" "$STATUS_LINK"; chown -h control-center:control-center "$STATUS_LINK" 2>/dev/null || true
 }
 if ! python3 - "$REQ" "$TMP" <<'PY'
 import json,sys,base64,pathlib
