@@ -10,6 +10,7 @@ from app.routers.admin import router as admin_router
 from app.routers.api import router as api_router
 from app.routers.minecraft_legacy import router as minecraft_legacy_router
 from app.routers.minecraft_multi import router as minecraft_multi_router
+from app.routers.release14 import router as release14_router
 from app.routers.share_directory import router as share_directory_router
 from app.routers.system_v2 import router as system_v2_router
 from app.routers.ui import router as ui_router
@@ -27,6 +28,14 @@ app.mount(
     StaticFiles(directory="/opt/srv-control/static"),
     name="static",
 )
+# PXE clients must be able to retrieve boot media without an authenticated web
+# session. check_dir=False keeps application import safe before first-time PXE
+# service provisioning creates the media directory.
+app.mount(
+    "/pxe/files",
+    StaticFiles(directory="/srv/pxe/media", check_dir=False),
+    name="pxe-files",
+)
 
 app.include_router(api_router)
 # 2.0 keeps the proven single-server Minecraft API available while the server
@@ -36,7 +45,11 @@ app.include_router(minecraft_multi_router)
 app.include_router(admin_router)
 app.include_router(system_v2_router)
 app.include_router(share_directory_router)
+# Keep the native 2.0 shell and modules authoritative. The carried-forward
+# release14 router is registered afterwards so it supplies DHCP/PXE and their
+# APIs without replacing the redesigned 2.0 system/network/share pages.
 app.include_router(ui_router)
+app.include_router(release14_router)
 
 PUBLIC_EXACT = {
     "/login",
@@ -45,7 +58,7 @@ PUBLIC_EXACT = {
     "/api/v1/auth/sso",
     "/api/v1/auth/status",
 }
-PUBLIC_PREFIXES = ("/static/",)
+PUBLIC_PREFIXES = ("/static/", "/pxe/")
 
 
 @app.middleware("http")
