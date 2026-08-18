@@ -29,6 +29,8 @@
 .cc-skeleton-line { display: block; width: min(210px, 72%); height: 11px; }
 .cc-skeleton-line.short { width: min(112px, 45%); }
 .cc-skeleton-line.wide { width: 88%; }
+.service-name > .cc-skeleton-line { width: 100%; max-width: 190px; }
+.service-name > .cc-skeleton-line.short { width: 45%; }
 
 .cc-skeleton-status {
     min-height: 67px;
