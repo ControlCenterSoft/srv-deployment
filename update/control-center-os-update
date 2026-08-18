@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 STATE=/var/lib/control-center
+SYSTEM_STATE=/var/lib/control-center-system
 SETTINGS="$STATE/os-update-settings.json"
-STATUS="$STATE/os-update-status.json"
+STATUS="$SYSTEM_STATE/os-update-status.json"
 MANUAL="$STATE/os-update-now"
 LOCK=/run/control-center-os-update.lock
 APT_LOCK=/run/control-center-apt.lock
 mkdir -p "$STATE"
+install -d -o root -g control-center -m 0750 "$SYSTEM_STATE"
 exec 9>"$LOCK"; flock -n 9 || exit 0
 [[ -f "$SETTINGS" ]] || printf '%s\n' '{"automatic_updates":false,"interval_minutes":1440}' >"$SETTINGS"
 readarray -t CFG < <(python3 - "$SETTINGS" "$STATUS" <<'PY'
@@ -40,5 +42,5 @@ python3 - "$STATUS" "$RESULT" "$MSG" "$REBOOT" <<'PY'
 import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'last_run':int(time.time()),'result':sys.argv[2],'message':sys.argv[3],'reboot_required':sys.argv[4].lower()=='true'},ensure_ascii=False,indent=2)+'\n')
 PY
-chown control-center:control-center "$STATUS" 2>/dev/null || true
+chown root:control-center "$STATUS"; chmod 0640 "$STATUS"
 [[ "$RESULT" == ok ]]
