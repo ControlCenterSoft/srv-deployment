@@ -45,6 +45,8 @@ restore_absolute_path(){
 # Quiesce only future schedules while files and units are restored.
 systemctl disable --now srvcc-github-agent.timer >/dev/null 2>&1 || true
 systemctl disable --now srv-control-minecraft-auto-update.timer >/dev/null 2>&1 || true
+systemctl disable --now srv-control-release14-agent.path >/dev/null 2>&1 || true
+systemctl disable --now srv-control-backup-retention.path >/dev/null 2>&1 || true
 
 for rel in app migrations static templates alembic.ini requirements.lock; do
     restore_project_path "$rel"
@@ -58,11 +60,17 @@ critical_paths=(
     /usr/local/libexec/srv-control-backup-policy
     /usr/local/libexec/srv-control-os-auto-update
     /usr/local/libexec/srv-control-minecraft-repair
+    /usr/local/libexec/srv-control-release14-agent
+    /usr/local/libexec/srv-control-pxe-probe
     /usr/local/sbin/srvcc-update-controller
     /usr/local/sbin/srvcc-github-agent
     /usr/local/sbin/srvcc-configure-auto-updates
     /etc/systemd/system/srv-control-system-agent.service
     /etc/systemd/system/srv-control-system-agent.path
+    /etc/systemd/system/srv-control-release14-agent.service
+    /etc/systemd/system/srv-control-release14-agent.path
+    /etc/systemd/system/srv-control-backup-retention.service
+    /etc/systemd/system/srv-control-backup-retention.path
     /etc/systemd/system/srv-control-os-update.service
     /etc/systemd/system/srv-control-backup.service
     /etc/systemd/system/srv-control-backup.timer
@@ -111,6 +119,8 @@ for unit in \
     srvcc-github-agent.timer \
     srv-control-backup.timer \
     srv-control-os-auto-update.timer \
+    srv-control-release14-agent.path \
+    srv-control-backup-retention.path \
     minecraft-update.timer \
     srv-control-minecraft-auto-update.timer
 do
@@ -124,4 +134,4 @@ else
     systemctl restart srv-control.service
 fi
 
-log "ROLLBACK 2.0.0 PASS: previous application, updater state, policies and Minecraft selection restored"
+log "ROLLBACK 2.0.0 PASS: previous application, updater state, policies, DHCP/PXE agents and Minecraft selection restored"
