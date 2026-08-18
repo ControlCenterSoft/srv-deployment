@@ -1,0 +1,324 @@
+
+# Final release 1.4 PXE hardening layer. Earlier parts contain compatibility
+# implementations; definitions below are the effective runtime behavior.
+
+
+def _samba_role() -> str:
+    return run(['testparm', '-s', '--parameter-name=server role'], timeout=20, check=False).strip().lower()
+
+
+def _samba_workgroup() -> str:
+    value = run(['testparm', '-s', '--parameter-name=workgroup'], timeout=20, check=False).strip()
+    return value or 'WORKGROUP'
+
+
+def _secret_subprocess(cmd: list[str], *, timeout: int = 60) -> str:
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False,
+                               env={**os.environ, 'DEBIAN_FRONTEND': 'noninteractive', 'HOME': '/root'})
+    if completed.returncode != 0:
+        raise RuntimeError('Samba PXE service-account operation failed: ' + (completed.stdout or '')[-2000:])
+    return completed.stdout or ''
+
+
+def _write_samba_config_safely(new_text: str) -> bool:
+    current = SMB_CONF.read_text(encoding='utf-8', errors='replace') if SMB_CONF.exists() else ''
+    if current == new_text:
+        return False
+    SMB_CONF.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix='srvcc-smb.', suffix='.conf', dir=str(SMB_CONF.parent))
+    candidate = Path(name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(new_text); handle.flush(); os.fsync(handle.fileno())
+        os.chmod(candidate, 0o600)
+        run(['testparm', '-s', str(candidate)], timeout=30)
+        os.replace(candidate, SMB_CONF); os.chmod(SMB_CONF, 0o644)
+        return True
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
+def ensure_pxe_samba_share() -> dict:
+    if not shutil.which('testparm') or not SMB_CONF.exists():
+        apt_install('samba', 'samba-common-bin')
+    cred = read_json(PXE_CRED, {})
+    password = str(cred.get('password') or '') or secrets.token_urlsafe(24)
+    role = _samba_role()
+    if 'active directory domain controller' in role:
+        exists = subprocess.run(['samba-tool', 'user', 'show', 'srv-pxe'], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, check=False).returncode == 0
+        if exists:
+            _secret_subprocess(['samba-tool', 'user', 'setpassword', 'srv-pxe', f'--newpassword={password}'])
+        else:
+            create_cmd = ['samba-tool', 'user', 'create', 'srv-pxe', password, '--description=SRV PXE read-only media account']
+            _secret_subprocess(create_cmd)
+        _secret_subprocess(['samba-tool', 'user', 'enable', 'srv-pxe'])
+        _secret_subprocess(['samba-tool', 'user', 'setexpiry', 'srv-pxe', '--noexpiry'])
+        login = _samba_workgroup() + '\\srv-pxe'
+    else:
+        if subprocess.run(['id', 'srv-pxe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode != 0:
+            run(['useradd', '--system', '--no-create-home', '--shell', '/usr/sbin/nologin', 'srv-pxe'], timeout=30)
+        run(['smbpasswd', '-s', '-a', 'srv-pxe'], input_text=password + '\n' + password + '\n', timeout=30)
+        login = 'srv-pxe'
+    write_json(PXE_CRED, {'username': login, 'password': password, 'samba_role': role}, 0o600)
+    text_value = SMB_CONF.read_text(encoding='utf-8', errors='replace') if SMB_CONF.exists() else '[global]\nworkgroup = WORKGROUP\n'
+    text_value = re.sub(re.escape(SMB_BEGIN) + r'.*?' + re.escape(SMB_END) + r'\n?', '', text_value, flags=re.S).rstrip()
+    share = (f'\n\n{SMB_BEGIN}\n[PXE$]\n    path = {PXE_MEDIA}\n    browseable = no\n    read only = yes\n'
+             f'    guest ok = no\n    valid users = srv-pxe\n{SMB_END}\n')
+    if _write_samba_config_safely(text_value + share):
+        for unit in ('samba-ad-dc.service', 'smbd.service', 'samba.service'):
+            if subprocess.run(['systemctl', 'is-active', '--quiet', unit], check=False).returncode == 0:
+                run(['systemctl', 'restart', unit], timeout=60); break
+    return {'username': login, 'password': password}
+
+
+def remove_pxe_samba_share() -> None:
+    if SMB_CONF.exists():
+        text_value = SMB_CONF.read_text(encoding='utf-8', errors='replace')
+        cleaned = re.sub(re.escape(SMB_BEGIN) + r'.*?' + re.escape(SMB_END) + r'\n?', '', text_value, flags=re.S)
+        if _write_samba_config_safely(cleaned):
+            for unit in ('samba-ad-dc.service', 'smbd.service', 'samba.service'):
+                if subprocess.run(['systemctl', 'is-active', '--quiet', unit], check=False).returncode == 0:
+                    run(['systemctl', 'restart', unit], timeout=60); break
+    try:
+        role = _samba_role()
+    except Exception:
+        role = ''
+    if 'active directory domain controller' in role:
+        subprocess.run(['samba-tool', 'user', 'disable', 'srv-pxe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    else:
+        subprocess.run(['smbpasswd', '-x', 'srv-pxe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+
+PXE_ASSET_SHA256 = {
+    IPXE_ARCHIVE_URL: '01a526d4cc791fc30362259c609d6c506cc64a7bdff51b9a5eb788354e17eee1',
+    WIMBOOT_X64_URL: '5f067ccdc4d084d5bf77b6c853bd0f8402dfc2b4cd1b103d358993ae97fae8e3',
+    WIMBOOT_I386_URL: 'b770ad4fa6111d688c062478de3849806b9c3e94a6b770453ef56c94fec254d9',
+    WIMBOOT_ARM64_URL: 'b1440c6386981fb447b2f341294ec7a59546d496dff0f075b0f698c853f1c949',
+}
+
+
+def _download(url: str, target: Path, minimum: int) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    run(['curl', '-fL', '--retry', '3', '--retry-all-errors', '--connect-timeout', '20', '-o', str(target), url], timeout=300)
+    if not target.is_file() or target.stat().st_size < minimum:
+        target.unlink(missing_ok=True); raise RuntimeError(f'downloaded PXE asset is unexpectedly small: {url}')
+    expected = PXE_ASSET_SHA256.get(url)
+    if not expected:
+        target.unlink(missing_ok=True); raise RuntimeError(f'PXE asset has no pinned SHA-256: {url}')
+    actual = run(['sha256sum', str(target)], timeout=30).split()[0].lower()
+    if actual != expected:
+        target.unlink(missing_ok=True); raise RuntimeError(f'PXE asset SHA-256 mismatch: {url}')
+    os.chmod(target, 0o644)
+
+
+def _interface_ipv4(interface: str, network: str | None = None, netmask: str | None = None) -> str:
+    from ipaddress import ip_address, ip_network
+    iface = str(interface or '').strip()
+    if not iface or not re.fullmatch(r'[A-Za-z0-9_.:-]+', iface):
+        raise RuntimeError('invalid DHCP/PXE interface')
+    out = run(['ip', '-4', '-o', 'addr', 'show', 'dev', iface, 'scope', 'global'], timeout=20, check=False)
+    addresses = []
+    for line in out.splitlines():
+        match = re.search(r'\binet\s+([0-9.]+)/', line)
+        if match and match.group(1) != '0.0.0.0' and not match.group(1).startswith('127.'):
+            addresses.append(match.group(1))
+    if network and netmask:
+        try:
+            subnet = ip_network(f'{network}/{netmask}', strict=False)
+        except Exception as exc:
+            raise RuntimeError('invalid configured DHCP subnet while selecting PXE next-server') from exc
+        addresses = [value for value in addresses if ip_address(value) in subnet]
+    addresses = list(dict.fromkeys(addresses))
+    if not addresses:
+        suffix = f' inside {network}/{netmask}' if network and netmask else ''
+        raise RuntimeError(f'interface {iface} has no usable IPv4 address{suffix}; cannot publish PXE next-server')
+    if len(addresses) != 1:
+        raise RuntimeError(f'interface {iface} has ambiguous PXE server addresses: {", ".join(addresses)}; leave exactly one LAN IPv4 address in the configured DHCP subnet')
+    return addresses[0]
+
+
+def _pxe_runtime_active() -> bool:
+    return (TFTP_ROOT / 'undionly.kpxe').is_file() and subprocess.run(
+        ['systemctl', 'is-active', '--quiet', 'tftpd-hpa.service'], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False).returncode == 0
+
+
+def _http_boot_assets_ready() -> bool:
+    required = (PXE_MEDIA / 'boot/entry.ipxe', PXE_MEDIA / 'httpboot/i386/snponly.efi',
+                PXE_MEDIA / 'httpboot/x86_64-sb/snponly-shim.efi', PXE_MEDIA / 'httpboot/arm32/snponly.efi',
+                PXE_MEDIA / 'httpboot/arm64-sb/snponly-shim.efi', PXE_MEDIA / 'httpboot/bios/undionly.kpxe')
+    return all(path.is_file() and path.stat().st_size > 0 for path in required)
+
+
+def apply_dhcp() -> str:
+    rows = psql_json('SELECT * FROM dhcp_configs WHERE id=1') or []
+    if not rows:
+        raise RuntimeError('DHCP configuration is not defined')
+    c = rows[0]
+    if not c.get('enabled'):
+        subprocess.run(['systemctl', 'disable', '--now', 'dnsmasq.service'], check=False)
+        return 'DHCP configuration saved; service disabled'
+    required = ['interface', 'network', 'netmask', 'range_start', 'range_end', 'gateway']
+    if any(not c.get(key) for key in required):
+        raise RuntimeError('DHCP configuration is incomplete')
+    server = _interface_ipv4(str(c['interface']), str(c['network']), str(c['netmask']))
+    options = psql_json('SELECT code,value FROM dhcp_options WHERE enabled=true ORDER BY code,id') or []
+    reservations = psql_json('SELECT mac,ip_address,hostname FROM dhcp_reservations WHERE enabled=true ORDER BY ip_address') or []
+    dns = c.get('dns') or []
+    lines = ['# Managed by SRV Control Center 1.4.0', 'port=0', 'bind-interfaces', f"interface={c['interface']}",
+             'dhcp-authoritative', f"dhcp-range={c['range_start']},{c['range_end']},{c['netmask']},{c.get('lease_time') or '12h'}",
+             f"dhcp-option=option:router,{c['gateway']}"]
+    if dns: lines.append('dhcp-option=option:dns-server,' + ','.join(str(item) for item in dns))
+    for item in options:
+        lines.append(f"dhcp-option={int(item['code'])},{str(item['value']).replace(chr(10),'').replace(chr(13),'')}")
+    for item in reservations:
+        host = (',' + str(item['hostname'])) if item.get('hostname') else ''
+        lines.append(f"dhcp-host={item['mac']},{item['ip_address']}{host}")
+    if _pxe_runtime_active():
+        lines += [
+            'dhcp-vendorclass=set:pxeclient,PXEClient', 'dhcp-vendorclass=set:httpclient,HTTPClient',
+            'dhcp-match=set:ipxe,175', 'dhcp-userclass=set:ipxe,iPXE',
+            'dhcp-match=set:bios,option:client-arch,0', 'dhcp-match=set:efi32,option:client-arch,6',
+            'dhcp-match=set:efi64,option:client-arch,7', 'dhcp-match=set:efibc,option:client-arch,9',
+            'dhcp-match=set:arm32,option:client-arch,10', 'dhcp-match=set:arm64,option:client-arch,11',
+            'dhcp-match=set:http-efi32,option:client-arch,15', 'dhcp-match=set:http-efi64,option:client-arch,16',
+            'dhcp-match=set:http-ebc,option:client-arch,17', 'dhcp-match=set:http-arm32,option:client-arch,18',
+            'dhcp-match=set:http-arm64,option:client-arch,19', 'dhcp-match=set:http-bios,option:client-arch,20',
+            'tag-if=set:pxe-arm64,tag:arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-arm32,tag:arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-efi64,tag:efi64,tag:!arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-efi32,tag:efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-bios,tag:bios,tag:!efi32,tag:!efi64,tag:!arm32,tag:!arm64,tag:!httpclient,tag:!ipxe',
+            'tag-if=set:pxe-noarch,tag:pxeclient,tag:!bios,tag:!efi32,tag:!efi64,tag:!efibc,tag:!arm32,tag:!arm64,tag:!http-efi32,tag:!http-efi64,tag:!http-ebc,tag:!http-arm32,tag:!http-arm64,tag:!http-bios,tag:!ipxe',
+            f'dhcp-boot=tag:pxe-bios,undionly.kpxe,,{server}', f'dhcp-boot=tag:pxe-efi32,i386/snponly.efi,,{server}',
+            f'dhcp-boot=tag:pxe-efi64,x86_64-sb/snponly-shim.efi,,{server}', f'dhcp-boot=tag:pxe-arm32,arm32/snponly.efi,,{server}',
+            f'dhcp-boot=tag:pxe-arm64,arm64-sb/snponly-shim.efi,,{server}', f'dhcp-boot=tag:pxe-noarch,undionly.kpxe,,{server}',
+            f'dhcp-boot=tag:ipxe,http://{server}/pxe/files/boot/entry.ipxe,,{server}',
+        ]
+        if _http_boot_assets_ready():
+            http_rules = (('pxe-http-efi32', 'http-efi32', 'httpboot/i386/snponly.efi'),
+                          ('pxe-http-efi64', 'http-efi64', 'httpboot/x86_64-sb/snponly-shim.efi'),
+                          ('pxe-http-arm32', 'http-arm32', 'httpboot/arm32/snponly.efi'),
+                          ('pxe-http-arm64', 'http-arm64', 'httpboot/arm64-sb/snponly-shim.efi'),
+                          ('pxe-http-bios', 'http-bios', 'httpboot/bios/undionly.kpxe'))
+            for selected, raw, path in http_rules:
+                lines.append(f'tag-if=set:{selected},tag:httpclient,tag:{raw},tag:!ipxe')
+                lines.append(f'dhcp-option=tag:{selected},60,HTTPClient')
+                lines.append(f'dhcp-boot=tag:{selected},http://{server}/pxe/files/{path},,{server}')
+    DHCP_CONF.parent.mkdir(parents=True, exist_ok=True)
+    DHCP_CONF.write_text('\n'.join(lines) + '\n', encoding='utf-8'); os.chmod(DHCP_CONF, 0o644)
+    run(['dnsmasq', '--test'], timeout=30); run(['systemctl', 'enable', '--now', 'dnsmasq.service'], timeout=30); run(['systemctl', 'restart', 'dnsmasq.service'], timeout=30)
+    return f"DHCP active on {c['interface']} range {c['range_start']}..{c['range_end']} PXE={'enabled' if _pxe_runtime_active() else 'disabled'} HTTPBoot={'enabled' if _pxe_runtime_active() and _http_boot_assets_ready() else 'disabled'} next-server={server}"
+
+
+def _server_ip() -> str:
+    rows = psql_json('SELECT interface,network,netmask FROM dhcp_configs WHERE id=1 AND interface IS NOT NULL') or []
+    if rows and rows[0].get('interface'):
+        row = rows[0]; return _interface_ipv4(str(row['interface']), str(row.get('network') or ''), str(row.get('netmask') or ''))
+    raise RuntimeError('DHCP/LAN interface must be configured before publishing a PXE profile')
+
+
+def _publish_http_boot_assets() -> None:
+    mapping = {'bios/undionly.kpxe': TFTP_ROOT / 'undionly.kpxe', 'i386/snponly.efi': TFTP_ROOT / 'i386/snponly.efi',
+               'x86_64-sb/snponly-shim.efi': TFTP_ROOT / 'x86_64-sb/snponly-shim.efi',
+               'arm32/snponly.efi': TFTP_ROOT / 'arm32/snponly.efi', 'arm64-sb/snponly-shim.efi': TFTP_ROOT / 'arm64-sb/snponly-shim.efi'}
+    for relative, source in mapping.items():
+        if not source.is_file(): raise RuntimeError(f'cannot publish HTTP Boot asset; source missing: {source}')
+        target = PXE_MEDIA / 'httpboot' / relative; target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target); os.chmod(target, 0o644)
+        autoexec = target.parent / 'autoexec.ipxe'; autoexec.write_text(_pxe_autoexec(), encoding='utf-8'); os.chmod(autoexec, 0o644)
+    entry = PXE_MEDIA / 'boot/entry.ipxe'; entry.parent.mkdir(parents=True, exist_ok=True); entry.write_text(_pxe_autoexec(), encoding='utf-8'); os.chmod(entry, 0o644)
+
+
+_install_pxe_v14 = install_pxe
+
+def install_pxe() -> str:
+    result = _install_pxe_v14(); _publish_http_boot_assets()
+    if shutil.which('dnsmasq') and DHCP_CONF.exists(): apply_dhcp()
+    return result + '; native UEFI HTTP Boot assets published'
+
+
+def remove_pxe() -> str:
+    subprocess.run(['systemctl', 'disable', '--now', 'tftpd-hpa.service'], check=False); remove_pxe_samba_share(); run(['apt-get', 'remove', '-y', 'tftpd-hpa'], timeout=900)
+    if shutil.which('dnsmasq') and DHCP_CONF.exists(): apply_dhcp()
+    return 'PXE service removed; DHCP boot advertisement disabled; images/profiles preserved'
+
+
+def validate_pxe_runtime() -> str:
+    required = [TFTP_ROOT / 'undionly.kpxe', TFTP_ROOT / 'i386/snponly.efi', TFTP_ROOT / 'x86_64/snponly.efi',
+                TFTP_ROOT / 'x86_64-sb/snponly-shim.efi', TFTP_ROOT / 'x86_64-sb/snponly.efi', TFTP_ROOT / 'arm32/snponly.efi',
+                TFTP_ROOT / 'arm64/snponly.efi', TFTP_ROOT / 'arm64-sb/snponly-shim.efi', TFTP_ROOT / 'arm64-sb/snponly.efi',
+                PXE_MEDIA / 'boot/wimboot', PXE_MEDIA / 'boot/wimboot.i386', PXE_MEDIA / 'boot/wimboot.arm64', PXE_MEDIA / 'boot/entry.ipxe',
+                PXE_MEDIA / 'httpboot/i386/snponly.efi', PXE_MEDIA / 'httpboot/x86_64-sb/snponly-shim.efi',
+                PXE_MEDIA / 'httpboot/arm32/snponly.efi', PXE_MEDIA / 'httpboot/arm64-sb/snponly-shim.efi', PXE_MEDIA / 'httpboot/bios/undionly.kpxe']
+    for directory in ('', 'i386', 'x86_64', 'x86_64-sb', 'arm32', 'arm64', 'arm64-sb'):
+        required.append((TFTP_ROOT / directory / 'autoexec.ipxe') if directory else TFTP_ROOT / 'autoexec.ipxe')
+    missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
+    if missing: raise RuntimeError('PXE runtime missing required assets: ' + ', '.join(missing))
+    if not (PXE_ROOT / 'profiles').is_dir() or (PXE_ROOT / 'profiles').resolve() == PXE_MEDIA.resolve(): raise RuntimeError('PXE private profile root is invalid')
+    if DHCP_CONF.is_file() and shutil.which('dnsmasq'):
+        run(['dnsmasq', '--test'], timeout=30); text_value = DHCP_CONF.read_text(encoding='utf-8', errors='replace')
+        for arch in ('0','6','7','9','10','11','15','16','17','18','19','20'):
+            if f'option:client-arch,{arch}' not in text_value: raise RuntimeError(f'DHCP PXE architecture option 93 value {arch} is missing')
+        if 'dhcp-match=set:efibc,option:client-arch,9' not in text_value or 'tag:!efibc' not in text_value: raise RuntimeError('DHCP EFI BC fail-safe is missing')
+        if 'dhcp-match=set:efi64,option:client-arch,9' in text_value: raise RuntimeError('DHCP EFI BC architecture 9 is incorrectly mapped to x86_64')
+    return 'PXE runtime validation passed for TFTP PXE + UEFI HTTP Boot, BIOS/UEFI IA32/x64/ARM32/ARM64, EFI-BC fail-safe, and x64/ARM64 Secure Boot assets'
+
+
+_publish_windows_v14 = publish_windows
+
+def publish_windows(profile: dict, config: dict, target: Path, server: str, cred: dict) -> None:
+    meta = profile.get('metadata') or {}
+    if isinstance(meta, str): meta = json.loads(meta)
+    editions = meta.get('editions') if isinstance(meta.get('editions'), list) else []
+    if not editions: raise RuntimeError('Windows image edition list is empty; re-prepare the ISO before authorizing installation')
+    requested = str(profile.get('windows_edition') or '').strip()
+    if not requested:
+        if len(editions) != 1: raise RuntimeError('Windows image contains multiple editions; select an exact edition before PXE authorization')
+        requested = str(editions[0].get('name') or '').strip()
+    exact = [item for item in editions if str(item.get('name') or '').strip().casefold() == requested.casefold()]
+    if len(exact) != 1 or int(exact[0].get('index') or 0) <= 0:
+        raise RuntimeError(f"Windows edition {requested!r} was not found exactly in the prepared image; available: {', '.join(str(i.get('name') or '') for i in editions[:20])}")
+    selected = exact[0]; index = int(selected['index']); safe_profile = dict(profile); safe_meta = dict(meta)
+    safe_meta['editions'] = [selected] + [item for item in editions if item is not selected]; safe_profile['metadata'] = safe_meta; safe_profile['windows_edition'] = str(selected.get('name') or requested)
+    _publish_windows_v14(safe_profile, config, target, server, cred)
+    startnet = target / 'startnet.cmd'; text_value = startnet.read_text(encoding='utf-8'); image_id = int(profile['image_id']); install_name = str(meta.get('install_image') or 'install.wim')
+    image_arg = f'Z:\\images\\{image_id}\\{install_name}'; disk_marker = 'diskpart /s %DiskScript%'
+    if disk_marker not in text_value: raise RuntimeError('generated WinPE script has no diskpart safety boundary')
+    text_value = text_value.replace(disk_marker, f'dism /Get-WimInfo /WimFile:{image_arg} /Index:{index}\r\nif errorlevel 1 goto failed\r\n' + disk_marker, 1)
+    old_apply = f'dism /Apply-Image /ImageFile:{image_arg} /Index:{index} /ApplyDir:W:\\'
+    if old_apply not in text_value: raise RuntimeError('generated WinPE script has no expected DISM Apply-Image command')
+    startnet.write_text(text_value.replace(old_apply, old_apply + ' /CheckIntegrity /Verify', 1), encoding='utf-8')
+
+
+_publish_linux_v14 = publish_linux
+
+def publish_linux(profile: dict, config: dict, target: Path, server: str) -> None:
+    _publish_linux_v14(profile, config, target, server)
+    preseed_path = target / 'preseed.cfg'
+    if preseed_path.is_file():
+        value = preseed_path.read_text(encoding='utf-8'); root_rule = 'd-i passwd/root-login boolean false\n'
+        if root_rule not in value: preseed_path.write_text(root_rule + value, encoding='utf-8')
+    boot_path = target / 'boot.ipxe'; value = boot_path.read_text(encoding='utf-8')
+    if '\nshim ' not in value:
+        profile_config = profile.get('config') or {}
+        if isinstance(profile_config, str): profile_config = json.loads(profile_config)
+        boot_token = str(profile_config.get('boot_token') or '')
+        if not boot_token: raise RuntimeError('PXE profile boot token is missing')
+        consume_marker = 'imgfetch --name srv-consume '; pos = value.find(consume_marker)
+        if pos < 0: raise RuntimeError('generated Linux PXE script has no authorization consume boundary')
+        private = f'http://${{next-server}}/pxe/profile/{profile["id"]}/{boot_token}'
+        boot_path.write_text(value[:pos] + f'shim {private}/secure-boot-shim-not-available.efi || goto denied\n' + value[pos:], encoding='utf-8')
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(); ap.add_argument('--prune-backups', action='store_true'); ap.add_argument('--network-rollback'); ap.add_argument('--refresh-pxe', action='store_true'); ap.add_argument('--validate-pxe', action='store_true'); args = ap.parse_args()
+    if args.prune_backups: print(prune_backups()); return 0
+    if args.network_rollback: print(network_rollback(args.network_rollback)); return 0
+    if args.refresh_pxe: print(install_pxe()); print(validate_pxe_runtime()); return 0
+    if args.validate_pxe: print(validate_pxe_runtime()); return 0
+    return process_queue()
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

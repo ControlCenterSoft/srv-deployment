@@ -2,13 +2,13 @@
   "schema_version": 1,
   "enabled": true,
   "channel": "production",
-  "release": "2.0.0",
-  "release_id": "2.0.0",
-  "release_path": "releases/2.0.0",
-  "manifest": "releases/2.0.0/manifest.json",
-  "preflight": "releases/2.0.0/preflight-2.0.0.sh",
-  "apply": "releases/2.0.0/apply-2.0.0.sh",
-  "acceptance": "releases/2.0.0/acceptance-2.0.0.sh",
-  "rollback": "releases/2.0.0/rollback-2.0.0.sh",
-  "description": "Control Center 2.0.0 production: redesigned interface, rebuilt transactional updater, authoritative backup policy, bulk backup management, DHCP/PXE carry-forward and health-first Minecraft Bedrock recovery."
+  "release": "2.1.0",
+  "release_id": "2.1.0",
+  "release_path": "releases/2.1.0",
+  "manifest": "releases/2.1.0/manifest.json",
+  "preflight": "releases/2.1.0/preflight-2.1.0.sh",
+  "apply": "releases/2.1.0/apply-2.1.0.sh",
+  "acceptance": "releases/2.1.0/acceptance-2.1.0.sh",
+  "rollback": "releases/2.1.0/rollback-2.1.0.sh",
+  "description": "Control Center 2.1.0 production candidate: normalize the existing Minecraft Bedrock runtime into one canonical systemd service, preserve the active world and settings, prove backup/restart/update control paths, and keep transactional rollback with unmanaged-runtime availability fallback."
 }

@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import grp
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import signal
+import subprocess
+import tarfile
+import tempfile
+import time
+
+STATE_DIR = Path('/var/lib/srv-control')
+STATE_FILE = STATE_DIR / 'minecraft-2.1-state.json'
+BACKUP_DIR = STATE_DIR / 'minecraft-backups' / '2.1-normalization'
+UNIT = 'srv-control-minecraft-bedrock.service'
+UNIT_PATH = Path('/etc/systemd/system') / UNIT
+KNOWN_RUNTIMES = (
+    Path('/opt/minecraft-bedrock'),
+    Path('/opt/minecraft'),
+    Path('/srv/minecraft'),
+    Path('/var/lib/minecraft'),
+)
+DATA_NAMES = ('worlds', 'server.properties', 'allowlist.json', 'permissions.json', 'whitelist.json')
+
+
+def run(command: list[str], *, timeout: int = 120, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError((result.stdout or '')[-5000:] or f"command failed: {' '.join(command)}")
+    return result
+
+
+def read_props(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        line = raw.strip()
+        if line and not line.startswith('#') and '=' in line:
+            key, value = line.split('=', 1)
+            values[key.strip()] = value.strip()
+    return values
+
+
+def bedrock_pids() -> list[int]:
+    found: list[int] = []
+    for item in Path('/proc').iterdir():
+        if not item.name.isdigit():
+            continue
+        try:
+            if (item / 'comm').read_text(encoding='utf-8', errors='ignore').strip() == 'bedrock_server':
+                found.append(int(item.name))
+        except Exception:
+            pass
+    return sorted(found)
+
+
+def cwd_for_pid(pid: int) -> Path | None:
+    try:
+        path = Path(os.readlink(f'/proc/{pid}/cwd')).resolve()
+        return path if (path / 'bedrock_server').is_file() else None
+    except Exception:
+        return None
+
+
+def unit_for_pid(pid: int) -> str | None:
+    try:
+        text = Path(f'/proc/{pid}/cgroup').read_text(encoding='utf-8', errors='ignore')
+    except Exception:
+        return None
+    for line in text.splitlines():
+        for part in reversed(line.split('/')):
+            if part.endswith('.service'):
+                return part
+    return None
+
+
+def discover_runtime() -> tuple[Path, list[int]]:
+    pids = bedrock_pids()
+    by_runtime: dict[Path, list[int]] = {}
+    for pid in pids:
+        runtime = cwd_for_pid(pid)
+        if runtime:
+            by_runtime.setdefault(runtime, []).append(pid)
+    if len(by_runtime) > 1:
+        raise RuntimeError('multiple Bedrock runtime directories are active; refusing automatic normalization')
+    if by_runtime:
+        runtime, runtime_pids = next(iter(by_runtime.items()))
+        if len(runtime_pids) > 1:
+            raise RuntimeError('multiple bedrock_server processes use the same runtime; refusing automatic normalization')
+        return runtime, runtime_pids
+    candidates = [path.resolve() for path in KNOWN_RUNTIMES if (path / 'bedrock_server').is_file()]
+    unique: list[Path] = []
+    for path in candidates:
+        if path not in unique:
+            unique.append(path)
+    if len(unique) != 1:
+        if not unique:
+            raise RuntimeError('Bedrock runtime was not found')
+        raise RuntimeError('multiple offline Bedrock runtimes were found; explicit operator selection is required')
+    return unique[0], []
+
+
+def udp_listening(port: int) -> bool:
+    result = run(['ss', '-H', '-lunp'], timeout=20, check=False)
+    pattern = re.compile(rf':{port}(?:\s|$)')
+    return any(pattern.search(line) for line in (result.stdout or '').splitlines())
+
+
+def world_state(runtime: Path) -> tuple[str | None, bool]:
+    props = read_props(runtime / 'server.properties')
+    level = (props.get('level-name') or '').strip() or None
+    exists = bool(level and (runtime / 'worlds' / level).is_dir())
+    return level, exists
+
+
+def port_for(runtime: Path) -> int:
+    props = read_props(runtime / 'server.properties')
+    try:
+        port = int(props.get('server-port') or 19132)
+    except Exception:
+        port = 19132
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f'invalid Minecraft server-port: {port}')
+    return port
+
+
+def owner_for(runtime: Path) -> tuple[str, str]:
+    info = runtime.stat()
+    try:
+        user = pwd.getpwuid(info.st_uid).pw_name
+    except KeyError:
+        user = str(info.st_uid)
+    try:
+        group = grp.getgrgid(info.st_gid).gr_name
+    except KeyError:
+        group = str(info.st_gid)
+    return user, group
+
+
+def safety_backup(runtime: Path, reason: str) -> Path:
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    target = BACKUP_DIR / f'{stamp}-{reason}.tar.gz'
+    members = [name for name in DATA_NAMES if (runtime / name).exists()]
+    if not members:
+        raise RuntimeError('Minecraft data files are absent; refusing service normalization without a safety backup')
+    with tarfile.open(target, 'w:gz') as archive:
+        for name in members:
+            archive.add(runtime / name, arcname=name, recursive=True)
+    os.chmod(target, 0o600)
+    if target.stat().st_size == 0:
+        raise RuntimeError('Minecraft safety backup is empty')
+    return target
+
+
+def render_unit(runtime: Path) -> str:
+    user, group = owner_for(runtime)
+    binary = runtime / 'bedrock_server'
+    return (
+        '[Unit]\n'
+        'Description=Control Center Minecraft Bedrock Server\n'
+        'After=network-online.target local-fs.target\n'
+        'Wants=network-online.target\n\n'
+        '[Service]\n'
+        'Type=simple\n'
+        f'User={user}\n'
+        f'Group={group}\n'
+        f'WorkingDirectory={runtime}\n'
+        'Environment=LD_LIBRARY_PATH=.\n'
+        f'ExecStart={binary}\n'
+        'Restart=on-failure\n'
+        'RestartSec=5s\n'
+        'KillSignal=SIGINT\n'
+        'TimeoutStopSec=60s\n'
+        'LimitNOFILE=100000\n'
+        'UMask=0027\n'
+        'NoNewPrivileges=true\n'
+        'PrivateTmp=true\n\n'
+        '[Install]\n'
+        'WantedBy=multi-user.target\n'
+    )
+
+
+def write_atomic(path: Path, text: str, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', dir=str(path.parent))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def write_state(payload: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    write_atomic(STATE_FILE, json.dumps(payload, ensure_ascii=False, indent=2) + '\n', 0o640)
+
+
+def service_active(unit: str) -> bool:
+    return run(['systemctl', 'is-active', '--quiet', unit], timeout=20, check=False).returncode == 0
+
+
+def wait_for_pid_exit(pid: int, seconds: int = 60) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not Path(f'/proc/{pid}').exists():
+            return
+        time.sleep(1)
+    raise RuntimeError(f'bedrock_server pid {pid} did not stop after SIGTERM/SIGINT; refusing SIGKILL')
+
+
+def stop_existing(pids: list[int]) -> None:
+    for pid in pids:
+        unit = unit_for_pid(pid)
+        if unit:
+            run(['systemctl', 'stop', unit], timeout=90)
+        else:
+            os.kill(pid, signal.SIGINT)
+            wait_for_pid_exit(pid)
+
+
+def health(runtime: Path) -> dict:
+    pids = bedrock_pids()
+    runtime_pids = [pid for pid in pids if cwd_for_pid(pid) == runtime]
+    port = port_for(runtime)
+    level, world_exists = world_state(runtime)
+    managed = bool(runtime_pids and all(unit_for_pid(pid) == UNIT for pid in runtime_pids))
+    return {
+        'ok': bool(
+            len(runtime_pids) == 1
+            and managed
+            and service_active(UNIT)
+            and udp_listening(port)
+            and level
+            and world_exists
+        ),
+        'runtime': str(runtime),
+        'pids': runtime_pids,
+        'service': UNIT,
+        'service_active': service_active(UNIT),
+        'managed': managed,
+        'port': port,
+        'port_listening': udp_listening(port),
+        'level_name': level,
+        'world_exists': world_exists,
+    }
+
+
+def audit() -> dict:
+    runtime, pids = discover_runtime()
+    port = port_for(runtime)
+    level, world_exists = world_state(runtime)
+    units = {str(pid): unit_for_pid(pid) for pid in pids}
+    canonical = len(pids) == 1 and next(iter(units.values()), None) == UNIT
+    return {
+        'ok': True,
+        'runtime': str(runtime),
+        'pids': pids,
+        'units': units,
+        'canonical_service': UNIT,
+        'canonical': canonical,
+        'port': port,
+        'port_listening': udp_listening(port),
+        'level_name': level,
+        'world_exists': world_exists,
+        'needs_normalization': not (
+            canonical and service_active(UNIT) and udp_listening(port) and level and world_exists
+        ),
+    }
+
+
+def normalize() -> dict:
+    runtime, pids = discover_runtime()
+    binary = runtime / 'bedrock_server'
+    if not binary.is_file():
+        raise RuntimeError(f'bedrock_server is missing: {binary}')
+    props = runtime / 'server.properties'
+    if not props.is_file():
+        raise RuntimeError(f'server.properties is missing: {props}')
+    level, world_exists = world_state(runtime)
+    if not level or not world_exists:
+        raise RuntimeError('active world is missing; runtime reinstall/world recovery must run before service normalization')
+
+    before = audit()
+    if not before['needs_normalization']:
+        return {'ok': True, 'result': 'already-normal', 'before': before, 'after': before}
+
+    backup = safety_backup(runtime, 'pre-service-normalization')
+    old_unit = UNIT_PATH.read_text(encoding='utf-8', errors='replace') if UNIT_PATH.is_file() else None
+    try:
+        stop_existing(pids)
+        write_atomic(UNIT_PATH, render_unit(runtime), 0o644)
+        run(['systemctl', 'daemon-reload'], timeout=30)
+        run(['systemctl', 'reset-failed', UNIT], timeout=30, check=False)
+        run(['systemctl', 'enable', '--now', UNIT], timeout=90)
+        deadline = time.monotonic() + 75
+        after = health(runtime)
+        while not after['ok'] and time.monotonic() < deadline:
+            time.sleep(3)
+            after = health(runtime)
+        if not after['ok']:
+            raise RuntimeError('canonical Minecraft service did not reach healthy state')
+        run(['systemctl', 'disable', '--now', 'srv-control-minecraft-auto-update.timer'], timeout=30, check=False)
+        if run(['systemctl', 'cat', 'minecraft-update.timer'], timeout=20, check=False).returncode == 0:
+            run(['systemctl', 'enable', '--now', 'minecraft-update.timer'], timeout=30, check=False)
+        result = {
+            'ok': True,
+            'result': 'normalized',
+            'backup': str(backup),
+            'before': before,
+            'after': after,
+            'normalized_at': datetime.now(timezone.utc).isoformat(),
+        }
+        write_state(result)
+        return result
+    except Exception:
+        run(['systemctl', 'disable', '--now', UNIT], timeout=30, check=False)
+        if old_unit is None:
+            try:
+                UNIT_PATH.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            write_atomic(UNIT_PATH, old_unit, 0o644)
+        run(['systemctl', 'daemon-reload'], timeout=30, check=False)
+        raise
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('operation', choices=('audit', 'normalize'))
+    args = parser.parse_args()
+    try:
+        result = audit() if args.operation == 'audit' else normalize()
+    except Exception as exc:
+        result = {'ok': False, 'result': 'error', 'error': str(exc)[-5000:]}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get('ok') else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

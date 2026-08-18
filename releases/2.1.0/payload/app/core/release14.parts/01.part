@@ -1,0 +1,120 @@
+        'actor': actor,
+        'client_ip': client_ip,
+        'payload': payload if isinstance(payload, dict) else {},
+        'created_at': now(),
+    }
+    target = ACTION_DIR / f'{request_id}.json'
+    write_json_atomic(target, body)
+    return {'request_id': request_id, 'action': action, 'queued': True}
+
+
+def action_history(limit: int = 30) -> list[dict]:
+    if not RESULT_DIR.is_dir():
+        return []
+    items = []
+    for path in sorted(RESULT_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:max(1, min(limit, 100))]:
+        payload = read_json(path, {})
+        if isinstance(payload, dict):
+            items.append(payload)
+    return items
+
+
+def _rows(sql: str, params: dict | None = None) -> list[dict]:
+    with engine.connect() as connection:
+        result = connection.execute(text(sql), params or {})
+        return [dict(row._mapping) for row in result]
+
+
+def _one(sql: str, params: dict | None = None) -> dict | None:
+    rows = _rows(sql, params)
+    return rows[0] if rows else None
+
+
+def _execute(sql: str, params: dict | None = None) -> None:
+    with engine.begin() as connection:
+        connection.execute(text(sql), params or {})
+
+
+def dhcp_snapshot() -> dict:
+    config = _one('SELECT * FROM dhcp_configs WHERE id=1') or {
+        'id': 1, 'interface': None, 'network': None, 'netmask': None,
+        'range_start': None, 'range_end': None, 'gateway': None,
+        'dns': [], 'lease_time': '12h', 'enabled': False,
+    }
+    if isinstance(config.get('dns'), str):
+        try:
+            config['dns'] = json.loads(config['dns'])
+        except Exception:
+            config['dns'] = []
+    options = _rows('SELECT id, code, value, enabled, updated_at FROM dhcp_options ORDER BY code, id')
+    reservations = _rows('SELECT id, mac, ip_address, hostname, enabled, updated_at FROM dhcp_reservations ORDER BY ip_address')
+    leases = []
+    try:
+        for line in DHCP_LEASE_FILE.read_text(encoding='utf-8', errors='replace').splitlines():
+            parts = line.split()
+            if len(parts) >= 5:
+                leases.append({'expires': parts[0], 'mac': parts[1].upper(), 'ip': parts[2], 'hostname': None if parts[3] == '*' else parts[3], 'client_id': parts[4]})
+    except Exception:
+        pass
+    return {'config': config, 'options': options, 'reservations': reservations, 'leases': leases}
+
+
+def validate_dhcp_config(payload: dict) -> dict:
+    interface = str(payload.get('interface') or '').strip()
+    network_value = str(payload.get('network') or '').strip()
+    netmask = str(payload.get('netmask') or '').strip()
+    start = str(payload.get('range_start') or '').strip()
+    end = str(payload.get('range_end') or '').strip()
+    gateway = str(payload.get('gateway') or '').strip()
+    dns = payload.get('dns') if isinstance(payload.get('dns'), list) else []
+    lease_time = str(payload.get('lease_time') or '12h').strip()
+    enabled = bool(payload.get('enabled', True))
+    if not interface or len(interface) > 64 or not re.fullmatch(r'[A-Za-z0-9_.:-]+', interface):
+        raise ValueError('некорректный сетевой интерфейс')
+    try:
+        net = ip_network(f'{network_value}/{netmask}', strict=False)
+    except Exception as exc:
+        raise ValueError('некорректная сеть или маска DHCP') from exc
+    if net.version != 4:
+        raise ValueError('в релизе 1.4 DHCP-пул поддерживает IPv4')
+    start_ip, end_ip, gateway_ip = ip_address(start), ip_address(end), ip_address(gateway)
+    if start_ip not in net or end_ip not in net or gateway_ip not in net or int(start_ip) > int(end_ip):
+        raise ValueError('DHCP-пул и шлюз должны находиться внутри выбранной сети')
+    normalized_dns = []
+    for item in dns:
+        parsed = ip_address(str(item).strip())
+        normalized_dns.append(str(parsed))
+    if not re.fullmatch(r'[1-9][0-9]{0,4}[smhdw]', lease_time):
+        raise ValueError('срок аренды: число + s/m/h/d/w, например 12h')
+    return {
+        'interface': interface,
+        'network': str(net.network_address),
+        'netmask': str(net.netmask),
+        'range_start': str(start_ip),
+        'range_end': str(end_ip),
+        'gateway': str(gateway_ip),
+        'dns': normalized_dns,
+        'lease_time': lease_time,
+        'enabled': enabled,
+    }
+
+
+def save_dhcp_config(payload: dict) -> dict:
+    value = validate_dhcp_config(payload)
+    _execute(
+        '''INSERT INTO dhcp_configs (id, interface, network, netmask, range_start, range_end, gateway, dns, lease_time, enabled, updated_at)
+           VALUES (1,:interface,:network,:netmask,:range_start,:range_end,:gateway,CAST(:dns AS jsonb),:lease_time,:enabled,now())
+           ON CONFLICT (id) DO UPDATE SET interface=EXCLUDED.interface,network=EXCLUDED.network,netmask=EXCLUDED.netmask,
+             range_start=EXCLUDED.range_start,range_end=EXCLUDED.range_end,gateway=EXCLUDED.gateway,dns=EXCLUDED.dns,
+             lease_time=EXCLUDED.lease_time,enabled=EXCLUDED.enabled,updated_at=now()''',
+        {**value, 'dns': json.dumps(value['dns'])},
+    )
+    return value
+
+
+def add_dhcp_option(code: int, value: str) -> dict:
+    if code < 1 or code > 254:
+        raise ValueError('код DHCP option должен быть 1..254')
+    clean = str(value or '').strip()
+    if not clean or len(clean) > 1024 or any(ch in clean for ch in '\r\n\x00'):
+        raise ValueError('некорректное значение DHCP option')
