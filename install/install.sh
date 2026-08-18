@@ -8,7 +8,7 @@ SYSTEM_STATE_DIR=/var/lib/control-center-system
 ROOT_STATE_DIR=/var/lib/control-center-root
 LICENSE_DIR=/var/lib/control-center-license
 SERVICE_USER=control-center
-VERSION=1.0.5
+VERSION=1.0.6
 APT_LOCK=/run/control-center-apt.lock
 exec 8>"$APT_LOCK"
 flock -w 900 8 || { echo 'Менеджер пакетов занят. Повторите установку позже.'; exit 1; }
@@ -21,7 +21,6 @@ install -d -o root -g "$SERVICE_USER" -m 0750 "$SYSTEM_STATE_DIR" "$SYSTEM_STATE
 install -d -o root -g root -m 0700 "$ROOT_STATE_DIR"
 install -d -o root -g root -m 0755 /etc/control-center
 
-# Migrate only non-privileged display configuration from older layouts.
 for name in network-config.json dhcp-config.json; do
   old="$STATE_DIR/$name"; new="$SYSTEM_STATE_DIR/$name"
   if [[ ! -e "$new" && -f "$old" && ! -L "$old" ]]; then
@@ -30,10 +29,6 @@ for name in network-config.json dhcp-config.json; do
   fi
 done
 
-# Legacy module ownership was Web-writable. Never trust package_owned from it.
-# If an older Control Center DHCP setup is demonstrably present, migrate it as
-# installed but externally-owned so a later removal cannot uninstall a package
-# based on untrusted legacy metadata.
 if [[ ! -f "$SYSTEM_STATE_DIR/modules/dhcp.json" && -f "$STATE_DIR/modules/dhcp.json" && ! -L "$STATE_DIR/modules/dhcp.json" ]] \
    && dpkg-query -W -f='${Status}' dnsmasq 2>/dev/null | grep -q 'install ok installed' \
    && [[ -f /etc/dnsmasq.d/control-center-dhcp.conf ]] \
@@ -43,10 +38,8 @@ if [[ ! -f "$SYSTEM_STATE_DIR/modules/dhcp.json" && -f "$STATE_DIR/modules/dhcp.
   chown root:"$SERVICE_USER" "$SYSTEM_STATE_DIR/modules/dhcp.json"; chmod 0640 "$SYSTEM_STATE_DIR/modules/dhcp.json"
 fi
 
-# Never trust state created by the pre-audit licensing/rollback layout.
 rm -f "$STATE_DIR/license.json"
 rm -rf "$STATE_DIR"/rollback-* "$STATE_DIR/90-control-center.yaml.rollback" "$STATE_DIR/control-center-dhcp.conf.rollback"
-# Never replay stale privileged requests after install/update.
 rm -f "$STATE_DIR/network-pending.json" "$STATE_DIR/market-pending.json" "$STATE_DIR/dhcp-pending.json" "$STATE_DIR/license-pending.json" "$STATE_DIR/os-update-now"
 
 [[ -f "$STATE_DIR/update-settings.json" && ! -L "$STATE_DIR/update-settings.json" ]] || { rm -f "$STATE_DIR/update-settings.json"; printf '%s\n' '{"automatic_updates":true,"interval_minutes":60,"channel":"production"}' >"$STATE_DIR/update-settings.json"; }
@@ -54,8 +47,6 @@ rm -f "$STATE_DIR/network-pending.json" "$STATE_DIR/market-pending.json" "$STATE
 chown "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR" "$STATE_DIR/update-settings.json" "$STATE_DIR/os-update-settings.json"
 chmod 0640 "$STATE_DIR/update-settings.json" "$STATE_DIR/os-update-settings.json"
 
-# Compatibility read links for the current Web API. Root helpers always use the
-# protected targets directly and never trust these Web-controlled links.
 rm -rf "$STATE_DIR/modules"; ln -s "$SYSTEM_STATE_DIR/modules" "$STATE_DIR/modules"
 for name in update-status.json os-update-status.json license-status.json network-config.json network-status.json market-status.json dhcp-config.json dhcp-status.json; do
   rm -f "$STATE_DIR/$name"
@@ -67,6 +58,7 @@ find "$SYSTEM_STATE_DIR" -type d -exec chmod 0750 {} +
 find "$SYSTEM_STATE_DIR" -type f -exec chmod 0640 {} +
 chmod 0750 "$LICENSE_DIR"
 if [[ -f "$LICENSE_DIR/license.json" ]]; then chown root:"$SERVICE_USER" "$LICENSE_DIR/license.json"; chmod 0640 "$LICENSE_DIR/license.json"; fi
+if [[ -f /etc/netplan/90-control-center.yaml ]]; then chown root:"$SERVICE_USER" /etc/netplan/90-control-center.yaml; chmod 0640 /etc/netplan/90-control-center.yaml; fi
 
 systemctl stop control-center 2>/dev/null || true
 rm -rf "$APP_DIR/app" "$APP_DIR/venv"
@@ -107,7 +99,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center
-ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
 InaccessiblePaths=/var/lib/control-center-root
 [Install]
 WantedBy=multi-user.target
@@ -254,7 +246,12 @@ then
   fi
 fi
 sleep 1
-curl -fsS http://127.0.0.1:8080/api/health >/dev/null
+HEALTH="$(curl -fsS http://127.0.0.1:8080/api/health)"
+python3 - "$HEALTH" "$VERSION" <<'PY'
+import json,sys
+j=json.loads(sys.argv[1]); expected=sys.argv[2]
+assert j.get('status')=='ok' and j.get('version')==expected, j
+PY
 echo "Control Center $VERSION установлен."
 echo 'Web UI: Gunicorn production WSGI, порт 8080.'
 echo 'State: Web requests / protected system state / root rollback / protected license.'
