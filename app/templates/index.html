@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Control Center</title><link rel="stylesheet" href="/static/app.css"></head>
+<body>
+<div class="shell">
+<aside><div class="brand">Control Center <span>v{{ version }}</span></div><nav>
+<button class="tab active" data-tab="system">Система</button>
+<button class="tab" data-tab="networks">Сети</button>
+<button class="tab" data-tab="market">Маркет</button>
+<button class="tab" data-tab="rbac">RBAC</button>
+</nav></aside>
+<main>
+<section id="system" class="panel active"><h1>Система</h1><div class="cards" id="systemCards"></div><div class="chart"><h2>Мониторинг ресурсов</h2><canvas id="resourceChart" width="900" height="260"></canvas></div><pre id="systemDetails"></pre></section>
+<section id="networks" class="panel"><h1>Сети</h1><div id="networksList"></div></section>
+<section id="market" class="panel"><h1>Маркет</h1><p class="muted">Каталог сервисов. Установка и удаление будут активироваться поэтапно в следующих релизах.</p><div class="cards" id="marketList"></div></section>
+<section id="rbac" class="panel"><h1>RBAC</h1><p class="muted">v1.0.0: локальные Linux УЗ и группы, режим просмотра.</p><div class="split"><div><h2>Пользователи</h2><div id="users"></div></div><div><h2>Группы</h2><div id="groups"></div></div></div></section>
+</main></div>
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+$$('.tab').forEach(b=>b.onclick=()=>{$$('.tab,.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.tab).classList.add('active');load(b.dataset.tab)});
+const fmt=n=>{if(!Number.isFinite(+n))return n;const u=['B','KB','MB','GB','TB'];let i=0;n=+n;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]};
+let hist=[];
+function draw(cpu,mem,disk){hist.push([cpu,mem,disk]); if(hist.length>50)hist.shift(); const c=$('#resourceChart'),x=c.getContext('2d'),w=c.width,h=c.height;x.clearRect(0,0,w,h);x.strokeStyle='#2b3445';for(let i=0;i<=4;i++){let y=20+i*(h-40)/4;x.beginPath();x.moveTo(35,y);x.lineTo(w-10,y);x.stroke()}[[0,'CPU'],[1,'RAM'],[2,'DISK']].forEach(([k,l],j)=>{x.beginPath();hist.forEach((p,i)=>{let px=35+i*(w-50)/49,py=20+(100-p[k])*(h-40)/100;i?x.lineTo(px,py):x.moveTo(px,py)});x.strokeStyle=['#5ea1ff','#62d6a8','#f2c66d'][j];x.lineWidth=2;x.stroke();x.fillStyle=x.strokeStyle;x.fillText(l,45+j*70,15)});}
+async function system(){let d=await fetch('/api/system').then(r=>r.json());$('#systemCards').innerHTML=`<div class=card><b>CPU</b><strong>${d.cpu_percent}%</strong></div><div class=card><b>RAM</b><strong>${d.memory.percent}%</strong><small>${fmt(d.memory.used)} / ${fmt(d.memory.total)}</small></div><div class=card><b>Диск</b><strong>${d.disk.percent}%</strong><small>${fmt(d.disk.used)} / ${fmt(d.disk.total)}</small></div><div class=card><b>Uptime</b><strong>${Math.floor(d.uptime_seconds/3600)} ч</strong></div>`;$('#systemDetails').textContent=`Хост: ${d.hostname}\nОС: ${d.os}\nKernel: ${d.kernel}\nАрхитектура: ${d.architecture}\nControl Center: ${d.version}`;draw(d.cpu_percent,d.memory.percent,d.disk.percent)}
+async function networks(){let d=await fetch('/api/networks').then(r=>r.json());$('#networksList').innerHTML='<table><tr><th>Интерфейс</th><th>Состояние</th><th>IPv4</th><th>MAC</th><th>RX</th><th>TX</th></tr>'+d.map(x=>`<tr><td>${x.name}</td><td>${x.state}</td><td>${x.ipv4.join('<br>')||'—'}</td><td>${x.mac}</td><td>${fmt(x.rx_bytes)}</td><td>${fmt(x.tx_bytes)}</td></tr>`).join('')+'</table>'}
+async function market(){let d=await fetch('/api/market').then(r=>r.json());$('#marketList').innerHTML=d.items.map(x=>`<div class=card><b>${x.name}</b><p>${x.description}</p><small>Статус: запланировано</small></div>`).join('')}
+async function rbac(){let d=await fetch('/api/rbac').then(r=>r.json());$('#users').innerHTML='<table><tr><th>УЗ</th><th>UID</th><th>Тип</th></tr>'+d.users.map(x=>`<tr><td>${x.name}</td><td>${x.uid}</td><td>${x.type}</td></tr>`).join('')+'</table>';$('#groups').innerHTML='<table><tr><th>Группа</th><th>GID</th></tr>'+d.groups.map(x=>`<tr><td>${x.name}</td><td>${x.gid}</td></tr>`).join('')+'</table>'}
+function load(t){({system,networks,market,rbac}[t]||(()=>{}))()};load('system');setInterval(()=>{if($('#system').classList.contains('active'))system()},5000);
+</script></body></html>
