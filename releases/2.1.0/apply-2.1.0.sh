@@ -64,8 +64,15 @@ fi
 
 # Whether 2.0.0 was just carried forward or was already installed, prove its
 # published acceptance contract before changing Minecraft service ownership.
+# An already-installed 2.0.0 legitimately records its original accepted SHA,
+# not the new 2.1.0 candidate SHA, so its frozen acceptance is invoked with
+# 'unknown' in that path while still checking every runtime/product contract.
 log "Validating the published 2.0.0 baseline"
-bash "$BASE_RELEASE/acceptance-2.0.0.sh" "$PROJECT" "$REMOTE_SHA"
+if [[ "$SOURCE_VERSION" == "1.3.8" ]]; then
+    bash "$BASE_RELEASE/acceptance-2.0.0.sh" "$PROJECT" "$REMOTE_SHA"
+else
+    bash "$BASE_RELEASE/acceptance-2.0.0.sh" "$PROJECT" unknown
+fi
 
 install -d -m 0755 /usr/local/libexec /usr/local/sbin
 install -m 0755 -o root -g root "$SYSTEM/srv-control-minecraft-normalize" /usr/local/libexec/srv-control-minecraft-normalize
@@ -118,8 +125,7 @@ PY
 # Verify the dispatcher can observe exactly the canonical service after metadata
 # transition. This catches the 2.0 failure mode where the game process was alive
 # but Control Center could not safely restart it.
-sudo -n -u root /usr/local/sbin/srv-control-minecraft status > "$BACKUP_DIR/state/minecraft-control-status.json" 2>/dev/null \
-    || /usr/local/sbin/srv-control-minecraft status > "$BACKUP_DIR/state/minecraft-control-status.json"
+/usr/local/sbin/srv-control-minecraft status > "$BACKUP_DIR/state/minecraft-control-status.json"
 python3 - "$BACKUP_DIR/state/minecraft-control-status.json" <<'PY'
 import json,pathlib,sys
 p=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
