@@ -4,12 +4,12 @@
 
 ## Текущий контекст
 
-- Активный production target: **2.1.0**.
-- 2.0.0 и 2.1.0 опубликованы и frozen.
-- 2.1.0 фактически выпущен как **Minecraft canonical runtime stabilization**, а не Licensing Stage 1.
-- Licensing Stage 1 в frozen 2.0.0/2.1.0 не реализован.
-- Ранее закреплённая схема «2.1.0 = Stage 1, … 2.5.0 = Stage 5» стала историческим планом и больше не может быть нормативной: опубликованный 2.1.0 не переписывается.
-- Licensing rollout сохраняет последовательность Stage 1 → 5, но конкретные будущие номера версий назначаются при подготовке release scope. Следующий licensing feature release должен начинаться со Stage 1.
+- Активный production target: **2.1.2**.
+- 2.0.0, 2.1.0, 2.1.1 и 2.1.2 опубликованы и frozen.
+- 2.1.0 фактически выпущен как Minecraft canonical runtime stabilization; 2.1.1/2.1.2 — последующие Minecraft privilege/status repairs.
+- Licensing Stage 1 в frozen 2.0.0–2.1.2 не реализован.
+- Ранее закреплённая схема «2.1.0 = Stage 1, … 2.5.0 = Stage 5» стала историческим планом и не является нормативной.
+- Licensing rollout сохраняет последовательность Stage 1 → 5, но конкретные будущие номера версий назначаются при подготовке release scope.
 
 ## Правила развития
 
@@ -21,13 +21,13 @@
 
 Новый major baseline: обновлённый интерфейс/навигация, transactional updater, backup center, health-first Minecraft repair и перенос PAM/NSS/winbind, RBAC, Samba AD/shares, system services, OS/product updates, AdGuard VPN, network/system и DHCP/PXE compatibility paths. Licensing Stage 1 отсутствует в frozen payload.
 
-### 2.1.0
+### 2.1.0–2.1.2
 
-Текущий production stabilization release: сохраняет существующий Minecraft world/settings, нормализует Bedrock runtime в `srv-control-minecraft-bedrock.service`, направляет Control Center operations через канонический service, отключает конфликтующий multi-instance updater и сохраняет rollback/fallback contract.
+Опубликованная Minecraft stabilization/repair линия: канонический `srv-control-minecraft-bedrock.service`, сохранение мира/настроек, ограниченный privilege bridge при `NoNewPrivileges`, status discovery через systemd `WorkingDirectory`, подтверждённые ONLINE/OFFLINE результаты и live-status UI. Детали опубликованных изменений находятся в `RELEASE-HISTORY.md` и frozen manifests.
 
 ## Licensing roadmap — последовательные Stages 1–5
 
-Полная архитектура — `PRODUCT-EDITIONS.md`. Номер будущего minor release не фиксируется этим документом заранее после фактического использования 2.1.0 для stabilization.
+Полная архитектура — `PRODUCT-EDITIONS.md`. Номер будущего minor release не фиксируется этим документом заранее.
 
 ### Stage 1 — Edition / Entitlement Engine
 
