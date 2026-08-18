@@ -4,17 +4,27 @@ STATE=/var/lib/control-center
 PENDING="$STATE/market-pending.json"
 MODULE_DIR="$STATE/modules"
 DHCP_STATE="$MODULE_DIR/dhcp.json"
-[[ -f "$PENDING" ]] || exit 0
+STATUS="$STATE/market-status.json"
+APT_LOCK=/run/control-center-apt.lock
+[[ -s "$PENDING" ]] || exit 0
+status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
+import json,sys,time
+open(sys.argv[1],'w').write(json.dumps({'state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
+PY
+chown control-center:control-center "$STATUS" 2>/dev/null || true; }
 readarray -t x < <(python3 - "$PENDING" <<'PY'
 import json,sys
 j=json.load(open(sys.argv[1])); print(j.get('module','')); print(j.get('action',''))
 PY
 )
 rm -f "$PENDING"
-[[ "${x[0]}" == dhcp ]] || exit 1
+[[ "${x[0]}" == dhcp && ( "${x[1]}" == install || "${x[1]}" == remove ) ]] || { status error 'Некорректная операция Маркета'; exit 1; }
 mkdir -p "$MODULE_DIR"
+exec 8>"$APT_LOCK"
+flock -w 900 8 || { status error 'Менеджер пакетов занят'; exit 1; }
+export DEBIAN_FRONTEND=noninteractive
 if [[ "${x[1]}" == install ]]; then
-  export DEBIAN_FRONTEND=noninteractive
+  status applying 'Установка DHCP Server…'
   apt-get update
   apt-get install -y dnsmasq
   install -d -m 0755 /etc/dnsmasq.d
@@ -22,13 +32,16 @@ if [[ "${x[1]}" == install ]]; then
 port=0
 # DHCP configuration is managed by Control Center.
 EOF
+  dnsmasq --test >/dev/null
   systemctl enable dnsmasq >/dev/null 2>&1 || true
   systemctl restart dnsmasq
   printf '%s\n' '{"installed":true,"package":"dnsmasq"}' >"$DHCP_STATE"
   chown control-center:control-center "$DHCP_STATE"
-elif [[ "${x[1]}" == remove ]]; then
+  status applied 'DHCP Server установлен'
+else
+  status applying 'Удаление DHCP Server…'
   systemctl disable --now dnsmasq >/dev/null 2>&1 || true
   rm -f /etc/dnsmasq.d/control-center-dhcp.conf "$DHCP_STATE" "$STATE/dhcp-config.json" "$STATE/dhcp-pending.json" "$STATE/dhcp-status.json"
-  export DEBIAN_FRONTEND=noninteractive
   apt-get remove -y dnsmasq || true
+  status applied 'DHCP Server удалён'
 fi
