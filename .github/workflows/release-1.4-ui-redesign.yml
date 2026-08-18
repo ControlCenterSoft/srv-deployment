@@ -184,6 +184,7 @@ jobs:
           grep -Fq '.nav-backdrop.open' releases/1.4.0/payload/static/css/shell.css
           grep -Fq 'cc-responsive-table' releases/1.4.0/payload/static/js/ui-1.4.js
           grep -Fq 'data-cc-label' releases/1.4.0/payload/static/js/ui-1.4.js
+          grep -Fq 'enhanceTables' releases/1.4.0/payload/static/js/samba.js
 
       - name: Validate interaction safety and accessibility contracts
         run: |
@@ -198,6 +199,9 @@ jobs:
           grep -Fq 'window.ControlCenterUI' releases/1.4.0/payload/static/js/ui-1.4.js
           grep -Fq 'focusableElements' releases/1.4.0/payload/static/js/ui-1.4.js
           grep -Fq 'requireText' releases/1.4.0/payload/static/js/ui-1.4.js
+          for page in services system samba shares access adguard torrents minecraft; do
+            grep -Fq 'static/js/ui-1.4.js' "releases/1.4.0/payload/templates/${page}.html" || { echo "shared UI missing from ${page}"; exit 1; }
+          done
           grep -Fq 'ui.confirm' releases/1.4.0/payload/static/js/services.js
           grep -Fq 'ui.confirm' releases/1.4.0/payload/static/js/access.js
           grep -Fq 'confirmAction' releases/1.4.0/payload/static/js/system.js
@@ -206,8 +210,15 @@ jobs:
           grep -Fq 'promptAction' releases/1.4.0/payload/static/js/minecraft.js
           grep -Fq 'requireText:name' releases/1.4.0/payload/static/js/minecraft.js
           grep -Fq 'aria-selected' releases/1.4.0/payload/static/js/minecraft.js
+          grep -Fq 'confirmAction' releases/1.4.0/payload/static/js/samba.js
+          grep -Fq 'requireText: value.username' releases/1.4.0/payload/static/js/samba.js
+          grep -Fq 'requireText: "RESTORE"' releases/1.4.0/payload/static/js/samba.js
+          grep -Fq 'confirmAction' releases/1.4.0/payload/static/js/shares.js
+          grep -Fq 'requireText: value.name' releases/1.4.0/payload/static/js/shares.js
+          grep -Fq 'confirmAction' releases/1.4.0/payload/static/js/adguard.js
           grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/services.js
           grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/access.js
+          grep -Fq 'aria-busy' releases/1.4.0/payload/static/js/adguard.js
 
       - name: Compile application Python
         run: |
