@@ -3,74 +3,89 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/shell.css?v=1.3.0-rc1">
+    <title>Control Center</title>
+    <link rel="stylesheet" href="/static/css/shell.css?v=1.4.0-ui1">
 </head>
 <body>
 <div class="app-shell">
-    <main class="frame-area">
-        <iframe id="moduleFrame" name="moduleFrame" src="/ui/dashboard" title="SRV Control Center"></iframe>
-    </main>
-
-    <aside class="main-nav">
+    <aside class="main-nav" aria-label="Основная навигация">
         <div class="brand">
-            <div class="brand-mark">SRV</div>
+            <div class="brand-mark" aria-hidden="true">C</div>
             <div class="brand-text">
-                <strong>Control Center</strong>
+                <strong>CONTROL CENTER</strong>
                 <span>{{ canonical_host }}</span>
             </div>
         </div>
 
-        <nav id="mainMenu">
-            <a class="nav-item active" href="/ui/dashboard" target="moduleFrame" data-route="/ui/dashboard">
-                <span class="nav-icon">⌂</span><span>Главная</span>
+        <nav id="mainMenu" class="main-menu">
+            <a class="nav-item active" href="/ui/dashboard" target="moduleFrame" data-route="/ui/dashboard" data-search="обзор главная dashboard">
+                <span class="nav-icon" aria-hidden="true">⌘</span><span class="nav-label">Обзор</span>
             </a>
-            <a class="nav-item" href="/ui/module/internet" target="moduleFrame" data-route="/ui/module/internet" data-module="network">
-                <span class="nav-icon">◎</span><span>Сеть</span>
+            <a class="nav-item" href="/ui/module/internet" target="moduleFrame" data-route="/ui/module/internet" data-module="network" data-search="сеть internet network wan lan">
+                <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Сеть</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/samba" target="moduleFrame" data-route="/ui/module/samba" data-module="samba">
-                <span class="nav-icon">◫</span><span>Домен Samba</span>
+            <a class="nav-item" href="/ui/module/samba" target="moduleFrame" data-route="/ui/module/samba" data-module="samba" data-search="домен samba directory access">
+                <span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">Домен и доступ</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/shares" target="moduleFrame" data-route="/ui/module/shares" data-module="shares">
-                <span class="nav-icon">▤</span><span>Общий / сетевой доступ</span>
+            <a class="nav-item" href="/ui/module/shares" target="moduleFrame" data-route="/ui/module/shares" data-module="shares" data-search="папки файлы общий сетевой доступ shares">
+                <span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">Сетевые ресурсы</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/minecraft" target="moduleFrame" data-route="/ui/module/minecraft" data-module="minecraft">
-                <span class="nav-icon">◆</span><span>Minecraft</span>
+            <a class="nav-item" href="/ui/module/minecraft" target="moduleFrame" data-route="/ui/module/minecraft" data-module="minecraft" data-search="minecraft bedrock server">
+                <span class="nav-icon" aria-hidden="true">◆</span><span class="nav-label">Minecraft</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/torrents" target="moduleFrame" data-route="/ui/module/torrents" data-module="downloads">
-                <span class="nav-icon">↓</span><span>Торренты</span>
+            <a class="nav-item" href="/ui/module/torrents" target="moduleFrame" data-route="/ui/module/torrents" data-module="downloads" data-search="торренты загрузки downloads">
+                <span class="nav-icon" aria-hidden="true">⇩</span><span class="nav-label">Загрузки</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/adguard" target="moduleFrame" data-route="/ui/module/adguard" data-module="network">
-                <span class="nav-icon">◉</span><span>AdGuard VPN</span>
+            <a class="nav-item" href="/ui/module/adguard" target="moduleFrame" data-route="/ui/module/adguard" data-module="network" data-search="adguard vpn безопасность сеть">
+                <span class="nav-icon" aria-hidden="true">◈</span><span class="nav-label">AdGuard VPN</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/services" target="moduleFrame" data-route="/ui/module/services" data-modules="network,pxe,samba">
-                <span class="nav-icon">▦</span><span>Сервисы</span>
+            <a class="nav-item" href="/ui/module/services" target="moduleFrame" data-route="/ui/module/services" data-modules="network,pxe,samba" data-search="сервисы службы pxe dhcp samba">
+                <span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">Сервисы</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/access" target="moduleFrame" data-route="/ui/module/access" data-admin-only="true">
-                <span class="nav-icon">◈</span><span>Права пользователей</span>
+            <a class="nav-item" href="/ui/module/access" target="moduleFrame" data-route="/ui/module/access" data-admin-only="true" data-search="пользователи права rbac access">
+                <span class="nav-icon" aria-hidden="true">♙</span><span class="nav-label">Пользователи</span><span class="nav-chevron">›</span>
             </a>
-            <a class="nav-item" href="/ui/module/system" target="moduleFrame" data-route="/ui/module/system">
-                <span class="nav-icon">⚙</span><span>Система</span>
+            <a class="nav-item" href="/ui/module/system" target="moduleFrame" data-route="/ui/module/system" data-search="система обновления настройки system update">
+                <span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">Система</span><span class="nav-chevron">›</span>
             </a>
         </nav>
 
         <div class="nav-footer">
-            <div class="session-user">
-                <strong id="sessionUser">—</strong>
-                <button id="logoutButton" type="button">Выйти</button>
+            <div class="user-card">
+                <div class="user-avatar" id="sessionAvatar" aria-hidden="true">A</div>
+                <div class="user-copy">
+                    <strong id="sessionUser">—</strong>
+                    <span id="sessionRole">Пользователь</span>
+                </div>
             </div>
-            <div class="health-dot" id="backendHealthDot"></div>
-            <div class="backend-state">
+            <button id="logoutButton" class="logout-button" type="button">Выйти</button>
+        </div>
+    </aside>
+
+    <header class="topbar">
+        <label class="global-search" for="globalSearch">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="globalSearch" type="search" autocomplete="off" placeholder="Поиск (Ctrl + K)" aria-label="Поиск по разделам">
+            <kbd>Ctrl K</kbd>
+        </label>
+
+        <div class="topbar-actions">
+            <div class="system-pill" id="systemPill">
+                <span class="health-dot" id="backendHealthDot"></span>
                 <strong id="backendHealth">Проверка...</strong>
-                <span>Backend</span>
             </div>
-            <div class="release-meta">
-                <strong id="releaseVersion">Релиз —</strong>
+            <button class="icon-button" id="refreshButton" type="button" title="Обновить текущий раздел" aria-label="Обновить текущий раздел">↻</button>
+            <div class="release-box">
+                <strong id="releaseVersion">Control Center —</strong>
                 <span id="githubSync">GitHub: —</span>
             </div>
         </div>
-    </aside>
+    </header>
+
+    <main class="frame-area">
+        <iframe id="moduleFrame" name="moduleFrame" src="/ui/dashboard" title="Control Center"></iframe>
+    </main>
 </div>
-<script src="/static/js/shell.js?v=1.3.0-rc1"></script>
+<script src="/static/js/shell.js?v=1.4.0-ui1"></script>
 </body>
 </html>
