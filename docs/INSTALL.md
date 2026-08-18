@@ -11,15 +11,15 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Bootstrap получает актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому устанавливается self-contained payload активного `releases/<version>`.
+Bootstrap получает актуальный `main`. `installer/install.sh` читает `deployment.json`, поэтому устанавливается self-contained payload активного `releases/<version>`. Сейчас production target — **2.0.0**.
 
-Перед установкой проверьте сеть, DNS, время, доступ к GitHub, свободное место и наличие root/sudo. При миграции существующего сервера предварительно создайте независимую резервную копию важных данных.
+Перед установкой проверьте сеть, DNS, время, доступ к GitHub, свободное место и root/sudo. При миграции существующего сервера предварительно создайте независимую резервную копию важных данных.
 
-Установщик создаёт/настраивает PostgreSQL role/database, Python virtualenv, Alembic migrations, `srv-control.service`, reverse proxy, system helpers активного release и GitHub updater согласно фактической release implementation.
+Установщик создаёт/настраивает PostgreSQL role/database, Python virtualenv, Alembic migrations, `srv-control.service`, reverse proxy, system helpers active release и GitHub updater согласно frozen implementation.
 
 ## Аутентификация после установки
 
-Современная production-линия не создаёт отдельную базу web-паролей Control Center и не требует bootstrap web-user `admin`.
+Production 2.0.0 не создаёт отдельную базу web-паролей Control Center и не требует bootstrap web-user `admin`.
 
 Вход использует системную identity chain:
 
@@ -28,11 +28,7 @@ Bootstrap получает актуальный `main`. `installer/install.sh` �
 - Kerberos/SPNEGO SSO при корректной доменной конфигурации;
 - RBAC Control Center после успешной authentication.
 
-Первый вход выполняется существующей локальной или доменной учётной записью с необходимыми правами.
-
-При наличии Samba AD DC release installation может настраивать HTTP Kerberos keytab/SPNEGO integration. Если SSO недоступен, интерактивный PAM/winbind login остаётся отдельным путем при условии корректной системной интеграции.
-
-Страница управления правами работает с доступными локальными/доменными identity и RBAC; она не создаёт отдельный парольный каталог Control Center.
+Первый вход выполняется существующей локальной или доменной учётной записью с необходимыми правами. Страница управления правами работает с системными identities и не создаёт отдельный парольный каталог Control Center.
 
 ## Основные пути
 
@@ -46,15 +42,15 @@ Bootstrap получает актуальный `main`. `installer/install.sh` �
 /var/lib/srv-control/backups             резервные копии
 /var/lib/srv-control/session.key          ключ web-сессий
 /var/lib/srv-control/http.keytab          HTTP keytab SSO при наличии
-/var/lib/srv-deployment                   deployment state/rollback state
+/var/lib/srv-deployment                   deployment/rollback state
 /var/lib/srvcc-agent/deploy-repo          updater checkout GitHub main
-/var/lib/srvcc-agent/last-deployed-sha
-/var/lib/srvcc-agent/last-seen-sha
+/var/lib/srvcc-agent/accepted-release-fingerprint
 /var/lib/srvcc-agent/last-release-fingerprint
+/var/lib/srvcc-agent/blocked-release.json
 /var/log/srvcc-agent.log
 ```
 
-Точный набор файлов/units конкретной версии определяется frozen `releases/<active-version>`.
+Точный набор files/units определяется frozen `releases/<active-version>`.
 
 ## GitHub updates
 
@@ -67,19 +63,19 @@ sudo /usr/local/sbin/srvcc-configure-auto-updates \
   --interval-minutes 5
 ```
 
-Ручная проверка без применения:
+Ручная проверка:
 
 ```bash
 sudo /usr/local/sbin/srvcc-github-agent check --actor root
 ```
 
-Применение доступного product release:
+Применение доступного release:
 
 ```bash
 sudo /usr/local/sbin/srvcc-github-agent apply --actor root
 ```
 
-Если включена `backup_before_update`, updater сначала создаёт safety backup и блокирует deployment при ошибке backup. Подробности: `AUTO-UPDATES.md`.
+Если `backup_before_update` включён, updater должен выполнить обязательный пользовательский safety backup перед apply. Если policy отключена, такой backup не создаётся; внутренний rollback snapshot release transaction может сохраняться независимо.
 
 ## Проверка установки
 
@@ -102,16 +98,15 @@ systemctl status srv-control-system-agent.path --no-pager -l
 ls -ld /var/lib/srv-control/backups
 ```
 
-Если установлен `pamtester`, PAM можно проверять отдельно без публикации пароля в shell history/logs.
+При AD/SPNEGO дополнительно проверяйте winbind/NSS, Kerberos ticket/keytab, DNS/FQDN и Nginx authentication configuration.
 
-При настроенном AD/SPNEGO дополнительно проверяйте winbind/NSS, Kerberos ticket/keytab, DNS/FQDN и соответствующую Nginx authentication configuration.
+Для 2.0.0 после установки также проверьте только реально используемые сервисы: Samba/shares, DHCP/PXE и Minecraft health, если эти модули включены в данной конфигурации.
 
 ## Определение активной версии
 
-Не полагайтесь на номер версии в старой инструкции. Сначала смотрите опубликованный production target:
+Сначала смотрите опубликованный production target:
 
 ```bash
-# в checkout репозитория
 cat deployment.json
 ```
 
@@ -121,14 +116,14 @@ cat deployment.json
 cat /var/lib/srv-control/release.json
 ```
 
-Эти значения могут временно различаться после failed update и rollback.
+Эти значения могут временно различаться после failed update или rollback.
 
 ## Повторный clean install
 
-Clean installer намеренно не должен безусловно перезаписывать существующий `/opt/srv-control`. Для установленной системы используется product updater. Destructive reinstall выполняется отдельным явно подтверждаемым процессом с резервной копией необходимых данных.
+Clean installer не должен безусловно перезаписывать существующий `/opt/srv-control`. Для установленной системы используется product updater. Destructive reinstall выполняется отдельным явно подтверждаемым процессом с резервной копией необходимых данных.
 
 ## server-state
 
-`server-state` используется для публикации фактического состояния сервера и диагностики. Публикация требует отдельного write credential; секреты не должны встраиваться в публичный installer или документацию.
+`server-state` используется для публикации фактического состояния сервера и диагностики. Публикация требует отдельного write credential; secrets не должны встраиваться в installer или документацию.
 
 После установки переходите к `PRODUCT-MANUAL-RU.md` и `SYSTEM-ADMIN.md`.
