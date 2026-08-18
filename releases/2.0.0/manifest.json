@@ -2,7 +2,7 @@
   "schema_version": 1,
   "release_id": "2.0.0",
   "release_version": "2.0.0",
-  "description": "Control Center 2.0.0 delivers the redesigned administration interface, a rebuilt transactional update controller, explicit update/check timestamps, bulk backup management, authoritative backup-before-update policy enforcement, health-first Minecraft Bedrock recovery, and carried-forward DHCP/PXE management.",
+  "description": "Control Center 2.0.0 delivers the redesigned administration interface, a rebuilt transactional update controller, explicit update/check timestamps, bulk backup management, authoritative backup-before-update policy enforcement, health-first Minecraft Bedrock recovery, a self-contained legacy Bedrock compatibility backend, and carried-forward DHCP/PXE management.",
   "upgrade_from": ">=1.2.0,<2.0.0",
   "scripts": {
     "preflight": {
@@ -11,7 +11,7 @@
     },
     "apply": {
       "path": "apply-2.0.0.sh",
-      "sha256": "603425f3a3d811d349b46e325e970b32311495a8651b9519d7f5cca6e7ceac44"
+      "sha256": "69dd096055e8efbe0da6d971388593269d26429d2ce0f2eeca245aa2949d4f68"
     },
     "acceptance": {
       "path": "acceptance-2.0.0.sh",
