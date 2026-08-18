@@ -50,15 +50,18 @@ jobs:
           )
           contract_text=wrapper
           if not all(x in contract_text for x in required):
-              # Installer-only patches may wrap the immediately preceding proven
-              # acceptance implementation. The helper must live inside the same
-              # immutable release directory and the wrapper must explicitly
-              # advance its release identity rather than bypassing validation.
               m=re.search(r'acceptance-(1\.3\.\d+)\.sh',wrapper)
               assert m, 'active acceptance wrapper does not contain real-server hotfix contract or a validated predecessor helper'
-              helper=root/f'acceptance-{m.group(1)}.sh'
+              predecessor=m.group(1)
+              helper=root/f'acceptance-{predecessor}.sh'
               assert helper.is_file(),helper
-              assert "text=text.replace('1.3.3','1.3.4')" in wrapper or cfg['release_id']==m.group(1), 'release identity adaptation missing'
+              target=cfg['release_id']
+              adaptation=(
+                  f"text=text.replace('{predecessor}','{target}')" in wrapper
+                  or f'text=text.replace("{predecessor}","{target}")' in wrapper
+                  or target==predecessor
+              )
+              assert adaptation, f'release identity adaptation missing: {predecessor} -> {target}'
               contract_text=helper.read_text(encoding='utf-8')
 
           for needle in required:
