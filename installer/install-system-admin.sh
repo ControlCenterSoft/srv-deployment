@@ -6,6 +6,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 STATE_DIR="/var/lib/srv-control"
 APP_USER="srv-control"
 APP_GROUP="srv-control"
+PROFILE="$REPO_ROOT/installer/install-profile.json"
 
 fail() {
     printf 'SYSTEM ADMIN INSTALL FAIL: %s\n' "$*" >&2
@@ -14,19 +15,18 @@ fail() {
 
 [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+[[ -s "$PROFILE" ]] || fail "install profile is missing"
 
-release_path="$(python3 - "$REPO_ROOT/deployment.json" <<'PY'
-import json
-import pathlib
-import sys
-config=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-value=config.get("release_path")
+system_path="$(python3 - "$PROFILE" <<'PY'
+import json,pathlib,sys
+profile=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+value=profile.get('system_baseline')
 if not isinstance(value,str) or not value:
-    raise SystemExit("release_path missing")
+    raise SystemExit('system_baseline missing')
 print(value)
 PY
 )"
-SYSTEM_DIR="$REPO_ROOT/$release_path/system"
+SYSTEM_DIR="$REPO_ROOT/$system_path"
 
 for executable in \
     srv-control-system-agent \
@@ -75,6 +75,20 @@ do
         "/etc/systemd/system/$unit"
 done
 
+# The current application uses the 2.1.1 NoNewPrivileges-safe Minecraft bridge.
+# Install its root agent and reuse the proven path/service units from the 2.1.0
+# consolidated system baseline. This is safe even when Bedrock itself has not yet
+# been installed on a clean host; operations then report service unavailable.
+MC_AGENT="$REPO_ROOT/releases/2.1.1/system/srv-control-minecraft-agent"
+if [[ -x "$MC_AGENT" ]]; then
+    install -d -m 0770 -o root -g "$APP_GROUP" "$STATE_DIR/minecraft-actions"
+    install -m 0755 -o root -g root "$MC_AGENT" /usr/local/libexec/srv-control-minecraft-agent
+    for unit in srv-control-minecraft-agent.service srv-control-minecraft-agent.path; do
+        [[ -s "$SYSTEM_DIR/$unit" ]] || fail "Minecraft agent unit missing: $unit"
+        install -m 0644 -o root -g root "$SYSTEM_DIR/$unit" "/etc/systemd/system/$unit"
+    done
+fi
+
 if [[ ! -s "$STATE_DIR/session.key" ]]; then
     python3 - "$STATE_DIR/session.key" <<'PY'
 import os
@@ -114,7 +128,10 @@ systemctl enable --now srv-control-adguard-monitor.timer
 systemctl start srv-control-adguard-monitor.service || true
 systemctl disable --now srv-control-backup.timer >/dev/null 2>&1 || true
 systemctl disable --now srv-control-os-auto-update.timer >/dev/null 2>&1 || true
+if [[ -x /usr/local/libexec/srv-control-minecraft-agent ]]; then
+    systemctl enable --now srv-control-minecraft-agent.path
+fi
 
 bash "$SYSTEM_DIR/install-auth.sh"
 
-printf 'SYSTEM ADMIN INSTALL PASS: source=%s\n' "$release_path/system"
+printf 'SYSTEM ADMIN INSTALL PASS: source=%s\n' "$system_path"
