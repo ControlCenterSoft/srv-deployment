@@ -5,7 +5,9 @@ umask 027
 REPO_URL="${SRVCC_REPO_URL:-https://github.com/filosoff31/srv-deployment.git}"
 PROJECT="${1:-/opt/srv-control}"
 EXPECTED_RELEASE="2.0.0"
+EXPECTED_INTERVAL=5
 STATE_PUBLISHER="/usr/local/sbin/srvcc-github-agent.state-publisher"
+CONFIGURATOR="/usr/local/sbin/srvcc-configure-auto-updates"
 TMP_ROOT="$(mktemp -d /var/tmp/control-center-2.0-bootstrap.XXXXXX)"
 
 OBSOLETE_UNPUBLISHED_BRANCHES=(
@@ -66,12 +68,20 @@ assert data.get('release_id') == expected, data
 print(f'BOOTSTRAP RELEASE PASS: {expected}')
 PY
 
-# apply-2.0.0 already rebuilds the updater and restores the selected schedule.
-# Reassert the automatic transport here as an additional recovery guard for the
-# exact 1.x failure mode this bootstrap is meant to escape.
-systemctl daemon-reload
+# This recovery path exists specifically because the old automatic 5-minute
+# updater failed and disabled its timer. A legacy config may therefore say
+# manual even though that was not the operator-selected state. Recreate the 2.x
+# configuration atomically instead of merely forcing the timer on behind the
+# UI's back.
+[[ -x "$CONFIGURATOR" ]] || fail "2.x update configurator is unavailable after deployment"
+log "Restoring automatic update mode: ${EXPECTED_INTERVAL} min"
+"$CONFIGURATOR" \
+    --repo "$REPO_URL" \
+    --mode automatic \
+    --interval-minutes "$EXPECTED_INTERVAL" \
+    --no-check-now
+
 systemctl reset-failed srvcc-github-agent.service >/dev/null 2>&1 || true
-systemctl enable --now srvcc-github-agent.timer >/dev/null
 systemctl is-enabled --quiet srvcc-github-agent.timer || fail "update timer is not enabled after bootstrap"
 systemctl is-active --quiet srvcc-github-agent.timer || fail "update timer is not active after bootstrap"
 
@@ -85,13 +95,17 @@ if systemctl is-failed --quiet srvcc-github-agent.service; then
     fail "2.x updater remains failed"
 fi
 
-python3 - <<'PY'
-import json, pathlib
-path=pathlib.Path('/var/lib/srv-control/github-update-status.json')
-data=json.loads(path.read_text(encoding='utf-8'))
-assert data.get('schema_version') == 4, data
-assert data.get('last_check_at') or data.get('checked_at'), data
-print('BOOTSTRAP UPDATER PASS: schema=4 last_check recorded')
+python3 - "$EXPECTED_INTERVAL" <<'PY'
+import json,pathlib,sys
+interval=int(sys.argv[1])
+cfg=json.loads(pathlib.Path('/var/lib/srv-control/github-update-config.json').read_text(encoding='utf-8'))
+status=json.loads(pathlib.Path('/var/lib/srv-control/github-update-status.json').read_text(encoding='utf-8'))
+assert cfg.get('schema_version') == 4,cfg
+assert cfg.get('mode') == 'automatic',cfg
+assert cfg.get('interval_minutes') == interval,cfg
+assert status.get('schema_version') == 4,status
+assert status.get('last_check_at') or status.get('checked_at'),status
+print('BOOTSTRAP UPDATER PASS: automatic interval=',interval,'last_check=',status.get('last_check_at') or status.get('checked_at'))
 PY
 
 python3 - <<'PY'
@@ -101,6 +115,12 @@ with urllib.request.urlopen('http://127.0.0.1:8876/api/v1/health', timeout=15) a
 assert data.get('ok') is True, data
 print('BOOTSTRAP HEALTH PASS')
 PY
+
+# Re-run release acceptance after changing updater mode. This validates the
+# final state that will actually remain on the server, including automatic
+# timer state and the Minecraft compatibility backend through sudo -n.
+log "Revalidating final automatic 2.0.0 state"
+bash "$TMP_ROOT/repo/releases/2.0.0/acceptance-2.0.0.sh" "$PROJECT" "$REMOTE_SHA"
 
 # Publish the accepted real-server state before repository cleanup. A successful
 # publisher return means GitHub now has a fresh server-state created from the
@@ -131,4 +151,4 @@ for branch in "${OBSOLETE_UNPUBLISHED_BRANCHES[@]}"; do
     git -C "$TMP_ROOT/repo" push --quiet origin --delete "$branch"
 done
 
-log "BOOTSTRAP PASS: Control Center 2.0.0 installed; updater verified; server-state published; safe unpublished 1.x branches cleaned"
+log "BOOTSTRAP PASS: Control Center 2.0.0 installed; automatic 5-minute updater verified; server-state published; safe unpublished 1.x branches cleaned"
