@@ -12,7 +12,15 @@ PY
 
 python3 "$RELEASE_DIR/tests/pxe_contract.py" || fail "PXE firmware/safety contract failed"
 python3 "$RELEASE_DIR/tests/pxe_transport_contract.py" || fail "PXE transport contract failed"
-python3 -m py_compile /usr/local/libexec/srv-control-release14-agent /usr/local/libexec/srv-control-pxe-probe || fail "installed PXE executables syntax invalid"
+python3 "$RELEASE_DIR/tests/pxe_lifecycle_contract.py" || fail "PXE lifecycle contract failed"
+python3 "$RELEASE_DIR/tests/pxe_backup_contract.py" || fail "PXE backup/restore contract failed"
+python3 -m py_compile \
+  /usr/local/libexec/srv-control-release14-agent \
+  /usr/local/libexec/srv-control-pxe-probe \
+  /usr/local/libexec/srv-control-backup \
+  || fail "installed release14 executables syntax invalid"
+cmp -s "$RELEASE_DIR/system/srv-control-pxe-probe" /usr/local/libexec/srv-control-pxe-probe || fail "installed PXE probe differs from release payload"
+cmp -s "$RELEASE_DIR/system/srv-control-backup" /usr/local/libexec/srv-control-backup || fail "installed backup worker differs from release payload"
 runuser -u srv-control -- env PYTHONPATH="$PROJECT" PYTHONDONTWRITEBYTECODE=1 "$PROJECT/venv/bin/python" - <<'PY' || fail "release14 imports failed"
 import app.main
 from app.core import release14
@@ -28,7 +36,9 @@ done
 systemctl is-enabled --quiet srv-control-release14-agent.path || fail "release14 action path disabled"
 systemctl is-active --quiet srv-control-release14-agent.path || fail "release14 action path inactive"
 systemctl is-enabled --quiet srv-control-backup-retention.path || fail "backup retention path disabled"
+systemctl is-active --quiet srv-control-backup-retention.path || fail "backup retention path inactive"
 [[ -x /usr/local/libexec/srv-control-pxe-probe ]] || fail "PXE live probe executable missing"
+[[ -x /usr/local/libexec/srv-control-backup ]] || fail "PXE-aware backup worker missing"
 
 # Deny-by-default must hold for every firmware class without exposing a boot payload.
 for query in \
@@ -36,7 +46,8 @@ for query in \
   'mac=02:00:00:00:00:02&platform=efi&buildarch=i386' \
   'mac=02:00:00:00:00:03&platform=efi&buildarch=x86_64' \
   'mac=02:00:00:00:00:04&platform=efi&buildarch=arm32' \
-  'mac=02:00:00:00:00:05&platform=efi&buildarch=arm64'; do
+  'mac=02:00:00:00:00:05&platform=efi&buildarch=arm64' \
+  'mac=02:00:00:00:00:06&platform=efi&buildarch=efibc'; do
   boot="$(curl -fsS --max-time 10 "http://127.0.0.1:8876/pxe/boot.ipxe?$query")" || fail "public PXE authorization endpoint unavailable for $query"
   grep -q 'not authorized' <<<"$boot" || fail "unknown PXE device was not denied: $query"
   ! grep -qiE '(^|[[:space:]])(kernel|initrd|shim|imgfetch).*|autoinstall|preseed/url|/pxe/consume/' <<<"$boot" || fail "unknown PXE device received installation payload: $query"
@@ -73,4 +84,4 @@ elif systemctl is-active --quiet tftpd-hpa.service; then
   echo "ACCEPTANCE INFO: legacy/unmanaged PXE runtime detected; Control Center upgrade preserved it and PXE repair is required before 1.4 runtime guarantees apply"
 fi
 
-echo "ACCEPTANCE PASS: release=1.4.0 migration=14f0a1400001 deny-by-default=ok firmware-contract=ok private-profiles=ok live-transport=ok-or-legacy"
+echo "ACCEPTANCE PASS: release=1.4.0 migration=14f0a1400001 firmware=ok transport=ok lifecycle=ok backup=ok deny-by-default=ok private-profiles=ok live-transport=ok-or-legacy"
