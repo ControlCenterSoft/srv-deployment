@@ -15,7 +15,8 @@ for f in \
   payload/static/js/shares-1.4.js payload/static/js/system-1.4.js payload/static/css/release-1.4.css \
   system/srv-control-release14-agent.service system/srv-control-release14-agent.path \
   system/srv-control-backup-retention.service system/srv-control-backup-retention.path \
-  tests/pxe_contract.py; do
+  system/srv-control-pxe-probe system/srv-control-backup \
+  tests/pxe_contract.py tests/pxe_transport_contract.py tests/pxe_lifecycle_contract.py tests/pxe_backup_contract.py; do
   [[ -s "$RELEASE_DIR/$f" ]] || fail "release file missing: $f"
 done
 
@@ -47,10 +48,17 @@ trap 'rm -f "$tmp_core" "$tmp_router" "$tmp_agent"' EXIT
 cat "$RELEASE_DIR"/payload/app/core/release14.parts/{00,01,02,03,04,05,06,07}.part > "$tmp_core"
 cat "$RELEASE_DIR"/payload/app/routers/release14.parts/{00,01,02,03}.part > "$tmp_router"
 cat "$RELEASE_DIR"/system/srv-control-release14-agent.parts/{00,01,02,03,04,05,06,07,08,09,10,11,12}.part > "$tmp_agent"
-"$PROJECT/venv/bin/python" -m py_compile "$RELEASE_DIR/payload/app/main.py" "$tmp_core" "$tmp_router" "$RELEASE_DIR/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py" "$tmp_agent" || fail "Python syntax check failed"
+"$PROJECT/venv/bin/python" -m py_compile \
+  "$RELEASE_DIR/payload/app/main.py" "$tmp_core" "$tmp_router" \
+  "$RELEASE_DIR/payload/migrations/versions/14f0a1400001_dhcp_pxe_network_redirects.py" \
+  "$tmp_agent" "$RELEASE_DIR/system/srv-control-pxe-probe" "$RELEASE_DIR/system/srv-control-backup" \
+  || fail "Python syntax check failed"
 python3 "$RELEASE_DIR/tests/pxe_contract.py" || fail "PXE firmware/safety contract failed"
+python3 "$RELEASE_DIR/tests/pxe_transport_contract.py" || fail "PXE transport contract failed"
+python3 "$RELEASE_DIR/tests/pxe_lifecycle_contract.py" || fail "PXE lifecycle contract failed"
+python3 "$RELEASE_DIR/tests/pxe_backup_contract.py" || fail "PXE backup/restore contract failed"
 for f in apply.sh rollback.sh acceptance.sh preflight.sh; do bash -n "$RELEASE_DIR/$f" || fail "shell syntax failed: $f"; done
 FREE_KB="$(df -Pk "$PROJECT" | awk 'NR==2{print $4}')"
 (( FREE_KB >= 1048576 )) || fail "less than 1 GiB free on project filesystem"
 [[ -x /usr/local/libexec/srv-control-backup ]] || fail "backup worker missing"
-echo "PREFLIGHT PASS: current=$CURRENT db=13f0a1300001 PXE-contract=pass"
+echo "PREFLIGHT PASS: current=$CURRENT db=13f0a1300001 PXE-contracts=firmware+transport+lifecycle+backup"
