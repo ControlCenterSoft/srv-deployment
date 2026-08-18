@@ -5,8 +5,10 @@ ROOT_STATE=/var/lib/control-center-root
 PENDING="$STATE/dhcp-pending.json"
 CONFIG="$STATE/dhcp-config.json"
 STATUS="$STATE/dhcp-status.json"
+MODULE_STATE="$STATE/modules/dhcp.json"
 TARGET=/etc/dnsmasq.d/control-center-dhcp.conf
 BACKUP="$ROOT_STATE/control-center-dhcp.conf.rollback"
+RUNTIME=control-center-dhcp-server.service
 [[ -s "$PENDING" ]] || exit 0
 install -d -o root -g root -m 0700 "$ROOT_STATE"
 status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
@@ -15,6 +17,8 @@ open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='applied','state':sys.
 PY
 chown control-center:control-center "$STATUS" 2>/dev/null || true; }
 status applying 'Проверка и применение DHCP конфигурации…'
+WAS_ACTIVE=0
+systemctl is-active --quiet "$RUNTIME" && WAS_ACTIVE=1 || true
 [[ -f "$TARGET" ]] && cp -a "$TARGET" "$BACKUP" || rm -f "$BACKUP"
 TMP=$(mktemp /etc/dnsmasq.d/control-center-dhcp.conf.XXXXXX)
 cleanup(){ rm -f "$TMP"; }
@@ -64,14 +68,32 @@ then
 fi
 chmod 0644 "$TMP"
 mv "$TMP" "$TARGET"
-if dnsmasq --test >/tmp/control-center-dhcp-test.log 2>&1 && systemctl restart dnsmasq; then
-  mv "$PENDING" "$CONFIG"
-  chown control-center:control-center "$CONFIG" 2>/dev/null || true
-  status applied 'DHCP конфигурация применена'
-  exit 0
+if dnsmasq --test --conf-file="$TARGET" >/tmp/control-center-dhcp-test.log 2>&1; then
+  systemctl enable "$RUNTIME" >/dev/null
+  if systemctl restart "$RUNTIME"; then
+    mv "$PENDING" "$CONFIG"
+    chown control-center:control-center "$CONFIG" 2>/dev/null || true
+    if [[ -f "$MODULE_STATE" ]]; then
+      python3 - "$MODULE_STATE" <<'PY'
+import json,sys
+p=sys.argv[1]
+try:j=json.load(open(p))
+except:j={}
+j.update({'installed':True,'package':'dnsmasq','package_owned':j.get('package_owned',True),'configured':True})
+open(p,'w').write(json.dumps(j,ensure_ascii=False,indent=2)+'\n')
+PY
+      chown control-center:control-center "$MODULE_STATE" 2>/dev/null || true
+    fi
+    status applied 'DHCP конфигурация применена'
+    exit 0
+  fi
 fi
 if [[ -f "$BACKUP" ]]; then cp -a "$BACKUP" "$TARGET"; else rm -f "$TARGET"; fi
-dnsmasq --test >/dev/null 2>&1 && systemctl restart dnsmasq 2>/dev/null || true
+if [[ "$WAS_ACTIVE" == 1 && -f "$TARGET" ]]; then
+  dnsmasq --test --conf-file="$TARGET" >/dev/null 2>&1 && systemctl restart "$RUNTIME" 2>/dev/null || true
+else
+  systemctl disable --now "$RUNTIME" >/dev/null 2>&1 || true
+fi
 rm -f "$PENDING"
 status rollback 'Ошибка применения DHCP. Предыдущая конфигурация восстановлена.'
 exit 1
