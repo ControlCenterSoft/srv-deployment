@@ -1,40 +1,65 @@
-# Центр уведомлений Control Center 1.0.6
+# Центр уведомлений Control Center 1.0.7
 
 ## Назначение
 
-Колокольчик в верхней панели агрегирует последние состояния всех основных фоновых операций Control Center.
+Колокольчик в верхней панели агрегирует состояния основных операций Control Center.
 
 Источники:
 
-- Сеть — `network-status.json`;
+- Сеть — protected `network-status.json`;
 - Маркет — `market-status.json`;
 - DHCP apply — `dhcp-status.json`;
 - фактический статус DHCP service;
 - Professional activation — `license-status.json`;
 - обновление Control Center — `update-status.json`;
-- обновление ОС/пакетов — `os-update-status.json`.
+- обновление ОС/пакетов — `os-update-status.json`;
+- смена Web-порта — `web-status.json`.
 
-Root-worker statuses читаются из `/var/lib/control-center-system`.
+Observed status сначала формируется из фактического/system state, затем синхронизируется в PostgreSQL `control_center.notification_events`.
 
 ## Цвет колокольчика
 
-- **красный** — есть непрочитанное событие severity=`error`;
-- **зелёный** — есть непрочитанные события, но среди них нет ошибок;
-- **нейтральный серый** — все текущие события прочитаны либо событий нет.
+- **красный** — есть непрочитанное событие `severity=error`;
+- **зелёный** — есть непрочитанные события, но ошибок среди них нет;
+- **нейтральный** — всё прочитано либо событий нет.
 
-## Прочитанность
+## Прочитанность 1.0.7
 
-В 1.0.6 встроенная Web-аутентификация ещё отсутствует, поэтому сервер не может надёжно хранить read-state на конкретного пользователя. Прочитанность хранится в `localStorage` конкретного браузера по стабильному ID события.
+Read/unread перенесён из browser `localStorage` в PostgreSQL:
 
-Кнопка **Отметить все прочитанными** помечает текущий набор событий прочитанным. Новое событие с другим состоянием/сообщением/временем получает новый ID и снова отображается как непрочитанное.
+```text
+control_center.notification_events.is_read
+```
+
+Поэтому состояние сохраняется после очистки браузера и одинаково отображается с разных административных устройств.
+
+Поскольку встроенная пользовательская аутентификация ещё не реализована, read-state в 1.0.7 **общий для установки**, а не отдельный для каждого администратора. После появления account/session модели схема может быть расширена отдельной таблицей user notification state.
 
 ## API
 
+Получение:
+
 ```bash
-curl -fsS http://127.0.0.1:8080/api/notifications | python3 -m json.tool
+curl -fsS http://127.0.0.1:PORT/api/notifications | python3 -m json.tool
 ```
 
-Каждая запись содержит:
+Прочитать одно или несколько событий:
+
+```bash
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"ids":["EVENT_ID"]}' \
+  http://127.0.0.1:PORT/api/notifications/read
+```
+
+Прочитать всё:
+
+```bash
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"all":true}' \
+  http://127.0.0.1:PORT/api/notifications/read
+```
+
+Запись содержит:
 
 ```json
 {
@@ -44,8 +69,16 @@ curl -fsS http://127.0.0.1:8080/api/notifications | python3 -m json.tool
   "state": "applied",
   "severity": "ok",
   "message": "DHCP конфигурация применена",
-  "timestamp": 0
+  "timestamp": 0,
+  "read": false
 }
 ```
 
-После появления встроенной аутентификации read-state можно перенести на сервер и связать с конкретной учетной записью администратора.
+## PostgreSQL диагностика
+
+```bash
+sudo -u control-center psql -d control_center -c \
+  'select source,title,state,severity,is_read,last_seen_at from control_center.notification_events order by last_seen_at desc limit 30;'
+```
+
+Удаление/архивирование старой истории в 1.0.7 автоматически ещё не выполняется; retention policy следует добавить при росте event history в следующих релизах.
