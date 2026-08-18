@@ -1,0 +1,16 @@
+{
+  "product": "Control Center",
+  "release": "1.0.3",
+  "channel": "production",
+  "components": [
+    "system-dashboard",
+    "cpu-live-chart",
+    "ram-live-chart",
+    "top-processes",
+    "storage-usage-bars",
+    "wan-live-traffic",
+    "minute-update-interval",
+    "network-management",
+    "automatic-updates"
+  ]
+}
