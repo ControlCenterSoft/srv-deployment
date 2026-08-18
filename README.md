@@ -1,26 +1,43 @@
-# Control Center 1.0.4
+# Control Center 1.0.5
 
 ## Что нового
 
-- оформление Web UI переработано по утвержденному образцу: компактный левый sidebar, верхняя служебная панель, темная плотная сетка карточек и статусные элементы;
-- **DHCP Server** стал первым реально устанавливаемым модулем Маркета;
-- установка DHCP выполняется отдельным привилегированным Market helper и устанавливает пакет `dnsmasq`;
-- после установки в левом меню автоматически появляется пункт **DHCP**;
-- после удаления DHCP пункт меню автоматически исчезает;
-- DHCP настраивается из Web UI: интерфейс, начало/конец диапазона, маска, шлюз, DNS и срок аренды;
-- конфигурация проверяется Web API и применяется отдельным root helper;
-- системный Web-процесс по-прежнему не получает root-доступ.
+- две редакции: **Home** и **Professional**;
+- Home используется по умолчанию и остается бесплатной редакцией;
+- Professional активируется подписанным ключом, привязанным к ID устройства;
+- Web UI показывает текущую редакцию, версию, ID устройства и состояние лицензии;
+- приватный ключ активации не хранится в репозитории: в продукт включен только публичный ключ проверки;
+- в Настройки добавлены обновления ОС и пакетов: автоматический режим с интервалом в минутах и ручной запуск;
+- обновления ОС выполняются отдельным root systemd worker, Web UI root-доступ не получает.
 
-## DHCP lifecycle
+## Professional activation
 
-Web UI создает запрос `/var/lib/control-center/market-pending.json`. Systemd path unit запускает `control-center-market-apply`, который устанавливает или удаляет `dnsmasq` и обновляет состояние модуля.
+Запрос активации содержит `payload` и `signature`. Root helper проверяет RSA/SHA-256 подпись публичным ключом `/etc/control-center/license-public.pem`, сверяет `device_id` с текущим сервером и только после этого сохраняет Professional-лицензию в `/var/lib/control-center/license.json`.
 
-После установки настройки доступны в меню **DHCP**. При сохранении создается `/var/lib/control-center/dhcp-pending.json`; helper `control-center-dhcp-apply` формирует `/etc/dnsmasq.d/control-center-dhcp.conf`, выполняет `dnsmasq --test` и перезапускает службу.
+По умолчанию редакция — Home. Поддерживается срок действия Professional-лицензии через `expires_at`.
 
-## Службы 1.0.4
+## Обновления
+
+### Control Center
+
+Автоматическое обновление Control Center сохраняет существующую логику production-канала и интервал в минутах.
+
+### ОС и пакеты
+
+Настройки: `/var/lib/control-center/os-update-settings.json`.
+
+- автоматическое обновление можно включить/выключить;
+- интервал: 60–10080 минут;
+- кнопка **Обновить сейчас** запускает ручное обновление;
+- worker выполняет `apt-get update` и `apt-get -y upgrade`;
+- результат и требование перезагрузки записываются в `/var/lib/control-center/os-update-status.json`.
+
+## Службы 1.0.5
 
 - `control-center.service`
 - `control-center-update.timer`
+- `control-center-os-update.timer`
+- `control-center-license-apply.path`
 - `control-center-network-apply.path`
 - `control-center-market-apply.path`
 - `control-center-dhcp-apply.path`
@@ -29,16 +46,6 @@ Web UI создает запрос `/var/lib/control-center/market-pending.json`
 
 ```bash
 sudo bash install/install.sh
-```
-
-Проверка:
-
-```bash
-cat /opt/control-center/VERSION
-curl -fsS http://127.0.0.1:8080/api/health
-systemctl status control-center --no-pager
-systemctl status control-center-market-apply.path --no-pager
-systemctl status control-center-dhcp-apply.path --no-pager
 ```
 
 Web UI: `http://SERVER_IP:8080`
