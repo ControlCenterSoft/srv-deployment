@@ -7,11 +7,11 @@
   "scripts": {
     "preflight": {
       "path": "preflight.sh",
-      "sha256": "b07e99e9d27ab376ebb8ba488ff1c29e3065ff1afa21ee3ed563c7f799d3b5bb"
+      "sha256": "1f0435d04e3f4ad042b2cab205beb7b8e57798cfabbb889b96ec2490fdbe4548"
     },
     "apply": {
       "path": "apply.sh",
-      "sha256": "342b0d60c71e5501f62c6627ee1cde8d35ed50bd39582925b54a85c4cc283444"
+      "sha256": "477532d7e808977e0e1499f41ecc0abb4a84fac91a22e6dfc5997d39f7c9d1fe"
     },
     "acceptance": {
       "path": "acceptance.sh",
