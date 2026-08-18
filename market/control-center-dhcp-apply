@@ -1,37 +1,72 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 STATE=/var/lib/control-center
+ROOT_STATE=/var/lib/control-center-root
 PENDING="$STATE/dhcp-pending.json"
 CONFIG="$STATE/dhcp-config.json"
 STATUS="$STATE/dhcp-status.json"
 TARGET=/etc/dnsmasq.d/control-center-dhcp.conf
-BACKUP="$STATE/control-center-dhcp.conf.rollback"
+BACKUP="$ROOT_STATE/control-center-dhcp.conf.rollback"
 [[ -s "$PENDING" ]] || exit 0
+install -d -o root -g root -m 0700 "$ROOT_STATE"
 status(){ python3 - "$STATUS" "$1" "$2" <<'PY'
 import json,sys,time
 open(sys.argv[1],'w').write(json.dumps({'ok':sys.argv[2]=='applied','state':sys.argv[2],'message':sys.argv[3],'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
 PY
 chown control-center:control-center "$STATUS" 2>/dev/null || true; }
+status applying 'Проверка и применение DHCP конфигурации…'
 [[ -f "$TARGET" ]] && cp -a "$TARGET" "$BACKUP" || rm -f "$BACKUP"
 TMP=$(mktemp /etc/dnsmasq.d/control-center-dhcp.conf.XXXXXX)
-trap 'rm -f "$TMP"' EXIT
-python3 - "$PENDING" "$TMP" <<'PY'
-import json,sys
-j=json.load(open(sys.argv[1])); dns=','.join(j['dns'])
-open(sys.argv[2],'w').write(f"""port=0
+cleanup(){ rm -f "$TMP"; }
+trap cleanup EXIT
+if ! python3 - "$PENDING" "$TMP" <<'PY'
+import json,sys,ipaddress,pathlib,re
+j=json.load(open(sys.argv[1])); out=pathlib.Path(sys.argv[2])
+if not isinstance(j,dict): raise SystemExit('invalid configuration')
+known={p.name for p in pathlib.Path('/sys/class/net').iterdir() if p.name!='lo'}
+iface=str(j.get('interface',''))
+if iface not in known or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}',iface): raise SystemExit('invalid interface')
+try:
+    start=ipaddress.IPv4Address(str(j.get('range_start','')))
+    end=ipaddress.IPv4Address(str(j.get('range_end','')))
+    prefix=int(j.get('mask'))
+    if not 0<=prefix<=32: raise ValueError
+except Exception: raise SystemExit('invalid DHCP range/mask')
+net=ipaddress.IPv4Network(f'{start}/{prefix}',strict=False)
+if end not in net or int(end)<int(start): raise SystemExit('invalid DHCP range order/subnet')
+if start in (net.network_address,net.broadcast_address) or end in (net.network_address,net.broadcast_address): raise SystemExit('range contains network/broadcast')
+try: gateway=ipaddress.IPv4Address(str(j.get('gateway','')))
+except Exception: raise SystemExit('invalid gateway')
+if gateway not in net or start<=gateway<=end: raise SystemExit('invalid gateway placement')
+dns=j.get('dns')
+if not isinstance(dns,list) or not dns: raise SystemExit('DNS required')
+clean_dns=[]
+for item in dns:
+    try: clean_dns.append(str(ipaddress.IPv4Address(str(item))))
+    except Exception: raise SystemExit('invalid DNS')
+try: lease=int(j.get('lease_minutes'))
+except Exception: raise SystemExit('invalid lease')
+if not 10<=lease<=10080: raise SystemExit('invalid lease range')
+text=f"""port=0
 bind-dynamic
-interface={j['interface']}
-dhcp-range={j['range_start']},{j['range_end']},{j['mask']},{j['lease_minutes']}m
-dhcp-option=option:router,{j['gateway']}
-dhcp-option=option:dns-server,{dns}
-""")
+interface={iface}
+dhcp-range={start},{end},{prefix},{lease}m
+dhcp-option=option:router,{gateway}
+dhcp-option=option:dns-server,{','.join(clean_dns)}
+"""
+out.write_text(text)
 PY
+then
+  rm -f "$PENDING"
+  status rejected 'DHCP конфигурация отклонена привилегированной проверкой.'
+  exit 1
+fi
 chmod 0644 "$TMP"
 mv "$TMP" "$TARGET"
 if dnsmasq --test >/tmp/control-center-dhcp-test.log 2>&1 && systemctl restart dnsmasq; then
   mv "$PENDING" "$CONFIG"
+  chown control-center:control-center "$CONFIG" 2>/dev/null || true
   status applied 'DHCP конфигурация применена'
-  chown control-center:control-center "$CONFIG" "$STATUS" 2>/dev/null || true
   exit 0
 fi
 if [[ -f "$BACKUP" ]]; then cp -a "$BACKUP" "$TARGET"; else rm -f "$TARGET"; fi
