@@ -102,6 +102,8 @@
     function setMessage(element, value, error = false) {
         element.textContent = value || "";
         element.classList.toggle("error", error);
+        element.setAttribute("role", error ? "alert" : "status");
+        element.setAttribute("aria-live", error ? "assertive" : "polite");
     }
 
     async function jsonFetch(url, options = {}) {
@@ -446,12 +448,18 @@
                 restore.type = "button";
                 restore.textContent = "Восстановить";
                 restore.addEventListener("click", async () => {
-                    if (!window.confirm(`Восстановить резервную копию ${item.id}?`)) return;
+                    if (!window.confirm(`Восстановить резервную копию ${item.id}? Текущая конфигурация будет заменена данными из выбранной копии.`)) return;
+                    restore.disabled = true;
+                    restore.setAttribute("aria-busy", "true");
                     try {
                         await post(`/api/v1/system/backups/${encodeURIComponent(item.id)}/restore`);
+                        setMessage(ui.backupMessage, "Восстановление резервной копии запущено.");
                         scheduleRefresh();
                     } catch (error) {
                         setMessage(ui.backupMessage, error.message, true);
+                    } finally {
+                        restore.disabled = false;
+                        restore.removeAttribute("aria-busy");
                     }
                 });
                 actions.appendChild(restore);
@@ -461,12 +469,18 @@
                 remove.className = "danger";
                 remove.textContent = "Удалить";
                 remove.addEventListener("click", async () => {
-                    if (!window.confirm(`Удалить резервную копию ${item.id}?`)) return;
+                    if (!window.confirm(`Удалить резервную копию ${item.id}? Это действие нельзя отменить.`)) return;
+                    remove.disabled = true;
+                    remove.setAttribute("aria-busy", "true");
                     try {
                         await deleteRequest(`/api/v1/system/backups/${encodeURIComponent(item.id)}`);
+                        setMessage(ui.backupMessage, "Резервная копия удалена.");
                         scheduleRefresh();
                     } catch (error) {
                         setMessage(ui.backupMessage, error.message, true);
+                    } finally {
+                        remove.disabled = false;
+                        remove.removeAttribute("aria-busy");
                     }
                 });
                 actions.appendChild(remove);
@@ -525,12 +539,17 @@
     ui.backupBeforeUpdate.addEventListener("change", markBackupDirty);
 
     ui.reboot.addEventListener("click", async () => {
-        if (!window.confirm("Перезагрузить сервер SRV?")) return;
+        if (!window.confirm("Перезагрузить сервер Control Center? Все активные подключения к серверу будут временно прерваны.")) return;
+        ui.reboot.disabled = true;
+        ui.reboot.setAttribute("aria-busy", "true");
         try {
             await post("/api/v1/system/actions/reboot", {confirm: "REBOOT"});
+            ui.liveText.textContent = "Перезагрузка поставлена в очередь";
         } catch (error) {
             ui.liveText.textContent = error.message;
             ui.liveDot.classList.add("error");
+            ui.reboot.disabled = false;
+            ui.reboot.removeAttribute("aria-busy");
         }
     });
 
@@ -562,7 +581,7 @@
     });
 
     ui.githubUpdate.addEventListener("click", async () => {
-        if (!window.confirm("Установить доступное обновление Control Center?")) return;
+        if (!window.confirm("Установить доступное обновление Control Center? Перед применением будет использован штатный механизм обновления и проверки релиза.")) return;
         setMessage(ui.githubMessage, "Ручное обновление поставлено в очередь...");
         try {
             const queued = await post("/api/v1/system/github/update");
@@ -590,6 +609,7 @@
     });
 
     ui.osUpdate.addEventListener("click", async () => {
+        if (!window.confirm("Запустить обновление системных пакетов ОС? Во время обновления отдельные службы могут быть перезапущены.")) return;
         setMessage(ui.osMessage, "Запуск обновления ОС...");
         try {
             const queued = await post("/api/v1/system/os/update");
@@ -620,12 +640,17 @@
     });
 
     ui.backupCreate.addEventListener("click", async () => {
+        ui.backupCreate.disabled = true;
+        ui.backupCreate.setAttribute("aria-busy", "true");
         setMessage(ui.backupMessage, "Создание резервной копии запущено...");
         try {
             await post("/api/v1/system/backups");
             scheduleRefresh();
         } catch (error) {
             setMessage(ui.backupMessage, error.message, true);
+        } finally {
+            ui.backupCreate.disabled = false;
+            ui.backupCreate.removeAttribute("aria-busy");
         }
     });
 
@@ -638,6 +663,10 @@
             ui.liveDot.classList.remove("ok");
             ui.liveDot.classList.add("error");
         }
+    }
+
+    for (const element of [ui.githubMessage, ui.osMessage, ui.backupMessage]) {
+        element.setAttribute("aria-live", "polite");
     }
 
     refreshAll();
