@@ -1,0 +1,47 @@
+{
+  "product": "Control Center",
+  "release": "1.0.7",
+  "build": "20260818.2",
+  "channel": "production",
+  "editions": ["Home", "Professional"],
+  "components": [
+    "postgresql-local-database",
+    "postgresql-migrations",
+    "postgresql-settings",
+    "postgresql-notifications",
+    "postgresql-audit",
+    "postgresql-jobs",
+    "postgresql-module-inventory",
+    "postgresql-service-configs",
+    "cluster-ready-node-schema",
+    "configurable-web-port",
+    "web-port-root-helper",
+    "web-port-rollback",
+    "gunicorn-wsgi",
+    "network-management",
+    "dhcp-market",
+    "home-professional-licensing",
+    "control-center-update",
+    "os-package-update",
+    "documentation",
+    "acceptance-checks"
+  ],
+  "database": {
+    "engine": "PostgreSQL",
+    "database": "control_center",
+    "schema": "control_center",
+    "local_transport": "unix-socket",
+    "local_authentication": "peer",
+    "remote_listener_enabled_by_product": false
+  },
+  "web_port": {
+    "default": 8080,
+    "configurable": true,
+    "min": 1024,
+    "max": 65535
+  },
+  "known_limitations": [
+    "professional-cluster-runtime-not-yet-implemented",
+    "web-ui-authentication-not-yet-implemented"
+  ]
+}
