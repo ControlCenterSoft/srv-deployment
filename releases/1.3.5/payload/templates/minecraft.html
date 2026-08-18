@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Minecraft — SRV Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.3.2">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.3.2">
+    <link rel="stylesheet" href="/static/css/minecraft-1.3.css?v=1.3.2">
+    <link rel="stylesheet" href="/static/css/minecraft-1.3.2.css?v=1.3.2">
+</head>
+<body>
+<div class="page mc132-page">
+    <header class="page-header mc132-header">
+        <div>
+            <div class="mc132-eyebrow">SRV Control Center · стабильный backend</div>
+            <h1>Minecraft Bedrock</h1>
+            <p>Управление основным сервером по проверенной схеме: systemd + legacy helper, без очереди экземпляров.</p>
+        </div>
+        <div class="mc132-header-status">
+            <span class="mc-badge" id="backendBadge">backend: legacy</span>
+            <span class="mc-badge" id="serviceBadge">Загрузка…</span>
+        </div>
+    </header>
+
+    <div class="action-message mc132-message" id="minecraftMessage"></div>
+
+    <section class="mc132-summary" aria-label="Состояние Minecraft">
+        <article class="panel mc132-stat"><span>Сервер</span><strong id="summaryState">—</strong><small id="summaryName">—</small></article>
+        <article class="panel mc132-stat"><span>Версия</span><strong id="summaryVersion">—</strong><small id="summaryStarted">—</small></article>
+        <article class="panel mc132-stat"><span>Мир</span><strong id="summaryWorld">—</strong><small id="summaryMode">—</small></article>
+        <article class="panel mc132-stat"><span>Игроки</span><strong id="summaryPlayers">—</strong><small id="summaryMaxPlayers">—</small></article>
+        <article class="panel mc132-stat"><span>Обновления</span><strong id="summaryUpdate">—</strong><small id="summarySchedule">—</small></article>
+    </section>
+
+    <nav class="panel mc132-tabs" aria-label="Разделы Minecraft">
+        <button class="mc132-tab active" type="button" data-tab="overview">Обзор</button>
+        <button class="mc132-tab" type="button" data-tab="settings">Настройки</button>
+        <button class="mc132-tab" type="button" data-tab="players">Игроки</button>
+        <button class="mc132-tab" type="button" data-tab="worlds">Миры</button>
+        <button class="mc132-tab" type="button" data-tab="backups">Резервные копии</button>
+        <button class="mc132-tab" type="button" data-tab="logs">Журнал</button>
+    </nav>
+
+    <main>
+        <section class="panel mc132-tab-panel active" id="tab-overview" data-panel="overview">
+            <div class="mc132-section-head"><div><h2>Основной сервер</h2><p>Команды выполняются непосредственно через прежний проверенный helper.</p></div><button class="secondary-button" id="refreshAll" type="button">Обновить данные</button></div>
+            <div class="mc132-control-grid">
+                <div class="mc132-control-card">
+                    <h3>Управление службой</h3>
+                    <div class="mc-actions">
+                        <button class="action-button" id="serverStart" type="button">Запустить</button>
+                        <button class="secondary-button" id="serverRestart" type="button">Перезапустить</button>
+                        <button class="danger-button" id="serverStop" type="button">Остановить</button>
+                    </div>
+                    <dl class="mc132-details" id="serviceDetails"></dl>
+                </div>
+                <div class="mc132-control-card">
+                    <h3>Обновление Bedrock</h3>
+                    <p class="mc-note">Используется старый <code>minecraft-update.service</code>/<code>minecraft-update.timer</code>, который работал до перехода на multi-instance.</p>
+                    <div class="mc-actions"><button class="action-button" id="updateNow" type="button">Проверить и обновить сейчас</button></div>
+                    <dl class="mc132-details" id="updaterDetails"></dl>
+                </div>
+                <div class="mc132-control-card">
+                    <h3>Резервная копия</h3>
+                    <p class="mc-note">Создать backup текущего сервера и активного мира перед изменениями.</p>
+                    <div class="mc-actions"><button class="secondary-button" id="backupNow" type="button">Создать резервную копию</button></div>
+                    <div class="mc-note" id="backupSummary">—</div>
+                </div>
+                <div class="mc132-control-card">
+                    <h3>Сообщение игрокам</h3>
+                    <div class="mc132-inline"><input id="broadcastMessage" maxlength="200" placeholder="Сообщение в игровой чат"><button class="secondary-button" id="broadcastSend" type="button">Отправить</button></div>
+                    <div class="mc-note" id="liveSummary">Командный канал: —</div>
+                </div>
+            </div>
+            <div class="mc-warning hidden" id="overviewErrors"></div>
+        </section>
+
+        <section class="panel mc132-tab-panel" id="tab-settings" data-panel="settings">
+            <div class="mc132-section-head"><div><h2>Параметры сервера</h2><p>Изменения пишутся в существующий <code>server.properties</code> прежним helper-скриптом.</p></div></div>
+            <form id="settingsForm">
+                <div class="mc-grid">
+                    <label>Имя сервера<input id="server-name" name="server-name" maxlength="80"></label>
+                    <label>Активный мир<select id="level-name" name="level-name"></select></label>
+                    <label>Режим игры<select id="gamemode" name="gamemode"><option value="survival">Survival</option><option value="creative">Creative</option><option value="adventure">Adventure</option></select></label>
+                    <label>Сложность<select id="difficulty" name="difficulty"><option value="peaceful">Peaceful</option><option value="easy">Easy</option><option value="normal">Normal</option><option value="hard">Hard</option></select></label>
+                    <label>Максимум игроков<input id="max-players" name="max-players" type="number" min="1" max="1000"></label>
+                    <label>IPv4 UDP порт<input id="server-port" name="server-port" type="number" min="1" max="65535"></label>
+                    <label>IPv6 UDP порт<input id="server-portv6" name="server-portv6" type="number" min="1" max="65535"></label>
+                    <label>Дальность обзора<input id="view-distance" name="view-distance" type="number" min="5" max="96"></label>
+                    <label>Tick distance<input id="tick-distance" name="tick-distance" type="number" min="4" max="12"></label>
+                    <label>Таймаут игрока, мин<input id="player-idle-timeout" name="player-idle-timeout" type="number" min="0" max="10080"></label>
+                    <label>Права по умолчанию<select id="default-player-permission-level" name="default-player-permission-level"><option value="visitor">Visitor</option><option value="member">Member</option><option value="operator">Operator</option></select></label>
+                    <label>Xbox Live / online-mode<select id="online-mode" name="online-mode"><option value="true">Включено</option><option value="false">Выключено</option></select></label>
+                    <label>Allow-list<select id="allow-list" name="allow-list"><option value="true">Включён</option><option value="false">Выключен</option></select></label>
+                    <label>Читы<select id="allow-cheats" name="allow-cheats"><option value="true">Разрешены</option><option value="false">Запрещены</option></select></label>
+                </div>
+                <div class="mc-actions"><button class="action-button" type="submit">Сохранить параметры</button><button class="secondary-button" id="reloadSettings" type="button">Перечитать</button></div>
+            </form>
+        </section>
+
+        <section class="panel mc132-tab-panel" id="tab-players" data-panel="players">
+            <div class="mc132-section-head"><div><h2>Игроки и доступ</h2><p>Allow-list, права, онлайн-состояние и live-команды.</p></div><button class="secondary-button" id="reloadPlayers" type="button">Обновить</button></div>
+            <div class="player-toolbar">
+                <input id="newPlayerName" placeholder="Gamertag / имя игрока">
+                <input id="newPlayerXuid" placeholder="XUID, если известен">
+                <select id="newPlayerPermission"><option value="member">Member</option><option value="visitor">Visitor</option><option value="operator">Operator</option></select>
+                <button class="action-button" id="addPlayer" type="button">Добавить в Allow-list</button>
+            </div>
+            <div class="mc132-player-settings" id="playerSettings"></div>
+            <div class="player-table-wrap"><table class="player-table"><thead><tr><th>Игрок</th><th>Состояние</th><th>Allow-list</th><th>Права</th><th>Действия</th></tr></thead><tbody id="playersBody"></tbody></table></div>
+        </section>
+
+        <section class="panel mc132-tab-panel" id="tab-worlds" data-panel="worlds">
+            <div class="mc132-section-head"><div><h2>Миры</h2><p>Активация, клонирование, переименование и удаление миров.</p></div><button class="secondary-button" id="reloadWorlds" type="button">Обновить</button></div>
+            <div class="player-table-wrap"><table class="player-table"><thead><tr><th>Мир</th><th>Размер</th><th>Изменён</th><th>Состояние</th><th>Действия</th></tr></thead><tbody id="worldsBody"></tbody></table></div>
+        </section>
+
+        <section class="panel mc132-tab-panel" id="tab-backups" data-panel="backups">
+            <div class="mc132-section-head"><div><h2>Резервные копии</h2><p>Проверка, восстановление и удаление backup.</p></div><button class="secondary-button" id="reloadBackups" type="button">Обновить</button></div>
+            <div class="player-table-wrap"><table class="player-table"><thead><tr><th>Backup</th><th>Размер</th><th>Дата</th><th>Содержимое</th><th>Статус</th><th>Действия</th></tr></thead><tbody id="backupsBody"></tbody></table></div>
+        </section>
+
+        <section class="panel mc132-tab-panel" id="tab-logs" data-panel="logs">
+            <div class="mc132-section-head"><div><h2>Журнал Minecraft</h2><p>Последние строки системного журнала сервера.</p></div><button class="secondary-button" id="reloadLogs" type="button">Обновить</button></div>
+            <pre class="mc132-log" id="logText">Загрузка…</pre>
+        </section>
+    </main>
+</div>
+<script src="/static/js/minecraft.js?v=1.3.2"></script>
+</body>
+</html>
