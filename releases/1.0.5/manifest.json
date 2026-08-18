@@ -1,0 +1,6 @@
+{
+  "product": "Control Center",
+  "release": "1.0.5",
+  "channel": "production",
+  "components": ["home-edition", "professional-edition", "professional-activation", "license-status", "control-center-update", "os-package-update", "dhcp-market", "network-management"]
+}
