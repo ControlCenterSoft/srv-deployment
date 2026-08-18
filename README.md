@@ -1,32 +1,49 @@
-# Control Center 1.0.2
+# Control Center 1.0.3
 
 Control Center — web-панель управления Linux-сервером.
 
-## Что нового в 1.0.2
+## Что нового в 1.0.3
 
-- раздел **Система** переработан в стиле предыдущего проекта Control Center;
-- в разделе **Сети** добавлены логические роли **WAN** и **LAN**;
-- WAN и LAN можно назначать на обнаруженные сетевые интерфейсы;
-- для каждой роли доступны режимы IPv4 **DHCP** и **Static**;
-- в Static активируются IP, маска, шлюз и DNS;
-- добавлена серверная проверка корректности сетевой конфигурации;
-- WAN и LAN не могут использовать один интерфейс;
-- проверяется IPv4, маска, шлюз, DNS, принадлежность шлюза подсети и пересечение статических WAN/LAN подсетей;
-- применение выполняется отдельным root-helper через Netplan;
-- при ошибке Netplan выполняется rollback предыдущей конфигурации.
+- в разделе **Система** CPU и RAM получили отдельные live-графики;
+- в карточке CPU отображается **Top-3 процессов** по загрузке CPU с долей RAM;
+- **Хранилище** показывает файловые системы отдельными полосами заполнения, проценты и объемы;
+- **WAN** получил отдельный live-график входящей и исходящей скорости RX/TX;
+- WAN для dashboard определяется из сохраненной роли WAN раздела **Сети**;
+- данные dashboard обновляются каждые 3 секунды;
+- в **Настройки → Автоматические обновления** период теперь задается вручную в минутах;
+- допустимый интервал: от **5** до **10080** минут;
+- старые значения `hourly`, `daily`, `weekly` автоматически мигрируют в 60, 1440 и 10080 минут.
+
+## Dashboard «Система»
+
+Карточки:
+
+- CPU — текущая загрузка, live-график, количество логических CPU и Top-3 процессов;
+- RAM — текущая загрузка, live-график, использовано/всего;
+- Хранилище — заполнение доступных постоянных файловых систем;
+- WAN — интерфейс, его состояние, live RX/TX и текущая скорость в байтах/с.
+
+## Автоматические обновления
+
+Настройка хранится в:
+
+`/var/lib/control-center/update-settings.json`
+
+Формат 1.0.3:
+
+```json
+{
+  "automatic_updates": true,
+  "interval_minutes": 60,
+  "channel": "production"
+}
+```
+
+Systemd timer запускает легкий updater раз в минуту, но обращение к GitHub выполняется только по истечении заданного `interval_minutes`.
 
 ## Сетевое управление
 
-Web UI работает без root. После успешной проверки он создает `/var/lib/control-center/network-pending.json`. Systemd path-unit запускает `/usr/local/sbin/control-center-network-apply`, который повторно формирует Netplan-конфигурацию, выполняет `netplan generate`, затем `netplan apply`.
-
-Службы:
-
-- `control-center-network-apply.path`;
-- `control-center-network-apply.service`.
-
-Файл Netplan Control Center:
-
-- `/etc/netplan/90-control-center.yaml`.
+Функции 1.0.2 сохранены: WAN/LAN, DHCP/Static, проверка IPv4/маски/шлюза/DNS, Netplan apply и rollback.
 
 ## Установка
 
@@ -43,12 +60,9 @@ http://SERVER_IP:8080
 Проверка:
 
 ```bash
+cat /opt/control-center/VERSION
 systemctl status control-center --no-pager
-systemctl status control-center-network-apply.path --no-pager
 systemctl status control-center-update.timer --no-pager
-curl http://127.0.0.1:8080/api/health
+curl -fsS http://127.0.0.1:8080/api/health
+cat /var/lib/control-center/update-settings.json
 ```
-
-## Важно
-
-Изменение адреса интерфейса, через который открыт Web UI/SSH, может оборвать текущую сессию. Поэтому перед применением Static необходимо убедиться, что новый адрес доступен из административной сети.
