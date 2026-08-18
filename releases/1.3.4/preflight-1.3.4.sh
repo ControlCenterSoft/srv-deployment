@@ -7,6 +7,7 @@ TMP="$(mktemp "${SOURCE_DIR}/.preflight-1.3.4.XXXXXX.sh")"
 cleanup(){ rm -f -- "$TMP"; }
 trap cleanup EXIT
 fail(){ printf 'PREFLIGHT 1.3.4 FAIL: %s\n' "$*" >&2; exit 1; }
+warn(){ printf 'PREFLIGHT 1.3.4 WARN: %s\n' "$*" >&2; }
 
 python3 - "$SOURCE" "$TMP" <<'PY'
 from pathlib import Path
@@ -54,17 +55,29 @@ python3 -m py_compile \
 systemctl cat minecraft-update.service >/dev/null 2>&1 || fail "legacy minecraft-update.service is missing"
 systemctl cat minecraft-update.timer >/dev/null 2>&1 || fail "legacy minecraft-update.timer is missing"
 
-status_json="$(/usr/local/sbin/srv-control-minecraft status)" || fail "legacy Minecraft status command failed"
-updater_json="$(/usr/local/sbin/srv-control-minecraft updater)" || fail "legacy Minecraft updater status command failed"
-python3 - "$status_json" "$updater_json" <<'PY'
+# The runtime health of the legacy updater is deliberately not a hard preflight
+# gate. 1.3.4 installs/restores this exact path, so a broken pre-update status
+# must not prevent the repair release from reaching apply. Acceptance remains a
+# hard post-apply gate and will roll back if the helper still does not work.
+if status_json="$(/usr/local/sbin/srv-control-minecraft status 2>/dev/null)"; then
+    python3 - "$status_json" <<'PY' || warn "legacy Minecraft status is unhealthy before apply; continuing repair deployment"
 import json,sys
-for label,raw in [('status',sys.argv[1]),('updater',sys.argv[2])]:
-    data=json.loads(raw)
-    if not isinstance(data,dict) or data.get('ok') is not True:
-        raise SystemExit(f'legacy Minecraft {label} did not return ok=true: {data!r}')
-print('MINECRAFT LEGACY PREFLIGHT PASS')
+data=json.loads(sys.argv[1])
+raise SystemExit(0 if isinstance(data,dict) and data.get('ok') is True else 1)
 PY
+else
+    warn "legacy Minecraft status command failed before apply; continuing repair deployment"
+fi
+if updater_json="$(/usr/local/sbin/srv-control-minecraft updater 2>/dev/null)"; then
+    python3 - "$updater_json" <<'PY' || warn "legacy Minecraft updater status is unhealthy before apply; continuing repair deployment"
+import json,sys
+data=json.loads(sys.argv[1])
+raise SystemExit(0 if isinstance(data,dict) and data.get('ok') is True else 1)
+PY
+else
+    warn "legacy Minecraft updater status command failed before apply; continuing repair deployment"
+fi
 
 chmod 0700 "$TMP"
 bash "$TMP" "$@"
-printf 'PREFLIGHT 1.3.4 PASS: robust version-range patch validated\n'
+printf 'PREFLIGHT 1.3.4 PASS: repair deployment may proceed to apply\n'
