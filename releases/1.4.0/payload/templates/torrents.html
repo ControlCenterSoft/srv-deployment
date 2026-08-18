@@ -3,20 +3,40 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Торренты — SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/module.css?v=1.1.0-ui6">
-    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.1.0-ui6">
+    <title>Загрузки — Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui3">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.4.0-ui3">
+    <link rel="stylesheet" href="/static/css/workspace-1.4.css?v=1.4.0-ui3">
 </head>
 <body>
 <div class="page">
-    <header class="page-header">
-        <div>
-            <h1>Торренты</h1>
-            <p>Состояние торрент-сервисов SRV.</p>
+    <header class="module-hero">
+        <div class="module-hero-copy">
+            <div class="module-hero-icon" aria-hidden="true">⇩</div>
+            <div>
+                <span class="section-kicker">Загрузки и медиасервисы</span>
+                <h1>Загрузки</h1>
+                <p>Состояние сервисов загрузки и связанных фоновых компонентов Control Center.</p>
+            </div>
+        </div>
+        <div class="module-hero-side">
+            <span class="hero-pill">Автообновление состояния</span>
         </div>
     </header>
-    <section class="service-grid" id="torrentGrid"></section>
+
+    <section class="panel">
+        <div class="workspace-heading">
+            <div>
+                <div class="panel-title">Сервисы загрузки</div>
+                <p>Карточки ниже показывают фактическое состояние обнаруженных системных служб.</p>
+            </div>
+        </div>
+        <section class="service-grid" id="torrentGrid" aria-live="polite"></section>
+    </section>
+
+    <div class="soft-note">В следующих итерациях этого раздела будут объединены очереди загрузок, каталоги автозагрузки, qBittorrent и TorrServer в едином интерфейсе.</div>
+    <div class="module-footer-note">Control Center · Загрузки</div>
 </div>
-<script src="/static/js/torrents.js?v=1.1.0-ui6"></script>
+<script src="/static/js/torrents.js?v=1.4.0-ui3"></script>
 </body>
 </html>
