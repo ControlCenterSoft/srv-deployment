@@ -106,7 +106,6 @@ jobs:
 
           updater=(root/'update/control-center-update').read_text()
           assert 'BUILD_FILE' in updater and 'latest_build' in updater and 'app/release.json' in updater
-
           lifecycle=(root/'docs/UPDATE-LIFECYCLE-POLICY-RU.md').read_text()
           assert 'не заявляет строгую совместимость с Semantic Versioning' in lifecycle
           print(f'Validated Control Center {version} build {build}')
@@ -123,16 +122,19 @@ jobs:
       - name: Validate real PostgreSQL migration and peer authentication
         run: |
           set -euo pipefail
+          PYTHON="${pythonLocation}/bin/python"
+          sudo rm -rf /tmp/control-center-ci-app
+          sudo cp -a app /tmp/control-center-ci-app
+          sudo chown -R root:root /tmp/control-center-ci-app
+          sudo chmod -R a+rX /tmp/control-center-ci-app
           if ! id control-center >/dev/null 2>&1; then sudo useradd --system --home /tmp/control-center-ci --shell /usr/sbin/nologin control-center; fi
           sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP DATABASE IF EXISTS control_center;'
           sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP ROLE IF EXISTS "control-center";'
           sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'CREATE ROLE "control-center" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD NULL;'
           sudo -u postgres createdb --owner=control-center control_center
           sudo -u control-center psql -d control_center -Atqc 'SELECT current_user,current_database()' | grep -qx 'control-center|control_center'
-          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' python app/db_migrate.py
-          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' python - <<'PY'
-          import sys
-          sys.path.insert(0,'app')
+          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' "$PYTHON" /tmp/control-center-ci-app/db_migrate.py
+          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
           import database
           h=database.health()
           assert h['ok'] and h['database']=='control_center' and h['role']=='control-center'
