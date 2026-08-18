@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../1.3.3" && pwd -P)"
+SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE="${SOURCE_DIR}/preflight.sh"
 TMP="$(mktemp "${SOURCE_DIR}/.preflight-1.3.4.XXXXXX.sh")"
 cleanup(){ rm -f -- "$TMP"; }
@@ -36,7 +36,6 @@ text=text.replace(old,new,1)
 dst.write_text(text,encoding='utf-8')
 PY
 
-# Regression guard for the exact formatting that broke 1.3.3.
 grep -Fq 'current < (1, 2, 0) or current > (1, 3, 4)' "$TMP" \
   || fail "version-range patch was not applied"
 
@@ -45,7 +44,7 @@ for f in \
  "$SOURCE_DIR/payload/static/js/minecraft.js" \
  "$SOURCE_DIR/payload/templates/minecraft.html" \
  "$SOURCE_DIR/system/sudoers-srv-control-minecraft-legacy"
-do [[ -s "$f" ]] || fail "required 1.3.3 payload file missing: $f"; done
+do [[ -s "$f" ]] || fail "required 1.3.4 payload file missing: $f"; done
 
 python3 -m py_compile \
  "$SOURCE_DIR/payload/app/main.py" \
