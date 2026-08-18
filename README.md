@@ -1,18 +1,18 @@
 # Control Center
 
-`filosoff31/srv-deployment` — production-репозиторий **Control Center**, web-платформы централизованного управления домашней/серверной инфраструктурой. Репозиторий содержит production pointer, frozen product-релизы, installer/updater, эксплуатационную документацию и исторические материалы.
+`filosoff31/srv-deployment` — production-репозиторий **Control Center**, web-платформы централизованного управления домашней и серверной инфраструктурой. Здесь находятся production pointer, frozen product-релизы, installer/updater, эксплуатационная документация и исторические материалы.
 
 ## Production сейчас
 
-Единственный источник опубликованного production target — [`deployment.json`](deployment.json). Сейчас он указывает на **Control Center 2.1.0** (`releases/2.1.0`). Конкретный сервер может временно иметь другую версию после failed deployment/rollback; фактическое состояние такого сервера определяется его `server-state`/`release.json`.
+Единственный источник опубликованного production target — [`deployment.json`](deployment.json). На текущем `main` он указывает на **Control Center 2.1.2** (`releases/2.1.2`). Конкретный сервер может временно иметь другую версию после failed deployment/rollback; фактическое состояние такого сервера определяется его `server-state`/`release.json`.
 
 Опубликованные `releases/<version>` **frozen**: исправления выпускаются новой версией, старый payload не редактируется.
 
-## Возможности текущей линии
+## Что представляет собой Control Center
 
-Control Center объединяет FastAPI/PostgreSQL web-интерфейс и health/dashboard, системную PAM/NSS-аутентификацию с Samba/winbind для доменных identities, RBAC, защищённые privileged actions, product/OS updates, backup/restore, Samba AD и shares, Minecraft Bedrock, AdGuard VPN, network/system diagnostics и перенесённые DHCP/PXE contracts там, где они реализованы frozen release.
+Control Center объединяет FastAPI/PostgreSQL web-интерфейс, health/dashboard, системную PAM/NSS-аутентификацию с Samba/winbind для доменных identities, RBAC, защищённые privileged actions, product/OS updates, backup/restore, Samba AD и shares, Minecraft Bedrock, AdGuard VPN, network/system diagnostics и реализованные service/DHCP/PXE contracts.
 
-В 2.1.0 Minecraft runtime нормализован в один канонический systemd service с сохранением мира/настроек и транзакционным rollback. Точный scope версии определяется её manifest/acceptance, а не roadmap.
+Линия 2.1.x стабилизирует Minecraft Bedrock runtime и управление им из Control Center. **2.1.2** сохраняет канонический `srv-control-minecraft-bedrock.service`, делает статус доступным и при остановленном runtime, возвращает подтверждённые ONLINE/OFFLINE результаты команд и добавляет live-status в интерфейс. Точный scope любой версии определяется её frozen manifest/acceptance, а не roadmap.
 
 ## Установка
 
@@ -29,7 +29,7 @@ Installer читает активный `deployment.json` и разворачи�
 
 Современная production-линия **не использует отдельный bootstrap web-пароль Control Center**. Интерактивный вход выполняется существующей локальной Linux либо доменной Samba/winbind учётной записью через NSS/PAM. После успешной authentication применяется RBAC Control Center.
 
-Kerberos/SPNEGO — дополнительный SSO-механизм и должен считаться активным только при корректно настроенных сервере, DNS/времени, keytab и клиенте. Отказ SSO не меняет основной PAM/NSS login contract. Инструкции ранних 0.x про `admin-bootstrap.txt` — исторические.
+Kerberos/SPNEGO — дополнительный SSO-механизм и считается рабочим только при корректно настроенных сервере, DNS/времени, SPN/keytab, reverse proxy и клиенте. Отказ SSO не меняет основной PAM/NSS login contract. Инструкции ранних 0.x про `admin-bootstrap.txt` являются историческими.
 
 ## Обновления
 
