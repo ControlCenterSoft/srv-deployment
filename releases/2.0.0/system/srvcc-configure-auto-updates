@@ -19,6 +19,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 fail(){ printf 'UPDATE CONFIG 2.0 FAIL: %s\n' "$*" >&2; exit 1; }
 
+same_file(){
+    local source="$1" target="$2" source_real target_real
+    source_real="$(readlink -f -- "$source" 2>/dev/null || true)"
+    target_real="$(readlink -f -- "$target" 2>/dev/null || true)"
+    [[ -n "$source_real" && -n "$target_real" && "$source_real" == "$target_real" ]]
+}
+
 while (($#)); do
     case "$1" in
         --repo) REPO_URL="${2:?}"; shift 2 ;;
@@ -50,20 +57,22 @@ install -d -m 0750 "$STATE_DIR" /var/lib/srvcc-agent
 
 controller_source="${SCRIPT_DIR}/srvcc-update-controller"
 if [[ -s "$controller_source" ]]; then
-    install -m 0755 -o root -g root "$controller_source" "$CONTROLLER"
+    if ! same_file "$controller_source" "$CONTROLLER"; then
+        install -m 0755 -o root -g root "$controller_source" "$CONTROLLER"
+    fi
 elif [[ ! -x "$CONTROLLER" ]]; then
     fail "2.0 update controller is not installed"
 fi
 
-source_real="$(readlink -f -- "$0")"
-target_real="$(readlink -f -- "$CONFIGURATOR" 2>/dev/null || true)"
-if [[ "$source_real" != "$target_real" ]]; then
+if ! same_file "$0" "$CONFIGURATOR"; then
     install -m 0755 -o root -g root "$0" "$CONFIGURATOR"
 fi
 
 publisher_source="${SCRIPT_DIR}/srvcc-github-state-publisher"
 if [[ -s "$publisher_source" ]]; then
-    install -m 0755 -o root -g root "$publisher_source" "$STATE_PUBLISHER"
+    if ! same_file "$publisher_source" "$STATE_PUBLISHER"; then
+        install -m 0755 -o root -g root "$publisher_source" "$STATE_PUBLISHER"
+    fi
 fi
 
 cat > "$COMPAT_AGENT" <<'EOF'
