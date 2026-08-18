@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "release_id": "2.1.1",
+  "release_version": "2.1.1",
+  "description": "Control Center 2.1.1 hardens the canonical Minecraft Bedrock service by moving the game process from root to a dedicated minecraft account, enforcing runtime ownership before each start, and replacing historical update timers with one canonical safe update scheduler.",
+  "upgrade_from": ">=1.3.8,<2.1.1",
+  "scripts": {
+    "preflight": {"path": "preflight-2.1.1.sh", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "apply": {"path": "apply-2.1.1.sh", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "acceptance": {"path": "acceptance-2.1.1.sh", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "rollback": {"path": "rollback-2.1.1.sh", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+  }
+}
