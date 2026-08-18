@@ -81,7 +81,7 @@ jobs:
           p=Path('releases/1.3.7/acceptance-1.3.7.sh').read_text()
           assert 'SOURCE="${RELEASE_DIR}/acceptance-1.3.3.sh"' in p
           assert 'TMP="$(mktemp "${RELEASE_DIR}/.acceptance-1.3.7.XXXXXX.sh")"' in p
-          assert '/tmp/acceptance.sh' not in p
+          assert 'TMP="$(mktemp "${TMPDIR:-/tmp}/srvcc-acceptance-1.3.7' not in p
           assert 'adapted acceptance escaped release directory' in p
           assert 'text=text.replace("1.3.3","1.3.7")' in p
           assert "data.get('version') == '1.3.7'" in p
