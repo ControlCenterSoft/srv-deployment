@@ -3,34 +3,44 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Общий / сетевой доступ — SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/module.css?v=1.3.0-rc1">
-    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.3.0-rc1">
-    <link rel="stylesheet" href="/static/css/samba-1.3.css?v=1.3.0-rc1">
+    <title>Сетевые ресурсы — Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui2">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.4.0-ui2">
+    <link rel="stylesheet" href="/static/css/samba-1.3.css?v=1.4.0-ui2">
 </head>
 <body>
-<div class="page">
+<div class="page shares-page">
     <header class="page-header">
         <div>
-            <h1>Общий / сетевой доступ</h1>
-            <p>Управление SMB-шарами, доменными правами, видимостью и квотами.</p>
+            <h1>Сетевые ресурсы</h1>
+            <p>SMB-ресурсы, пути хранения, доменные права, видимость и квоты.</p>
         </div>
+        <div class="directory-status-pill"><span></span>File Shares</div>
     </header>
 
-    <section class="panel">
-        <div class="toolbar">
+    <section class="shares-summary-grid">
+        <article class="shares-summary-card"><span class="directory-icon">F</span><div><span>Протокол</span><strong>SMB</strong><small>доступ с Windows и доменных клиентов</small></div></article>
+        <article class="shares-summary-card"><span class="directory-icon share-green">R</span><div><span>Права</span><strong>Доменные ACL</strong><small>пользователи, группы и Everyone</small></div></article>
+        <article class="shares-summary-card"><span class="directory-icon share-purple">Q</span><div><span>Контроль</span><strong>Квоты и видимость</strong><small>управление ресурсами из панели</small></div></article>
+    </section>
+
+    <section class="panel object-management-panel shares-management-panel">
+        <div class="panel-heading">
+            <div><h2>Общие папки</h2><p>Создавайте новые ресурсы и управляйте существующими SMB-шарами.</p></div>
+        </div>
+        <div class="toolbar shares-toolbar">
             <input class="grow" id="shareSearch" type="search" placeholder="Поиск по имени, комментарию или пути">
-            <button class="action-button" id="shareNew" type="button">Создать шару</button>
+            <button class="action-button" id="shareNew" type="button">Создать ресурс</button>
         </div>
         <div class="action-message" id="shareMessage"></div>
-        <div class="split-pane">
+        <div class="split-pane shares-split-pane">
             <div class="object-list" id="shareList"></div>
             <div class="object-editor" id="shareEditor">
-                <div class="empty-state">Выберите сетевую шару или создайте новую.</div>
+                <div class="empty-state">Выберите сетевой ресурс или создайте новый.</div>
             </div>
         </div>
     </section>
 </div>
-<script src="/static/js/shares.js?v=1.3.0-rc1"></script>
+<script src="/static/js/shares.js?v=1.4.0-ui2"></script>
 </body>
 </html>
