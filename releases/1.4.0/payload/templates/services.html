@@ -3,21 +3,41 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Сервисы — SRV Control Center</title>
-    <link rel="stylesheet" href="/static/css/module.css?v=1.1.0-ui6">
-    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.1.0-ui6">
+    <title>Сервисы — Control Center</title>
+    <link rel="stylesheet" href="/static/css/module.css?v=1.4.0-ui2">
+    <link rel="stylesheet" href="/static/css/service-pages.css?v=1.4.0-ui2">
 </head>
 <body>
-<div class="page">
+<div class="page services-page">
     <header class="page-header">
         <div>
             <h1>Сервисы</h1>
-            <p>Установка и удаление управляемых сервисов.</p>
+            <p>Управляемые инфраструктурные компоненты: состояние, установка и безопасное удаление.</p>
+        </div>
+        <div class="service-page-status">
+            <span class="service-page-dot"></span>
+            <span>Управление сервисами</span>
         </div>
     </header>
-    <section class="service-grid" id="serviceGrid"></section>
-    <div class="action-message" id="serviceMessage"></div>
+
+    <section class="services-intro-grid" aria-label="Возможности">
+        <article class="services-intro-card">
+            <span class="intro-icon intro-blue">▦</span>
+            <div><strong>Единое управление</strong><small>Все поддерживаемые службы в одном разделе</small></div>
+        </article>
+        <article class="services-intro-card">
+            <span class="intro-icon intro-green">✓</span>
+            <div><strong>Контроль состояния</strong><small>Текущий статус и параметры после каждой операции</small></div>
+        </article>
+        <article class="services-intro-card">
+            <span class="intro-icon intro-amber">◇</span>
+            <div><strong>Безопасные действия</strong><small>Критические операции требуют явного подтверждения</small></div>
+        </article>
+    </section>
+
+    <section class="service-grid managed-services-grid" id="serviceGrid" aria-live="polite"></section>
+    <div class="action-message" id="serviceMessage" aria-live="polite"></div>
 </div>
-<script src="/static/js/services.js?v=1.1.0-ui6"></script>
+<script src="/static/js/services.js?v=1.4.0-ui2"></script>
 </body>
 </html>
