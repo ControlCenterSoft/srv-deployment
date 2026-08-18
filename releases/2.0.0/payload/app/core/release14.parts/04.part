@@ -1,0 +1,100 @@
+    _execute('UPDATE pxe_profiles SET status=:status,install_authorized=false,last_result=:result,updated_at=now() WHERE id=:id', {'status': status, 'result': result, 'id': profile_id})
+    return True
+
+
+def backup_retention() -> dict:
+    config = read_json(BACKUP_CONFIG, {})
+    return {'max_copies': int(config.get('max_copies') or 0), 'scheduled': bool(config.get('scheduled')), 'daily_time': str(config.get('daily_time') or '03:00'), 'backup_before_update': bool(config.get('backup_before_update', True))}
+
+
+def validate_network_payload(payload: dict) -> dict:
+    current = read_json(NETWORK_CONFIG, {})
+    current_wan = current.get('wan') if isinstance(current, dict) and isinstance(current.get('wan'), dict) else {}
+    current_wifi = current.get('wifi') if isinstance(current, dict) and isinstance(current.get('wifi'), dict) else {}
+    wan = dict(payload.get('wan')) if isinstance(payload.get('wan'), dict) else {}
+    lan = dict(payload.get('lan')) if isinstance(payload.get('lan'), dict) else {}
+    wifi = dict(payload.get('wifi')) if isinstance(payload.get('wifi'), dict) else {}
+    if not str(wan.get('password') or '') and current_wan.get('password'):
+        wan['password'] = current_wan.get('password')
+    if not str(wifi.get('password') or '') and current_wifi.get('password'):
+        wifi['password'] = current_wifi.get('password')
+    if not str(wifi.get('upstream_password') or '') and current_wifi.get('upstream_password'):
+        wifi['upstream_password'] = current_wifi.get('upstream_password')
+    wan_mode = str(wan.get('mode') or 'dhcp').lower()
+    if wan_mode not in {'dhcp', 'static', 'pppoe', 'l2tp'}:
+        raise ValueError('неподдерживаемый режим WAN')
+    wan_if = str(wan.get('interface') or '').strip()
+    lan_if = str(lan.get('interface') or '').strip()
+    if not wan_if or not lan_if or wan_if == lan_if:
+        raise ValueError('WAN и LAN должны быть разными интерфейсами')
+    lan_cidr = str(lan.get('address') or '').strip()
+    try:
+        parsed_lan = ip_network(lan_cidr, strict=False)
+    except Exception as exc:
+        raise ValueError('некорректный LAN адрес/CIDR') from exc
+    if parsed_lan.version != 4:
+        raise ValueError('LAN IPv4 обязателен для DHCP/PXE релиза 1.4')
+    wifi_mode = str(wifi.get('mode') or 'disabled').lower()
+    if wifi_mode not in {'disabled', 'client', 'repeater', 'ap'}:
+        raise ValueError('неподдерживаемый режим Wi-Fi')
+    return {'wan': wan, 'lan': {**lan, 'address': lan_cidr}, 'wifi': wifi}
+
+
+def network_snapshot() -> dict:
+    config = read_json(NETWORK_CONFIG, {})
+    safe = json.loads(json.dumps(config)) if isinstance(config, dict) else {}
+    wan = safe.get('wan') if isinstance(safe.get('wan'), dict) else {}
+    wifi = safe.get('wifi') if isinstance(safe.get('wifi'), dict) else {}
+    for section, key in ((wan, 'password'), (wifi, 'password'), (wifi, 'upstream_password')):
+        if section.get(key):
+            section[key + '_configured'] = True
+            section[key] = ''
+    pending = read_json(NETWORK_PENDING, None)
+    if isinstance(pending, dict):
+        pending = {k: v for k, v in pending.items() if k != 'previous_config'}
+    return {'config': safe, 'pending': pending, 'capabilities': wifi_capabilities()}
+
+
+def wifi_capabilities() -> dict:
+    devices = []
+    try:
+        result = _run(['iw', 'dev'])
+        current = None
+        for line in result.stdout.splitlines():
+            text_line = line.strip()
+            if text_line.startswith('Interface '):
+                current = {'interface': text_line.split(None, 1)[1], 'bands': [], 'modes': ['client']}
+                devices.append(current)
+    except Exception:
+        pass
+    try:
+        info = _run(['iw', 'list'], timeout=8).stdout
+        has_24 = any(token in info for token in ('2412 MHz', '2437 MHz', '2462 MHz'))
+        has_5 = any(token in info for token in ('5180 MHz', '5200 MHz', '5220 MHz', '5745 MHz'))
+        ap = '* AP' in info or ' AP,' in info
+        concurrent = ('#{ managed } <= 1' in info and '#{ AP } <= 1' in info) or ('managed, AP' in info)
+        for item in devices:
+            item['bands'] = [band for band, ok in [('2.4', has_24), ('5', has_5)] if ok]
+            if ap: item['modes'].append('ap')
+            if ap and concurrent: item['modes'].append('repeater')
+            item['simultaneous_client_ap'] = bool(ap and concurrent)
+            item['dual_band'] = bool(has_24 and has_5)
+    except Exception:
+        pass
+    return {'devices': devices}
+
+
+def folder_redirect_snapshot() -> dict:
+    profiles = _rows('SELECT id,name,source_path,target_path,mode,enabled,metadata,created_at,updated_at FROM folder_redirect_profiles ORDER BY name')
+    assignments = _rows('SELECT id,profile_id,subject_type,subject_name,created_at FROM folder_redirect_assignments ORDER BY id')
+    return {'profiles': profiles, 'assignments': assignments}
+
+
+def save_folder_redirect(payload: dict) -> dict:
+    name = str(payload.get('name') or '').strip()
+    source = str(payload.get('source_path') or '').strip()
+    target = str(payload.get('target_path') or '').strip()
+    mode = str(payload.get('mode') or 'auto').strip().lower()
+    if not name or len(name) > 160 or not source or not target:
+        raise ValueError('имя, исходный и целевой путь обязательны')
+    if mode not in {'auto', 'folder-redirection', 'smb', 'symlink', 'junction'}:

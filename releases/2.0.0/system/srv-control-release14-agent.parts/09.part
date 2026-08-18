@@ -1,0 +1,163 @@
+
+# PXE regression marker: the legacy boot path used "isset ${net0/ip} || dhcp".
+# The effective _pxe_autoexec() now uses netX so multi-NIC clients identify the
+# interface that actually obtained DHCP. Keep this text only as an audit marker.
+
+def _wim_architecture(path: Path) -> str:
+    out = run(['wimlib-imagex', 'info', str(path), '--xml'], timeout=180)
+    try:
+        root = ET.fromstring(out)
+        value = root.findtext('.//IMAGE/WINDOWS/ARCH') or root.findtext('.//WINDOWS/ARCH') or ''
+        return {'0': 'i386', '9': 'amd64', '12': 'arm64'}.get(str(value).strip(), 'amd64')
+    except Exception:
+        return 'amd64'
+
+
+def _iso_text(mount: Path) -> str:
+    for candidate in (mount / '.disk/info', mount / 'README.diskdefines', mount / '.disk/cd_type'):
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding='utf-8', errors='replace').lower()
+        except Exception:
+            pass
+    return ''
+
+
+def _linux_layout(mount: Path) -> tuple[str, str, str, str]:
+    info = _iso_text(mount)
+    candidates = [
+        ('casper/vmlinuz', 'casper/initrd', 'ubuntu', 'arm64' if 'arm64' in info or 'aarch64' in info else 'amd64'),
+        ('casper/vmlinuz', 'casper/initrd.lz', 'ubuntu', 'arm64' if 'arm64' in info or 'aarch64' in info else 'amd64'),
+        ('install.amd/vmlinuz', 'install.amd/initrd.gz', 'debian', 'amd64'),
+        ('install.amd/vmlinuz', 'install.amd/initrd', 'debian', 'amd64'),
+        ('install.386/vmlinuz', 'install.386/initrd.gz', 'debian', 'i386'),
+        ('install.a64/vmlinuz', 'install.a64/initrd.gz', 'debian', 'arm64'),
+        ('install.a64/vmlinuz', 'install.a64/initrd', 'debian', 'arm64'),
+    ]
+    for kernel, initrd, flavor, arch in candidates:
+        if (mount / kernel).is_file() and (mount / initrd).is_file():
+            return kernel, initrd, flavor, arch
+    raise RuntimeError('Linux ISO kernel/initrd layout is not supported (Ubuntu casper or Debian amd64/i386/arm64 expected)')
+
+
+def _first_existing(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
+def _copy_linux_shims(mount: Path, image_dir: Path) -> dict:
+    """Copy a distro Secure Boot shim when present.
+
+    Prefer files explicitly named shim*.efi.  BOOT*.EFI is accepted only as a
+    last-resort fallback on x64/ARM64 installation media because some distro
+    ISOs expose their signed shim under the removable-media boot filename.
+    IA32 is intentionally excluded from the Secure Boot capability map: the
+    managed iPXE first stage is signed only for x64 and ARM64.
+    """
+    candidates = {
+        'amd64': [
+            mount / 'EFI/ubuntu/shimx64.efi',
+            mount / 'EFI/debian/shimx64.efi',
+            mount / 'EFI/BOOT/shimx64.efi',
+            mount / 'efi/boot/shimx64.efi',
+            mount / 'EFI/BOOT/BOOTX64.EFI',
+            mount / 'efi/boot/bootx64.efi',
+        ],
+        'arm64': [
+            mount / 'EFI/ubuntu/shimaa64.efi',
+            mount / 'EFI/debian/shimaa64.efi',
+            mount / 'EFI/BOOT/shimaa64.efi',
+            mount / 'efi/boot/shimaa64.efi',
+            mount / 'EFI/BOOT/BOOTAA64.EFI',
+            mount / 'efi/boot/bootaa64.efi',
+        ],
+    }
+    found = {}
+    for arch, choices in candidates.items():
+        source = _first_existing(choices)
+        if source is None:
+            continue
+        target = image_dir / f'shim-{arch}.efi'
+        shutil.copy2(source, target)
+        found[arch] = target.name
+    return found
+
+
+def prepare_image(payload: dict) -> str:
+    image_id = int(payload.get('image_id') or 0)
+    source = Path(str(payload.get('source_path') or ''))
+    kind = str(payload.get('kind') or '')
+    if image_id <= 0 or kind not in {'windows', 'linux'} or not source.is_file():
+        raise RuntimeError('invalid image preparation request')
+
+    target_iso = PXE_MEDIA / f'isos/{image_id}.iso'
+    target_iso.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() != target_iso.resolve():
+        shutil.copy2(source, target_iso)
+    os.chmod(target_iso, 0o644)
+
+    image_dir = PXE_MEDIA / f'images/{image_id}'
+    shutil.rmtree(image_dir, ignore_errors=True)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    mount = _mount_iso(target_iso)
+    metadata = {'release': '1.4.0', 'status': 'ready', 'kind': kind, 'iso': f'isos/{image_id}.iso'}
+    architecture = 'amd64'
+    try:
+        if kind == 'windows':
+            boot_wim = mount / 'sources/boot.wim'
+            install_wim = mount / 'sources/install.wim'
+            install_esd = mount / 'sources/install.esd'
+            bcd = mount / 'boot/BCD'
+            boot_sdi = mount / 'boot/boot.sdi'
+            if not boot_wim.is_file():
+                raise RuntimeError('Windows ISO does not contain sources/boot.wim')
+            if not bcd.is_file() or not boot_sdi.is_file():
+                raise RuntimeError('Windows ISO is incomplete for PXE: boot/BCD and boot/boot.sdi are required')
+            source_install = install_wim if install_wim.is_file() else install_esd
+            if not source_install.is_file():
+                raise RuntimeError('Windows ISO does not contain sources/install.wim or install.esd')
+            architecture = _wim_architecture(boot_wim)
+            install_arch = _wim_architecture(source_install)
+            if install_arch != architecture:
+                raise RuntimeError(f'Windows boot.wim architecture {architecture} does not match install image {install_arch}')
+            shutil.copy2(boot_wim, image_dir / 'boot.wim')
+            shutil.copy2(bcd, image_dir / 'BCD')
+            shutil.copy2(boot_sdi, image_dir / 'boot.sdi')
+            ext = source_install.suffix.lower()
+            shutil.copy2(source_install, image_dir / f'install{ext}')
+            metadata.update({
+                'boot_wim': 'boot.wim',
+                'install_image': f'install{ext}',
+                'editions': _windows_editions(source_install),
+                'architecture': architecture,
+                'firmware_modes': ['uefi'] if architecture == 'arm64' else ['bios', 'uefi'],
+                'secure_boot_capable': architecture in {'amd64', 'arm64'},
+            })
+        else:
+            kernel, initrd, flavor, architecture = _linux_layout(mount)
+            shutil.copy2(mount / kernel, image_dir / 'vmlinuz')
+            shutil.copy2(mount / initrd, image_dir / 'initrd')
+            shims = _copy_linux_shims(mount, image_dir)
+            metadata.update({
+                'kernel': 'vmlinuz',
+                'initrd': 'initrd',
+                'flavor': flavor,
+                'architecture': architecture,
+                'firmware_modes': ['uefi'] if architecture == 'arm64' else ['bios', 'uefi'],
+                'secure_boot_shims': shims,
+                'secure_boot_capable': architecture in {'amd64', 'arm64'} and architecture in shims,
+            })
+    finally:
+        _umount(mount)
+
+    for published in image_dir.iterdir():
+        if published.is_file():
+            os.chmod(published, 0o644)
+    js = json.dumps(metadata, ensure_ascii=False).replace("'", "''")
+    psql_exec(
+        f"UPDATE os_images SET source_path={sql_literal(str(target_iso))}, architecture={sql_literal(architecture)}, "
+        f"metadata='{js}'::jsonb, enabled=true WHERE id={image_id};"
+    )
+    return f'{kind} image #{image_id} prepared: architecture={architecture} firmware={metadata.get("firmware_modes")}'
