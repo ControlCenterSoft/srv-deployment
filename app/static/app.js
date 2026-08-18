@@ -10,8 +10,8 @@ const api = async (url, options = {}) => {
 };
 const fmt = n => { const u=['B','KB','MB','GB','TB']; let i=0; n=+n||0; while(n>=1024&&i<4){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; };
 const rate = n => fmt(n) + '/s';
-const stateLabel = s => ({up:'UP',down:'DOWN',unknown:'UNKNOWN',active:'ACTIVE',inactive:'INACTIVE',failed:'FAILED'}[String(s||'').toLowerCase()] || String(s||'—').toUpperCase());
-const statusClass = s => ['up','active','running'].includes(String(s||'').toLowerCase()) ? 'ok' : ['down','failed','inactive','error'].includes(String(s||'').toLowerCase()) ? 'bad' : 'neutral-status';
+const stateLabel = s => ({up:'UP',down:'DOWN',unknown:'UNKNOWN',active:'ACTIVE',inactive:'INACTIVE',failed:'FAILED',applied:'APPLIED',rollback:'ROLLBACK',rejected:'REJECTED'}[String(s||'').toLowerCase()] || String(s||'—').toUpperCase());
+const statusClass = s => ['up','active','running','applied','ok'].includes(String(s||'').toLowerCase()) ? 'ok' : ['down','failed','inactive','error','rollback','rejected'].includes(String(s||'').toLowerCase()) ? 'bad' : 'neutral-status';
 
 function isMobile(){ return matchMedia('(max-width: 900px)').matches; }
 function closeMobileNav(){ document.body.classList.remove('mobile-nav-open'); $('#sidebarToggle')?.setAttribute('aria-expanded','false'); }
@@ -160,41 +160,58 @@ $('#checkDhcp')?.addEventListener('click',async()=>{const out=$('#dhcpCheckOutpu
 
 async function rbac(){try{const d=await api('/api/rbac');$('#users').innerHTML=d.users.slice(0,40).map(x=>`<div class="listrow"><span>${esc(x.name)}</span><b>UID ${Number(x.uid)||0} · ${esc(x.type)}</b></div>`).join('');$('#groups').innerHTML=d.groups.slice(0,40).map(x=>`<div class="listrow"><span>${esc(x.name)}</span><b>GID ${Number(x.gid)||0}</b></div>`).join('');}catch(e){console.error(e);}}
 
+function setDatabaseCard(d){
+  const pill=$('#dbStatus');
+  if(d?.ok){pill.textContent='● Работает';pill.className='status-pill compact ok';}else{pill.textContent='● Недоступен';pill.className='status-pill compact bad';}
+  $('#dbVersion').textContent=d?.server_version||'—';$('#dbName').textContent=d?.database||'—';$('#dbRole').textContent=d?.role||'—';$('#dbSchema').textContent=d?.schema||'—';
+  $('#dbMigration').textContent=d?.migration?`${d.migration.version} · ${d.migration.name}`:'—';$('#dbNodes').textContent=d?.node_count??'—';$('#dbMode').textContent=d?.cluster_enabled?'cluster':`${d?.mode||'local'} · cluster-ready`;
+}
+function setWebCard(w){
+  $('#webRuntimePort').textContent=w.runtime_port??'—';$('#webSavedPort').textContent=w.port??'—';$('#webPort').value=w.port||w.runtime_port||8080;
+  const state=w.status?.state||'active',pill=$('#webPortStatus');pill.textContent=state==='active'||!w.status?.state?'● ACTIVE':`● ${stateLabel(state)}`;pill.className='status-pill compact '+statusClass(state);
+  if(w.status?.message)$('#webPortMessage').textContent=w.status.message;
+}
 async function settings(){
   try{
-    const [u,o,l]=await Promise.all([api('/api/settings/update'),api('/api/settings/os-update'),api('/api/license')]);
+    const [u,o,l,w,d]=await Promise.all([api('/api/settings/update'),api('/api/settings/os-update'),api('/api/license'),api('/api/settings/web'),api('/api/database/status')]);
     $('#autoUpdates').checked=u.settings.automatic_updates;$('#updateInterval').value=u.settings.interval_minutes;$('#autoOsUpdates').checked=o.settings.automatic_updates;$('#osUpdateInterval').value=o.settings.interval_minutes;
     const lic=l.license;$('#licenseEdition').textContent=lic.edition;$('#sidebarEdition').textContent=lic.edition;$('#deviceId').textContent=lic.device_id;$('#licenseId').textContent=lic.license_id||'Не активирована';$('#editionBadge').textContent=lic.edition.toUpperCase()+' · '+l.version;$('#topVersion').textContent='Control Center '+l.version+' '+lic.edition;
+    setWebCard(w);setDatabaseCard(d);
     if(l.status?.message)$('#licenseMessage').textContent=l.status.message;if(o.status?.message)$('#osUpdateMessage').textContent=o.status.message+(o.status.reboot_required?' · требуется перезагрузка':'');if(u.status?.message)$('#settingsMessage').textContent=u.status.message;
-  }catch(e){console.error(e);}
+  }catch(e){console.error(e);$('#dbStatus').textContent='● Недоступен';$('#dbStatus').className='status-pill compact bad';}
 }
-$('#saveSettings')?.addEventListener('click',async()=>{try{await api('/api/settings/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automatic_updates:$('#autoUpdates').checked,interval_minutes:+$('#updateInterval').value,channel:'production'})});$('#settingsMessage').textContent='Настройки сохранены';}catch(e){$('#settingsMessage').textContent=e.message;}});
+$('#saveSettings')?.addEventListener('click',async()=>{try{await api('/api/settings/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automatic_updates:$('#autoUpdates').checked,interval_minutes:+$('#updateInterval').value,channel:'production'})});$('#settingsMessage').textContent='Настройки сохранены в PostgreSQL';}catch(e){$('#settingsMessage').textContent=e.message;}});
 $('#checkUpdate')?.addEventListener('click',async()=>{try{const d=await api('/api/settings/update/check');$('#settingsMessage').textContent=d.remote.available?`Production: ${d.remote.release}${d.remote.build?' · '+d.remote.build:''}`:'Ошибка проверки';}catch(e){$('#settingsMessage').textContent=e.message;}});
-$('#saveOsUpdates')?.addEventListener('click',async()=>{try{await api('/api/settings/os-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automatic_updates:$('#autoOsUpdates').checked,interval_minutes:+$('#osUpdateInterval').value})});$('#osUpdateMessage').textContent='Настройки сохранены';}catch(e){$('#osUpdateMessage').textContent=e.message;}});
+$('#saveOsUpdates')?.addEventListener('click',async()=>{try{await api('/api/settings/os-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automatic_updates:$('#autoOsUpdates').checked,interval_minutes:+$('#osUpdateInterval').value})});$('#osUpdateMessage').textContent='Настройки сохранены в PostgreSQL';}catch(e){$('#osUpdateMessage').textContent=e.message;}});
 $('#runOsUpdate')?.addEventListener('click',async()=>{try{const d=await api('/api/settings/os-update/run',{method:'POST'});$('#osUpdateMessage').textContent=d.message;setTimeout(settings,2600);setTimeout(loadNotifications,2800);}catch(e){$('#osUpdateMessage').textContent=e.message;}});
 $('#activateProfessional')?.addEventListener('click',async()=>{try{const d=await api('/api/license/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payload:$('#licensePayload').value,signature:$('#licenseSignature').value})});$('#licenseMessage').textContent=d.message;setTimeout(settings,1200);setTimeout(loadNotifications,1400);}catch(e){$('#licenseMessage').textContent=e.message;}});
+$('#saveWebPort')?.addEventListener('click',async()=>{
+  const port=Number($('#webPort').value),msg=$('#webPortMessage');
+  if(!Number.isInteger(port)||port<1024||port>65535){msg.textContent='Допустимый порт: 1024–65535';return;}
+  try{
+    const d=await api('/api/settings/web',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({port})});
+    msg.textContent=d.status==='pending'?`${d.message} После применения откройте ${location.protocol}//${location.hostname}:${port}`:d.message;
+    if(d.status==='pending'){$('#webPortStatus').textContent='● APPLYING';$('#webPortStatus').className='status-pill compact neutral-status';}
+  }catch(e){msg.textContent=e.message;}
+});
 
-const READ_KEY='control-center-notifications-read-v1';
 let notificationItems=[];
-function readSet(){try{return new Set(JSON.parse(localStorage.getItem(READ_KEY)||'[]'));}catch(_){return new Set();}}
-function saveRead(set){localStorage.setItem(READ_KEY,JSON.stringify([...set].slice(-300)));}
 function updateBell(){
-  const read=readSet(),unread=notificationItems.filter(x=>!read.has(x.id)),bell=$('#notificationBell'),count=$('#notificationCount');
+  const unread=notificationItems.filter(x=>!x.read),bell=$('#notificationBell'),count=$('#notificationCount');
   bell.classList.remove('error','success','neutral');
   bell.classList.add(unread.some(x=>x.severity==='error')?'error':unread.length?'success':'neutral');
   count.textContent=unread.length;count.classList.toggle('hidden',!unread.length);
 }
 function renderNotifications(){
-  const read=readSet();
-  $('#notificationList').innerHTML=notificationItems.map(x=>`<button class="notification-item ${x.severity} ${read.has(x.id)?'read':'unread'}" data-notification-id="${esc(x.id)}"><div class="notification-meta"><b>${esc(x.title)}</b><span>${x.timestamp?new Date(x.timestamp*1000).toLocaleString('ru-RU'):'Текущее состояние'}</span></div><p>${esc(x.message)}</p></button>`).join('') || '<div class="empty-state">Событий пока нет.</div>';
-  $$('[data-notification-id]').forEach(b=>b.addEventListener('click',()=>{const s=readSet();s.add(b.dataset.notificationId);saveRead(s);renderNotifications();updateBell();}));
+  $('#notificationList').innerHTML=notificationItems.map(x=>`<button class="notification-item ${x.severity} ${x.read?'read':'unread'}" data-notification-id="${esc(x.id)}"><div class="notification-meta"><b>${esc(x.title)}</b><span>${x.timestamp?new Date(x.timestamp*1000).toLocaleString('ru-RU'):'Текущее состояние'}</span></div><p>${esc(x.message)}</p></button>`).join('') || '<div class="empty-state">Событий пока нет.</div>';
+  $$('[data-notification-id]').forEach(b=>b.addEventListener('click',async()=>{try{await api('/api/notifications/read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:[b.dataset.notificationId]})});const item=notificationItems.find(x=>x.id===b.dataset.notificationId);if(item)item.read=true;renderNotifications();updateBell();}catch(e){console.error(e);}}));
 }
 async function loadNotifications(){try{const d=await api('/api/notifications');notificationItems=d.items||[];renderNotifications();updateBell();}catch(e){console.error(e);}}
 function openNotifications(){const d=$('#notificationDrawer');d.classList.add('open');d.setAttribute('aria-hidden','false');$('#notificationBell').setAttribute('aria-expanded','true');}
 function closeNotifications(){const d=$('#notificationDrawer');d?.classList.remove('open');d?.setAttribute('aria-hidden','true');$('#notificationBell')?.setAttribute('aria-expanded','false');}
 $('#notificationBell')?.addEventListener('click',()=>$('#notificationDrawer').classList.contains('open')?closeNotifications():openNotifications());
 $('#closeNotifications')?.addEventListener('click',closeNotifications);
-$('#markNotificationsRead')?.addEventListener('click',()=>{const s=readSet();notificationItems.forEach(x=>s.add(x.id));saveRead(s);renderNotifications();updateBell();});
+$('#markNotificationsRead')?.addEventListener('click',async()=>{try{await api('/api/notifications/read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({all:true})});notificationItems.forEach(x=>x.read=true);renderNotifications();updateBell();}catch(e){console.error(e);}});
 
 function load(t){({system,networks,market,dhcp,rbac,settings}[t]||(()=>{}))();}
 market();system();settings();loadNotifications();
