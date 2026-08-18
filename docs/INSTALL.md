@@ -1,46 +1,99 @@
-# Установка Control Center 1.0.0
+# Установка Control Center 1.0.5
 
-## Требования
+## Поддерживаемая платформа
 
-- Ubuntu Server 26.04 LTS или совместимая Debian-подобная система с systemd.
-- root/sudo.
-- Доступ к пакетным репозиториям на этапе установки.
-- Свободный TCP-порт 8080.
+Основная целевая платформа релиза 1.0.5 — Ubuntu Server 26.04 LTS с systemd и Netplan. Требуются root/sudo, доступ к APT-репозиториям и TCP-порт 8080 для Web UI.
 
-## Установка
+## Рекомендуемая установка
 
 ```bash
-git clone https://github.com/filosoff31/srv-deployment.git
+curl -fL -o control-center-install.sh https://control-center-website.sazonovpg.workers.dev/install.sh
+chmod +x control-center-install.sh
+sudo ./control-center-install.sh
+```
+
+Bootstrap получает ветку `release/1.0.5` и запускает `install/install.sh`.
+
+Прямая установка из GitHub:
+
+```bash
+git clone --depth 1 --branch release/1.0.5 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Проверка:
-
-```bash
-systemctl status control-center --no-pager
-curl http://127.0.0.1:8080/api/health
-```
-
-Web-интерфейс: `http://IP_СЕРВЕРА:8080`.
-
 ## Что устанавливается
 
-- `/opt/control-center/app` — приложение.
-- `/opt/control-center/venv` — изолированное Python-окружение.
-- `control-center.service` — systemd-служба.
-- отдельная системная УЗ `control-center` без интерактивного shell.
+- `/opt/control-center/app` — Web-приложение;
+- `/opt/control-center/venv` — Python virtualenv;
+- `/var/lib/control-center` — изменяемое состояние и запросы Web UI;
+- `/var/lib/control-center-license` — подтверждённая Professional-лицензия, каталог принадлежит root;
+- `/etc/control-center/license-public.pem` — публичный ключ проверки лицензий;
+- `/usr/local/sbin/control-center-*` — привилегированные helpers;
+- systemd service/path/timer units Control Center.
+
+Web-процесс работает от системной УЗ `control-center` без интерактивного shell и без root-прав.
+
+## Службы
+
+```text
+control-center.service
+control-center-update.timer
+control-center-os-update.timer
+control-center-network-apply.path
+control-center-market-apply.path
+control-center-dhcp-apply.path
+control-center-license-apply.path
+```
+
+## Проверка после установки
+
+```bash
+cat /opt/control-center/VERSION
+curl -fsS http://127.0.0.1:8080/api/health && echo
+systemctl status control-center --no-pager
+systemctl list-timers --all | grep control-center
+systemctl list-units --type=path | grep control-center
+```
+
+Ожидаемая версия: `1.0.5`. До активации редакция: `Home`.
+
+Web UI:
+
+```text
+http://IP_СЕРВЕРА:8080
+```
+
+## Пакетные операции
+
+Control Center использует общий lock `/run/control-center-apt.lock`, поэтому установка продукта, обновление ОС/пакетов и установка DHCP через Маркет не должны одновременно выполнять APT/dpkg.
+
+## Обновление существующей установки
+
+Повторный запуск установщика сохраняет данные `/var/lib/control-center`. Professional-лицензия хранится отдельно в `/var/lib/control-center-license`.
+
+Важно: ранняя pre-audit сборка 1.0.5 сохраняла лицензию в Web-writable каталоге. Установщик исправленной 1.0.5 намеренно не доверяет такому старому файлу; Professional потребуется активировать повторно корректно подписанной лицензией.
 
 ## Удаление
+
+Полное удаление:
 
 ```bash
 sudo bash install/uninstall.sh
 ```
 
-## Диагностика
+Удалить приложение, но оставить данные и лицензию:
+
+```bash
+sudo bash install/uninstall.sh --keep-data
+```
+
+## Базовая диагностика
 
 ```bash
 journalctl -u control-center -n 200 --no-pager
-ss -ltnp | grep 8080
+ss -ltnp | grep ':8080'
 curl -v http://127.0.0.1:8080/api/health
 ```
+
+См. также `docs/TROUBLESHOOTING.md`.
