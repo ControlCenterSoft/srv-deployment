@@ -8,6 +8,7 @@ on:
     paths:
       - 'releases/2.0.0/**'
       - 'docs/2.0/**'
+      - 'deployment.json'
       - '.github/workflows/release-2.0-validation.yml'
 
 permissions:
@@ -189,12 +190,19 @@ jobs:
           grep -Fq 'Minecraft Bedrock' docs/2.0/ADMIN-GUIDE.md
           grep -Fq 'Branch cleanup gate' docs/2.0/VALIDATION.md
 
-      - name: Validate production is not switched prematurely
+      - name: Validate production activation pointer
         run: |
           python3 - <<'PY'
           import json
           d=json.load(open('deployment.json',encoding='utf-8'))
-          assert d.get('release_id') == '1.3.8', d
-          assert d.get('release_path') == 'releases/1.3.8', d
-          print('PRODUCTION GUARD PASS: deployment.json remains 1.3.8')
+          assert d.get('enabled') is True, d
+          assert d.get('channel') == 'production', d
+          assert d.get('release_id') == '2.0.0', d
+          assert d.get('release_path') == 'releases/2.0.0', d
+          assert d.get('manifest') == 'releases/2.0.0/manifest.json', d
+          assert d.get('preflight') == 'releases/2.0.0/preflight-2.0.0.sh', d
+          assert d.get('apply') == 'releases/2.0.0/apply-2.0.0.sh', d
+          assert d.get('acceptance') == 'releases/2.0.0/acceptance-2.0.0.sh', d
+          assert d.get('rollback') == 'releases/2.0.0/rollback-2.0.0.sh', d
+          print('PRODUCTION ACTIVATION POINTER PASS: deployment.json targets 2.0.0')
           PY
