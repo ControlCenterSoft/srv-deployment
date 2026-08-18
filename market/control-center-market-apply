@@ -51,7 +51,16 @@ PY
     exit 1
   fi
   status applying 'Установка DHCP Server…'
-  if [[ -e "$DNSMASQ_MASK" && ! -L "$DNSMASQ_MASK" ]]; then
+  if [[ -L "$DNSMASQ_MASK" ]]; then
+    if [[ "$(readlink "$DNSMASQ_MASK")" == /dev/null ]]; then
+      rm -f "$DNSMASQ_MASK"
+      systemctl daemon-reload
+    else
+      status error 'Существующая ссылка dnsmasq.service не принадлежит Control Center. Автоматическое изменение запрещено.'
+      trap - ERR
+      exit 1
+    fi
+  elif [[ -e "$DNSMASQ_MASK" ]]; then
     status error 'Нельзя временно замаскировать dnsmasq.service: путь уже занят.'
     trap - ERR
     exit 1
