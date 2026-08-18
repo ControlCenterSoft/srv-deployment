@@ -6,10 +6,11 @@
 
 ## Текущий контекст
 
-- Активный production target на момент актуализации документации: **1.3.8**.
-- Новая линия разработки ведётся как **2.x**, начиная с **2.0.0**.
-- Ранее планировавшиеся отдельные 1.4/1.5/1.6/1.7/1.8 этапы больше не являются каноническим порядком выпуска. Полезные требования из них переносятся в 2.x по мере реализации и проверки.
-- Историческая 1.x детализация остаётся доступна в Git history, `RELEASE-HISTORY.md` и release-specific документах; она не должна использоваться как описание текущего production или обязательного будущего порядка релизов.
+- Активный production target: **2.0.0**.
+- 2.0.0 опубликован и является frozen release; его payload не переписывается задним числом.
+- Фактическая проверка 2.0.0 показала, что Licensing Stage 1 / Entitlement Engine в этот релиз не вошёл.
+- Последовательное внедрение licensing начинается с **2.1.0** и продолжается фиксированными minor-релизами до 2.5.0.
+- Историческая 1.x детализация остаётся доступна в Git history, `RELEASE-HISTORY.md` и release-specific документах; она не должна использоваться как описание текущего production.
 
 ## Правила развития и релизов
 
@@ -23,41 +24,112 @@
 8. Секреты не публикуются в Git; diagnostics и logs проходят redaction.
 9. Для долгоживущих функций используются Desired State, audit и RBAC.
 10. Документация является частью release acceptance и синхронизируется с фактической реализацией до публикации релиза.
-11. Для каждого нового **функционального** релиза автоматически включается следующий незавершённый этап licensing roadmap из `PRODUCT-EDITIONS.md`. Этапы идут строго последовательно и не пропускаются.
-12. Emergency repair/hotfix patch-релиз не продвигает licensing roadmap сам по себе. Если активный licensing stage не завершён acceptance, он остаётся обязательным для следующего функционального релиза.
-13. Новый release scope обязан явно указывать активный licensing stage и его acceptance criteria до начала реализации.
+11. Licensing stages 1–5 идут строго последовательно в релизах 2.1.0–2.5.0.
+12. Emergency repair/hotfix patch-релиз не продвигает licensing roadmap сам по себе.
+13. Если предыдущий licensing stage не прошёл acceptance, следующий stage не начинается.
+14. Новый licensing release scope обязан явно содержать stage requirements и acceptance criteria до начала реализации.
 
 ---
 
-# 2.0.0 — новый Control Center
+# 2.0.0 — опубликованный базовый Control Center 2.x
 
-**Цель:** сформировать новый базовый major release с полностью обновлённым интерфейсом и исправленной эксплуатационной платформой, сохранив совместимость с проверенной 1.3.x функциональностью.
+**Статус:** production / frozen.
 
-## Интерфейс
+2.0.0 сформировал новый базовый major release с обновлённым интерфейсом и эксплуатационной платформой, сохранив перенос проверенной функциональности предыдущей линии.
 
-- полностью обновлённая визуальная система Control Center;
-- единая навигация, responsive/mobile layout и keyboard accessibility;
-- унифицированные loading/error/empty states;
-- единые безопасные confirmation/prompt dialogs для административных операций;
-- адаптация существующих модулей под новый интерфейс без потери их backend-контрактов;
-- бренд продукта — **Control Center**, без устаревшего префикса `SRV` в новом интерфейсе и новой документации.
+## Реализованный scope 2.0.0
 
-## Licensing Stage 1 — Edition / Entitlement Engine
+### Интерфейс
 
-**Обязательный scope 2.0.0.** Это первый этап последовательного внедрения Professional licensing и он должен войти в 2.0.0 по умолчанию.
+- обновлённая визуальная система Control Center;
+- единая навигация и обновлённые административные страницы;
+- унифицированные loading/error/empty states в перенесённых модулях;
+- безопасные confirmation/prompt dialogs для административных операций;
+- адаптация существующих модулей без потери backend-контрактов;
+- публичный бренд продукта — **Control Center**.
 
-- ввести явное edition state: **Control Center Home** / **Control Center Professional**;
-- единый Entitlement Engine в Core с API/backend enforcement, а не только UI-ограничениями;
+### Update Center / механизм обновления
+
+- транзакционная модель обновления;
+- устойчивый automatic timer;
+- product/release fingerprint;
+- suppression повторного автоматического запуска одного и того же неуспешного fingerprint;
+- безопасный manual retry;
+- восстановление updater runtime/configuration после release apply;
+- разделение `check` и `apply`;
+- временные метки последней проверки и последнего успешного обновления;
+- контроль состояния systemd service/timer.
+
+### Backup Center
+
+- массовый выбор и удаление резервных копий;
+- typed confirmation для массового удаления;
+- независимое управление scheduled backup и `backup_before_update`;
+- authoritative backup-before-update policy;
+- create/download/delete/restore и bulk-delete contracts.
+
+### Minecraft Bedrock Server
+
+- health-first repair;
+- восстановление/обновление runtime при необходимости;
+- проверка systemd service, порта, properties и процесса;
+- защита от конфликтующих update timers;
+- safety backup перед destructive recovery;
+- обязательные health/acceptance checks.
+
+### Перенесённая функциональность
+
+Проверяемая линия 2.0.0 включает перенос/совместимость для:
+
+- PAM/NSS/winbind authentication и Kerberos/SPNEGO SSO, где настроено;
+- RBAC и privileged action architecture;
+- Samba AD/domain administration;
+- SMB shares;
+- системных сервисов;
+- automatic/manual product updates;
+- OS updates;
+- backup/restore;
+- Minecraft Bedrock;
+- AdGuard VPN;
+- Downloads/Torrent integrations;
+- network/system pages;
+- DHCP/PXE management carry-forward;
+- diagnostics/server-state contracts.
+
+## Результат аудита licensing в 2.0.0
+
+Licensing Stage 1 **не реализован** в фактическом frozen payload 2.0.0. Проверка показала:
+
+- в release manifest 2.0.0 licensing/entitlement не заявлен;
+- в payload отсутствует отдельный entitlement/license module;
+- отсутствует новая DB migration для edition/license/entitlement state;
+- System UI не содержит страницы/блока **О системе / Лицензия** с edition и Home usage;
+- release acceptance 2.0.0 не проверяет лимиты 10 domain users / 10 network shares, API bypass или privileged-boundary enforcement.
+
+Поэтому 2.0.0 не изменяется; Stage 1 переносится в 2.1.0.
+
+---
+
+# Licensing roadmap 2.1.0–2.5.0
+
+Полная архитектура описана в `PRODUCT-EDITIONS.md`. Номера этапов теперь закреплены за конкретными minor-релизами.
+
+## 2.1.0 — Licensing Stage 1: Edition / Entitlement Engine
+
+**Обязательный scope 2.1.0.**
+
+- явное edition state: **Control Center Home** / **Control Center Professional**;
+- единый Entitlement Engine в Core с API/backend enforcement;
 - Home: максимум **10 доменных пользователей**;
 - Home: максимум **10 сетевых общих ресурсов (SMB/network shares)**;
-- попытка создать 11-го доменного пользователя или 11-ю шару должна безопасно блокироваться до изменения системы и показывать требование Professional;
+- попытка создать 11-го доменного пользователя или 11-ю шару блокируется до системной mutation и показывает требование Professional;
 - коммерческое использование остаётся Professional независимо от количества пользователей/шар;
-- достижение лимита не должно останавливать уже работающие Samba AD, SMB, DHCP, DNS или другие критические сервисы;
-- добавить **Система → О системе / Лицензия** либо эквивалентный экран с edition, entitlement state, текущим использованием Home-лимитов и состоянием лицензии;
-- подготовить schema/state/API foundation для последующих signed-license и activation stages;
-- licensing private key или activation secrets на Stage 1 не требуются и не должны появляться в product repository.
+- достижение лимита не останавливает уже работающие Samba AD, SMB, DHCP, DNS или другие критические сервисы;
+- **Система → О системе / Лицензия** показывает edition, entitlement state, использование лимитов и placeholder будущей активации;
+- DB/state/API foundation для следующих licensing stages;
+- никаких licensing private keys или activation secrets в product repository.
 
-### Stage 1 acceptance
+### 2.1.0 Stage 1 acceptance
 
 Stage 1 нельзя считать завершённым, пока одновременно не проверено:
 
@@ -66,94 +138,55 @@ Stage 1 нельзя считать завершённым, пока однов�
 3. 1–10 доменных пользователей допускаются, 11-й блокируется до privileged mutation;
 4. 1–10 сетевых шар допускаются, 11-я блокируется до privileged mutation;
 5. обход UI прямым API-запросом не позволяет превысить лимит;
-6. privileged helper/system boundary также не позволяет обойти entitlement check;
+6. privileged helper/system boundary не позволяет обойти entitlement check;
 7. существующая Home-конфигурация при достижении лимита продолжает обслуживать уже созданные ресурсы;
-8. migration с production 1.3.8 не теряет пользователей, шары и права;
+8. migration с production 2.0.0 не теряет пользователей, шары и права;
 9. RBAC, backup, update и rollback regression проходят;
 10. `PRODUCT-EDITIONS.md`, `PRODUCT-MANUAL-RU.md`, release notes и сайт синхронизированы с фактической реализацией.
 
-После acceptance Stage 1 следующий функциональный релиз автоматически получает **Licensing Stage 2 — Signed local Professional licenses** из `PRODUCT-EDITIONS.md`.
+## 2.2.0 — Licensing Stage 2: Signed local Professional licenses
 
-## Update Center / механизм обновления
+- постоянный VM-safe `installation_id`;
+- подписанный local license certificate;
+- Ed25519 verification public material в продукте;
+- private signing keys только на стороне licensing authority;
+- Professional entitlement state из валидного signed certificate;
+- защита от tampered/invalid license без остановки уже работающих критических инфраструктурных сервисов.
 
-Полностью переработать механизм product update с учётом дефектов 1.3.x:
+## 2.3.0 — Licensing Stage 3: Online activation service
 
-- транзакционная модель обновления;
-- устойчивый automatic timer, который не остаётся отключённым после неуспешной транзакции;
-- product/release fingerprint вместо принятия решения только по commit SHA;
-- suppression повторного автоматического запуска одного и того же неуспешного fingerprint;
-- безопасный manual retry;
-- восстановление updater runtime/configuration после release apply;
-- явное разделение операций `check` и `apply`;
-- сохранение и отображение временных меток:
-  - **Последняя проверка обновления**;
-  - **Последняя попытка обновления** — внутреннее/диагностическое состояние, если требуется;
-  - **Последнее успешное обновление**;
-- контроль состояния systemd service/timer и автоматическое восстановление расписания;
-- acceptance механизма обновления на реальном сервере перед переключением production pointer.
+- licensing API в официальном namespace `control-center.pro`, предпочтительно `api.control-center.pro`;
+- customer/license/installation/activation/entitlement/audit data model;
+- activation key используется как credential для выдачи runtime license certificate;
+- подписанная online activation, связанная с `installation_id`;
+- deactivate / transfer / re-host;
+- enforcement количества разрешённых активаций;
+- работа по последней валидной локальной лицензии при временной потере сети.
 
-## Backup Center
+## 2.4.0 — Licensing Stage 4: Offline activation
 
-- массовый выбор и удаление резервных копий;
-- typed confirmation для массового удаления;
-- независимое управление scheduled backup и `backup_before_update`;
-- отключение `backup_before_update` должно реально запрещать пользовательский pre-update backup и для product update, и для OS update;
-- внутренний rollback snapshot release transaction не считается пользовательским backup и может сохраняться независимо от этой настройки;
-- проверка create/download/delete/restore и bulk-delete contracts.
+- экспорт bounded activation request с installation identity и nonce;
+- offline request/response workflow через подключённый портал/API;
+- импорт signed license response в изолированную установку;
+- защита от replay/substitution/cross-installation misuse;
+- отсутствие требования постоянного Интернет-соединения для критической инфраструктуры.
 
-## Minecraft Bedrock Server
+## 2.5.0 — Licensing Stage 5: Customer licensing portal
 
-- диагностика фактического runtime/service/world state;
-- health-first repair: исправлять только нездоровую установку;
-- восстановление/обновление runtime с официального Bedrock package при необходимости;
-- проверка systemd service, порта, server properties и запуска процесса;
-- конфликтующие legacy/multi-instance update timers не должны одновременно управлять одним runtime;
-- перед destructive recovery обязательно создаётся safety backup;
-- при невозможности восстановить старый мир допускается переход на новый recovery world только после успешного backup старого состояния;
-- после восстановления обязательны health/acceptance checks.
+- личный кабинет на `control-center.pro`;
+- просмотр лицензий, installations и activation status;
+- deactivate / transfer / re-host;
+- offline activation request/response workflow;
+- lifecycle/update entitlement и license documents;
+- licensing administration отделён от privileged infrastructure control plane сервера.
 
-## Перенос функциональности 1.x
-
-Все актуальные функции 1.x должны быть либо перенесены, либо явно признаны deprecated до выпуска 2.0.0. Обязательная проверка включает:
-
-- PAM/NSS/winbind authentication и Kerberos/SPNEGO SSO, где настроено;
-- RBAC и privileged action architecture;
-- Samba AD/domain administration;
-- SMB shares;
-- системные сервисы;
-- automatic/manual product updates;
-- OS updates;
-- backup/restore;
-- Minecraft Bedrock;
-- AdGuard VPN;
-- Downloads/Torrent integrations;
-- текущие network/system pages;
-- diagnostics/server-state contracts.
-
-## 2.0.0 release gate
-
-Production pointer нельзя переключать на 2.0.0, пока не выполнены одновременно:
-
-1. static/syntax checks;
-2. UI contract validation;
-3. updater regression tests;
-4. backup-policy regression tests;
-5. Minecraft health/recovery tests;
-6. authentication/RBAC regressions;
-7. Samba/share regressions;
-8. **Licensing Stage 1 acceptance полностью пройден**;
-9. migration test с фактической 1.3.8 production line, включая сохранение domain users и SMB shares;
-10. rollback test;
-11. real-server acceptance;
-12. актуализация `PRODUCT-MANUAL-RU.md`, `RELEASE-HISTORY.md`, `INSTALL.md`, `SYSTEM-ADMIN.md`, `AUTO-UPDATES.md`, `PRODUCT-EDITIONS.md` и этого roadmap.
-
-После успешного перехода неактуальные **неопубликованные** 1.x development branches могут быть удалены. Опубликованные frozen release directories и необходимая историческая release lineage сохраняются.
+После принятого 2.5.0 licensing развивается как обычное направление roadmap без автоматического Stage 6.
 
 ---
 
-# После 2.0.0 — функциональные направления 2.x
+# После 2.0.0 — другие функциональные направления 2.x
 
-Ниже перечислены направления, а не обещанные номера/даты релизов. Приоритет определяется отдельным release scope. Исключение — последовательный licensing track: следующий незавершённый licensing stage включается в каждый новый функциональный release scope автоматически.
+Эти направления могут планироваться параллельно, но не отменяют закреплённый licensing track 2.1.0–2.5.0.
 
 ## DHCP и PXE
 
@@ -211,14 +244,15 @@ Production pointer нельзя переключать на 2.0.0, пока не
 
 Архитектура редакций и полный staged rollout описываются в `PRODUCT-EDITIONS.md`. Licensing не должен ослаблять security controls, RBAC, backup safety или integrity проверки.
 
-Автоматический порядок после Stage 1:
+Фиксированный порядок:
 
-- следующий функциональный релиз после принятого 2.0.0 → **Stage 2: signed local Professional licenses**;
-- следующий после принятого Stage 2 → **Stage 3: online activation service**;
-- следующий после принятого Stage 3 → **Stage 4: offline activation**;
-- следующий после принятого Stage 4 → **Stage 5: customer licensing portal**.
+- **2.1.0 → Stage 1**;
+- **2.2.0 → Stage 2**;
+- **2.3.0 → Stage 3**;
+- **2.4.0 → Stage 4**;
+- **2.5.0 → Stage 5**.
 
-Точные номера этих релизов назначаются при начале их подготовки и не угадываются заранее. Если предыдущий stage не прошёл acceptance, следующий stage не начинается.
+Если предыдущий stage не прошёл acceptance, следующий stage не начинается.
 
 ---
 
@@ -237,9 +271,10 @@ Production pointer нельзя переключать на 2.0.0, пока не
 Перед каждым новым release scope необходимо:
 
 1. определить, какие пункты этого roadmap входят в релиз;
-2. **автоматически назначить следующий незавершённый licensing stage из `PRODUCT-EDITIONS.md` для функционального релиза**;
-3. записать acceptance criteria этого licensing stage в release scope;
+2. для 2.1.0–2.5.0 включить закреплённый licensing stage соответствующего номера;
+3. записать acceptance criteria licensing stage в release scope;
 4. отделить реализованное от запланированного;
 5. после публикации перенести фактически реализованные пользовательские возможности в `PRODUCT-MANUAL-RU.md` и `RELEASE-HISTORY.md`;
-6. отметить licensing stage как принятый только после его полного acceptance;
-7. не оставлять roadmap единственным источником инструкции по уже выпущенной функции.
+6. отметить licensing stage как принятый только после полного acceptance;
+7. не начинать следующий licensing stage, если предыдущий не принят;
+8. не оставлять roadmap единственным источником инструкции по уже выпущенной функции.
