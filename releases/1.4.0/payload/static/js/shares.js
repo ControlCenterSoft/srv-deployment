@@ -8,6 +8,7 @@
         directory: {users: [], groups: [], domain: null},
         selected: null,
         search: "",
+        busy: false,
     };
 
     function esc(value) {
@@ -23,6 +24,26 @@
         const box = byId("shareMessage");
         box.textContent = text || "";
         box.classList.toggle("error", error);
+        box.setAttribute("role", error ? "alert" : "status");
+        box.setAttribute("aria-live", error ? "assertive" : "polite");
+    }
+
+    function toast(text, kind = "info") {
+        window.ControlCenterUI?.toast?.(text, kind);
+    }
+
+    async function confirmAction(text, options = {}) {
+        if (window.ControlCenterUI?.confirm) return window.ControlCenterUI.confirm(text, options);
+        return window.confirm(text);
+    }
+
+    function setBusy(value) {
+        state.busy = Boolean(value);
+        byId("shareEditor").setAttribute("aria-busy", state.busy ? "true" : "false");
+        for (const control of byId("shareEditor").querySelectorAll("input,select,button,textarea")) {
+            if (state.busy) control.disabled = true;
+        }
+        byId("shareNew").disabled = state.busy || !(state.data && state.data.can_write);
     }
 
     async function api(url, options = {}) {
@@ -51,7 +72,9 @@
     }
 
     function queueNotice(text) {
-        setMessage(text || "Операция поставлена в очередь.");
+        const notice = text || "Операция поставлена в очередь.";
+        setMessage(notice);
+        toast(notice, "success");
         window.setTimeout(() => load().catch(() => {}), 1700);
     }
 
@@ -78,6 +101,7 @@
             meta.textContent = `${share.comment || share.path || ""} · ${flags.join(" · ")}`;
             row.append(title, meta);
             row.addEventListener("click", () => {
+                if (state.busy) return;
                 state.selected = share.name;
                 renderList();
                 renderEditor(share, false);
@@ -110,28 +134,17 @@
         const row = document.createElement("div");
         row.className = "subject-row";
         row.innerHTML = `
-            <select class="subject-type">
-                <option value="group" ${subject.type === "group" ? "selected" : ""}>Группа</option>
-                <option value="user" ${subject.type === "user" ? "selected" : ""}>Пользователь</option>
-                <option value="everyone" ${subject.type === "everyone" ? "selected" : ""}>Всем</option>
-            </select>
+            <select class="subject-type"><option value="group" ${subject.type === "group" ? "selected" : ""}>Группа</option><option value="user" ${subject.type === "user" ? "selected" : ""}>Пользователь</option><option value="everyone" ${subject.type === "everyone" ? "selected" : ""}>Всем</option></select>
             <select class="subject-name"></select>
-            <select class="subject-access">
-                <option value="read" ${subject.access === "read" ? "selected" : ""}>Чтение</option>
-                <option value="write" ${subject.access === "write" ? "selected" : ""}>Запись</option>
-            </select>
-            <button class="danger-button subject-remove" type="button">Убрать</button>
-        `;
+            <select class="subject-access"><option value="read" ${subject.access === "read" ? "selected" : ""}>Чтение</option><option value="write" ${subject.access === "write" ? "selected" : ""}>Запись</option></select>
+            <button class="danger-button subject-remove" type="button">Убрать</button>`;
         const type = row.querySelector(".subject-type");
         const name = row.querySelector(".subject-name");
         function refill() {
             name.innerHTML = nameOptions(type.value, subject.name);
             if (type.value === "everyone") name.value = "Everyone";
         }
-        type.addEventListener("change", () => {
-            subject.name = "";
-            refill();
-        });
+        type.addEventListener("change", () => { subject.name = ""; refill(); });
         row.querySelector(".subject-remove").addEventListener("click", () => row.remove());
         refill();
         return row;
@@ -147,18 +160,13 @@
         let token = String(raw || "").trim();
         if (!token) return null;
         let type = "user";
-        if (token.startsWith("@")) {
-            type = "group";
-            token = token.slice(1).trim();
-        }
+        if (token.startsWith("@")) { type = "group"; token = token.slice(1).trim(); }
         token = token.replace(/^['"]+|['"]+$/g, "");
         const slash = Math.max(token.lastIndexOf("\\"), token.lastIndexOf("/"));
         if (slash >= 0) token = token.slice(slash + 1);
         token = token.replace(/^['"]+|['"]+$/g, "").trim();
         if (!token) return null;
-        if (token.toLocaleLowerCase("en") === "everyone") {
-            return {type: "everyone", name: "Everyone", access};
-        }
+        if (token.toLocaleLowerCase("en") === "everyone") return {type: "everyone", name: "Everyone", access};
         return {type, name: token, access};
     }
 
@@ -171,14 +179,8 @@
         const read = Array.isArray(share.read_list) ? share.read_list : [];
         const write = Array.isArray(share.write_list) ? share.write_list : [];
         const access = new Map();
-        for (const item of read) {
-            const subject = parsePrincipal(item, "read");
-            if (subject) access.set(subjectKey(subject), subject);
-        }
-        for (const item of write) {
-            const subject = parsePrincipal(item, "write");
-            if (subject) access.set(subjectKey(subject), subject);
-        }
+        for (const item of read) { const subject = parsePrincipal(item, "read"); if (subject) access.set(subjectKey(subject), subject); }
+        for (const item of write) { const subject = parsePrincipal(item, "write"); if (subject) access.set(subjectKey(subject), subject); }
         const ordered = [];
         const source = valid.length ? valid : [...read, ...write];
         for (const item of source) {
@@ -187,33 +189,18 @@
             const resolved = access.get(subjectKey(base)) || base;
             if (!ordered.some((subject) => subjectKey(subject) === subjectKey(resolved))) ordered.push(resolved);
         }
-        for (const resolved of access.values()) {
-            if (!ordered.some((subject) => subjectKey(subject) === subjectKey(resolved))) ordered.push(resolved);
-        }
-        if (!ordered.length) {
-            ordered.push({type: "everyone", name: "Everyone", access: share.read_only === false ? "write" : "read"});
-        }
+        for (const resolved of access.values()) if (!ordered.some((subject) => subjectKey(subject) === subjectKey(resolved))) ordered.push(resolved);
+        if (!ordered.length) ordered.push({type: "everyone", name: "Everyone", access: share.read_only === false ? "write" : "read"});
         return ordered;
     }
 
     function renderReadOnlyShare(share) {
         const editor = byId("shareEditor");
-        editor.innerHTML = `
-            <div class="status-grid">
-                <div class="status-item"><span>Имя</span><strong>${esc(share.name)}</strong></div>
-                <div class="status-item"><span>Путь</span><strong>${esc(share.path || "—")}</strong></div>
-                <div class="status-item"><span>Видимость</span><strong>${share.browseable ? "Открытая" : "Скрытая"}</strong></div>
-                <div class="status-item"><span>Тип</span><strong>Системная</strong></div>
-            </div>
-            <div class="danger-note">Системные Samba/AD-шары защищены от редактирования в общем редакторе. Это предотвращает повреждение SYSVOL, NETLOGON и служебной конфигурации домена.</div>
-        `;
+        editor.innerHTML = `<div class="status-grid"><div class="status-item"><span>Имя</span><strong>${esc(share.name)}</strong></div><div class="status-item"><span>Путь</span><strong>${esc(share.path || "—")}</strong></div><div class="status-item"><span>Видимость</span><strong>${share.browseable ? "Открытая" : "Скрытая"}</strong></div><div class="status-item"><span>Тип</span><strong>Системная</strong></div></div><div class="danger-note">Системные Samba/AD-шары защищены от редактирования в общем редакторе. Это предотвращает повреждение SYSVOL, NETLOGON и служебной конфигурации домена.</div>`;
     }
 
     function renderEditor(share = null, creating = false) {
-        if (!creating && share && share.system) {
-            renderReadOnlyShare(share);
-            return;
-        }
+        if (!creating && share && share.system) { renderReadOnlyShare(share); return; }
         const editor = byId("shareEditor");
         const external = Boolean(!creating && share && !share.managed);
         const externalData = Boolean(!creating && share && share.managed && share.data_managed === false);
@@ -224,30 +211,8 @@
         const limit = value.quota && value.quota.limit_gib ? value.quota.limit_gib : "";
         const externalNote = external
             ? '<div class="badge-row"><span class="badge warn">Внешняя шара: параметры будут изменены в существующем smb.conf/include. Каталог и данные не перемещаются. Квота и файловые ACL автоматически не меняются.</span></div>'
-            : externalData
-                ? '<div class="badge-row"><span class="badge warn">Внешний каталог: Control Center управляет SMB-публикацией, но не меняет квоту, POSIX ACL и не удаляет данные этого каталога.</span></div>'
-                : "";
-        editor.innerHTML = `
-            <form id="shareForm">
-                <div class="field-grid">
-                    <label><span>Имя шары (ASCII)</span><input id="sName" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,62}" maxlength="63" required value="${esc(value.name || "")}"></label>
-                    <label><span>Комментарий</span><input id="sComment" maxlength="1024" value="${esc(value.comment || "")}"></label>
-                    <label><span>Путь</span><input id="sPath" maxlength="1024" placeholder="Пусто = /srv/shares/ShareName; внешний каталог должен существовать" value="${esc(value.path || "")}"></label>
-                    <label><span>Квота, ГиБ</span><input id="sQuota" type="number" min="0" max="1048576" step="1" placeholder="0 = без ограничения" value="${esc(limit)}"></label>
-                </div>
-                <div class="checkbox-row"><label><input id="sBrowseable" type="checkbox" ${value.browseable !== false ? "checked" : ""}> Открытая / видна при просмотре сети</label></div>
-                ${externalNote}
-                ${external || externalData ? "" : `<div class="badge-row"><span class="badge ${value.filesystem && value.filesystem.quota_supported ? "ok" : "warn"}">${esc(quotaLabel(value.filesystem))}</span></div>`}
-                <div class="panel-title">Права доступа</div>
-                <div class="subject-list" id="subjectList"></div>
-                <div class="config-actions"><button class="secondary-button" id="subjectAdd" type="button">Добавить пользователя / группу</button></div>
-                <div class="config-actions">
-                    <button class="action-button" type="submit">${creating ? "Создать шару" : "Сохранить"}</button>
-                    ${!creating && !external ? '<button class="danger-button" id="shareDelete" type="button">Удалить публикацию</button>' : ""}
-                </div>
-                ${!creating && !external && !externalData && fullAdmin ? '<div class="checkbox-row"><label><input id="deleteShareData" type="checkbox"> При удалении также удалить каталог и все данные</label></div>' : ""}
-            </form>
-        `;
+            : externalData ? '<div class="badge-row"><span class="badge warn">Внешний каталог: Control Center управляет SMB-публикацией, но не меняет квоту, POSIX ACL и не удаляет данные этого каталога.</span></div>' : "";
+        editor.innerHTML = `<form id="shareForm"><div class="field-grid"><label><span>Имя шары (ASCII)</span><input id="sName" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,62}" maxlength="63" required value="${esc(value.name || "")}"></label><label><span>Комментарий</span><input id="sComment" maxlength="1024" value="${esc(value.comment || "")}"></label><label><span>Путь</span><input id="sPath" maxlength="1024" placeholder="Пусто = /srv/shares/ShareName; внешний каталог должен существовать" value="${esc(value.path || "")}"></label><label><span>Квота, ГиБ</span><input id="sQuota" type="number" min="0" max="1048576" step="1" placeholder="0 = без ограничения" value="${esc(limit)}"></label></div><div class="checkbox-row"><label><input id="sBrowseable" type="checkbox" ${value.browseable !== false ? "checked" : ""}> Открытая / видна при просмотре сети</label></div>${externalNote}${external || externalData ? "" : `<div class="badge-row"><span class="badge ${value.filesystem && value.filesystem.quota_supported ? "ok" : "warn"}">${esc(quotaLabel(value.filesystem))}</span></div>`}<div class="panel-title">Права доступа</div><div class="subject-list" id="subjectList"></div><div class="config-actions"><button class="secondary-button" id="subjectAdd" type="button">Добавить пользователя / группу</button></div><div class="config-actions"><button class="action-button" type="submit">${creating ? "Создать шару" : "Сохранить"}</button>${!creating && !external ? '<button class="danger-button" id="shareDelete" type="button">Удалить публикацию</button>' : ""}</div>${!creating && !external && !externalData && fullAdmin ? '<div class="checkbox-row"><label><input id="deleteShareData" type="checkbox"> При удалении также удалить каталог и все данные</label></div>' : ""}</form>`;
         const subjectList = byId("subjectList");
         const subjects = Array.isArray(value.subjects) && value.subjects.length ? value.subjects : [{type: "everyone", name: "Everyone", access: "read"}];
         for (const subject of subjects) subjectList.appendChild(subjectRow(subject));
@@ -258,79 +223,57 @@
 
         byId("shareForm").addEventListener("submit", async (event) => {
             event.preventDefault();
-            const subjectsPayload = Array.from(subjectList.querySelectorAll(".subject-row")).map((row) => ({
-                type: row.querySelector(".subject-type").value,
-                name: row.querySelector(".subject-name").value,
-                access: row.querySelector(".subject-access").value,
-            }));
-            if (!subjectsPayload.length) {
-                setMessage("Добавьте хотя бы одного пользователя, группу или Everyone.", true);
-                return;
-            }
+            if (state.busy) return;
+            const subjectsPayload = Array.from(subjectList.querySelectorAll(".subject-row")).map((row) => ({type: row.querySelector(".subject-type").value, name: row.querySelector(".subject-name").value, access: row.querySelector(".subject-access").value}));
+            if (!subjectsPayload.length) { setMessage("Добавьте хотя бы одного пользователя, группу или Everyone.", true); return; }
             const quotaRaw = external || externalData ? "" : byId("sQuota").value.trim();
-            const payload = {
-                name: value.name || byId("sName").value.trim(),
-                comment: byId("sComment").value.trim(),
-                path: byId("sPath").value.trim() || null,
-                browseable: byId("sBrowseable").checked,
-                subjects: subjectsPayload,
-                quota: {limit_gib: quotaRaw === "" || Number(quotaRaw) === 0 ? null : Number(quotaRaw)},
-                external_share: external,
-            };
+            const payload = {name: value.name || byId("sName").value.trim(), comment: byId("sComment").value.trim(), path: byId("sPath").value.trim() || null, browseable: byId("sBrowseable").checked, subjects: subjectsPayload, quota: {limit_gib: quotaRaw === "" || Number(quotaRaw) === 0 ? null : Number(quotaRaw)}, external_share: external};
+            setBusy(true);
             try {
-                if (creating) {
-                    await postJson("/api/v1/shares", payload);
-                    queueNotice("Создание сетевой шары поставлено в очередь.");
-                } else {
-                    await postJson(`/api/v1/shares/${encodeURIComponent(value.name)}/update`, payload);
-                    queueNotice(external ? "Изменение внешней SMB-шары поставлено в очередь." : "Изменение сетевой шары поставлено в очередь.");
-                }
-            } catch (error) {
-                setMessage(error.message, true);
-            }
+                if (creating) { await postJson("/api/v1/shares", payload); queueNotice("Создание сетевой шары поставлено в очередь."); }
+                else { await postJson(`/api/v1/shares/${encodeURIComponent(value.name)}/update`, payload); queueNotice(external ? "Изменение внешней SMB-шары поставлено в очередь." : "Изменение сетевой шары поставлено в очередь."); }
+            } catch (error) { setMessage(error.message, true); toast(error.message, "error"); }
+            finally { setBusy(false); }
         });
 
         if (!creating && !external) {
             byId("shareDelete").addEventListener("click", async () => {
+                if (state.busy) return;
                 const deleteData = Boolean(byId("deleteShareData") && byId("deleteShareData").checked);
                 const text = deleteData
-                    ? `Удалить шару ${value.name} И ВСЕ ДАННЫЕ каталога ${value.path}?`
-                    : `Удалить SMB-публикацию ${value.name}, сохранив каталог и данные?`;
-                if (!window.confirm(text)) return;
+                    ? `Удалить шару «${value.name}» и ВСЕ ДАННЫЕ каталога ${value.path}? Это действие необратимо.`
+                    : `Удалить SMB-публикацию «${value.name}», сохранив каталог и данные?`;
+                const options = deleteData
+                    ? {title: "Удаление публикации и данных", confirmLabel: "Удалить всё", danger: true, requireText: value.name}
+                    : {title: "Удаление SMB-публикации", confirmLabel: "Удалить публикацию", danger: true};
+                const approved = await confirmAction(text, options);
+                if (!approved) return;
+                setBusy(true);
                 try {
                     await postJson(`/api/v1/shares/${encodeURIComponent(value.name)}/delete`, {delete_data: deleteData});
                     state.selected = null;
                     queueNotice(deleteData ? "Удаление публикации и данных поставлено в очередь." : "Удаление публикации поставлено в очередь. Данные будут сохранены.");
-                } catch (error) {
-                    setMessage(error.message, true);
-                }
+                } catch (error) { setMessage(error.message, true); toast(error.message, "error"); }
+                finally { setBusy(false); }
             });
         }
     }
 
     async function load() {
+        if (state.busy) return;
         const auth = await api("/api/v1/auth/status");
         state.csrf = (auth.data && auth.data.csrf_token) || "";
-        const [shares, directory] = await Promise.all([
-            api("/api/v1/shares"),
-            api("/api/v1/shares/directory"),
-        ]);
+        const [shares, directory] = await Promise.all([api("/api/v1/shares"), api("/api/v1/shares/directory")]);
         state.data = shares.data || {};
         state.directory = directory.data || {users: [], groups: [], domain: null};
         byId("shareNew").disabled = !state.data.can_write;
         renderList();
     }
 
-    byId("shareSearch").addEventListener("input", (event) => {
-        state.search = event.target.value || "";
-        renderList();
-    });
-    byId("shareNew").addEventListener("click", () => {
-        state.selected = null;
-        renderList();
-        renderEditor(null, true);
-    });
+    byId("shareSearch").addEventListener("input", (event) => { state.search = event.target.value || ""; renderList(); });
+    byId("shareNew").addEventListener("click", () => { if (state.busy) return; state.selected = null; renderList(); renderEditor(null, true); });
 
+    setMessage("");
     load().catch((error) => setMessage(error.message || "Не удалось загрузить сетевые шары.", true));
-    window.setInterval(() => load().catch(() => {}), 30000);
+    window.setInterval(() => { if (!state.busy && document.visibilityState === "visible") load().catch(() => {}); }, 30000);
 })();
