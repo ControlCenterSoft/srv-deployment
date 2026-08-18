@@ -1,9 +1,9 @@
 (() => {
     "use strict";
 
-    const attemptNode = document.getElementById("githubLastUpdateAttempt");
+    const checkNode = document.getElementById("githubLastUpdateCheck");
     const successNode = document.getElementById("githubLastSuccessfulUpdate");
-    if (!attemptNode || !successNode) return;
+    if (!checkNode || !successNode) return;
 
     let timer = null;
 
@@ -37,14 +37,16 @@
             const status = github.status || {};
             const release = (healthPayload.data && healthPayload.data.release) || {};
 
+            // 2.0 separates discovery/check time from update-attempt time.
+            // checked_at remains a migration fallback for schema-2/early-schema-3 hosts.
+            const lastCheck = status.last_check_at || status.checked_at || null;
             const legacyUpdatedAt = status.result === "updated" ? status.checked_at : null;
-            // A pre-schema-3 successful installation was necessarily also an
-            // update attempt. release.synced_at therefore provides a stable
-            // migration fallback after later ordinary checks overwrite result.
-            const lastAttempt = status.last_update_attempt_at || legacyUpdatedAt || release.synced_at || null;
+            // Preserve a proven historical success if the old updater recorded one.
+            // release.synced_at is only the final migration fallback; the 2.0 updater
+            // writes last_successful_update_at after an accepted transaction.
             const lastSuccess = status.last_successful_update_at || legacyUpdatedAt || release.synced_at || null;
 
-            attemptNode.textContent = formatDate(lastAttempt);
+            checkNode.textContent = formatDate(lastCheck);
             successNode.textContent = formatDate(lastSuccess);
         } catch (_) {
             // The main system page owns global error reporting. Keep the last
