@@ -5,7 +5,22 @@ umask 027
 REPO_URL="${SRVCC_REPO_URL:-https://github.com/filosoff31/srv-deployment.git}"
 PROJECT="${1:-/opt/srv-control}"
 EXPECTED_RELEASE="2.0.0"
+STATE_PUBLISHER="/usr/local/sbin/srvcc-github-agent.state-publisher"
 TMP_ROOT="$(mktemp -d /var/tmp/control-center-2.0-bootstrap.XXXXXX)"
+
+OBSOLETE_UNPUBLISHED_BRANCHES=(
+    feature/1.3.0-github-update-timestamps
+    hotfix/1.3.0-external-share-editing
+    hotfix/1.3.0-external-share-editing-final
+    hotfix/1.3.0-external-share-editing-pr-placeholder
+    hotfix/1.3.0-samba-domain-performance
+    hotfix/1.3.0-samba-monitor-sandbox
+    hotfix/1.3.0-samba-sid
+    hotfix/1.3.0-share-create
+    hotfix/1.3.0-share-create-external-path
+    hotfix/1.3.0-state-repository
+    release/1.4.0
+)
 
 log(){ printf '%s %s\n' "$(date -Is)" "$*"; }
 fail(){ log "BOOTSTRAP FAIL: $*" >&2; exit 1; }
@@ -87,4 +102,33 @@ assert data.get('ok') is True, data
 print('BOOTSTRAP HEALTH PASS')
 PY
 
-log "BOOTSTRAP PASS: Control Center 2.0.0 installed; updater timer enabled and verified"
+# Publish the accepted real-server state before repository cleanup. A successful
+# publisher return means GitHub now has a fresh server-state created from the
+# installed 2.0.0 release.
+[[ -x "$STATE_PUBLISHER" ]] || fail "2.x state publisher is unavailable after deployment"
+log "Publishing accepted 2.0.0 server-state"
+"$STATE_PUBLISHER"
+
+# Obsolete development branches are deleted only after all real-server gates
+# above pass. Each branch must also be an ancestor of main; otherwise it is kept
+# and the bootstrap stops rather than discarding unmerged history. Published
+# release branches 1.1/1.2/1.3.x are intentionally not listed here.
+log "Fetching full branch ancestry for safe 1.x cleanup"
+git -C "$TMP_ROOT/repo" fetch --quiet --unshallow origin || true
+git -C "$TMP_ROOT/repo" fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
+MAIN_REF="$(git -C "$TMP_ROOT/repo" rev-parse refs/remotes/origin/main)"
+
+for branch in "${OBSOLETE_UNPUBLISHED_BRANCHES[@]}"; do
+    remote_ref="refs/remotes/origin/${branch}"
+    if ! git -C "$TMP_ROOT/repo" show-ref --verify --quiet "$remote_ref"; then
+        log "BRANCH CLEANUP SKIP: ${branch} is already absent"
+        continue
+    fi
+    if ! git -C "$TMP_ROOT/repo" merge-base --is-ancestor "$remote_ref" "$MAIN_REF"; then
+        fail "refusing to delete ${branch}: branch history is not fully contained in main"
+    fi
+    log "Deleting obsolete unpublished branch ${branch}"
+    git -C "$TMP_ROOT/repo" push --quiet origin --delete "$branch"
+done
+
+log "BOOTSTRAP PASS: Control Center 2.0.0 installed; updater verified; server-state published; safe unpublished 1.x branches cleaned"
