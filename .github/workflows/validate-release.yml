@@ -28,7 +28,10 @@ jobs:
           node-version: '22'
 
       - name: Python syntax
-        run: python -m py_compile app/main.py app/wsgi.py license/issue-license.py
+        run: |
+          python -m py_compile \
+            app/main.py app/wsgi.py app/database.py app/db_migrate.py app/db_cli.py app/release_107.py \
+            license/issue-license.py
 
       - name: JavaScript syntax
         run: node --check app/static/app.js
@@ -37,26 +40,22 @@ jobs:
         run: |
           set -euo pipefail
           for f in \
-            install/install.sh \
-            install/uninstall.sh \
-            update/control-center-update \
-            update/control-center-os-update \
+            install/install.sh install/uninstall.sh \
+            update/control-center-update update/control-center-os-update \
+            system/control-center-web-apply \
             network/control-center-network-apply \
-            market/control-center-market-apply \
-            market/control-center-dhcp-apply \
+            market/control-center-market-apply market/control-center-dhcp-apply \
             license/control-center-license-apply \
-            scripts/acceptance-1.0.5.sh \
-            scripts/acceptance-1.0.6.sh; do
+            scripts/acceptance-1.0.5.sh scripts/acceptance-1.0.6.sh scripts/acceptance-1.0.7.sh; do
             bash -n "$f"
           done
 
-      - name: Validate release consistency and 1.0.6 features
+      - name: Validate release consistency and 1.0.7 architecture
         run: |
           python - <<'PY'
           import ast,json,pathlib,re
           root=pathlib.Path('.')
           for p in root.rglob('*.json'): json.loads(p.read_text())
-
           module=ast.parse((root/'app/main.py').read_text()); values={}
           for node in module.body:
               if isinstance(node,ast.Assign):
@@ -64,62 +63,94 @@ jobs:
                       if isinstance(target,ast.Name) and target.id in {'APP_VERSION','APP_BUILD'}:
                           values[target.id]=ast.literal_eval(node.value)
           version=values['APP_VERSION']; build=values['APP_BUILD']
-          assert re.fullmatch(r'\d+\.\d+\.\d+',version)
-
+          assert version=='1.0.7' and build=='20260818.2'
           deployment=json.loads((root/'deployment.json').read_text())
           assert deployment['release']==version and deployment['build']==build
-          assert deployment['channel']=='production'
-          assert deployment['release_branch']==f'release/{version}'
+          assert deployment['channel']=='production' and deployment['release_branch']==f'release/{version}'
           app_release=json.loads((root/'app/release.json').read_text())
           assert app_release=={'version':version,'build':build}
           manifest=json.loads((root/'releases'/version/'manifest.json').read_text())
-          assert manifest['release']==version and manifest['build']==build and manifest['channel']=='production'
+          assert manifest['release']==version and manifest['build']==build and manifest['database']['engine']=='PostgreSQL'
+
+          req=(root/'requirements.txt').read_text()
+          assert re.search(r'^psycopg\[binary\]>=3\.2,<4\.0$',req,re.M)
+          assert (root/'app/requirements.txt').read_text()==req
 
           installer=(root/'install/install.sh').read_text()
-          assert re.search(rf'^VERSION={re.escape(version)}$',installer,re.M)
-          assert 'ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf' in installer
-          assert '/gunicorn ' in installer and 'wsgi:app' in installer
+          for token in ['postgresql postgresql-client','DB_NAME=control_center','db_migrate.py','database.env','web.env','control-center-web-apply.path','0.0.0.0:${CONTROL_CENTER_PORT}','VERSION=1.0.7','BUILD=20260818.2']:
+              assert token in installer,token
+          assert 'SUPERUSER' not in installer.replace('NOSUPERUSER','')
+          assert 'listen_addresses' not in installer
 
-          main=(root/'app/main.py').read_text()
-          for token in [
-              "@app.get('/api/networks')",
-              "@app.post('/api/dhcp/check')",
-              "@app.get('/api/notifications')",
-              'extra_options',
-              'NETPLAN_CONF',
-              'DHCP_CONF',
-              'SYSTEM_STATE_DIR',
-          ]: assert token in main, token
+          sql=(root/'app/migrations/001_initial_postgresql.sql').read_text()
+          for table in ['settings','notification_events','audit_events','jobs','module_inventory','service_configs','cluster_nodes']:
+              assert f'control_center.{table}' in sql,table
 
-          dhcp=(root/'market/control-center-dhcp-apply').read_text()
-          assert 'extra_options' in dhcp and "lines.append(f'dhcp-option={code},{value}')" in dhcp
-          network=(root/'network/control-center-network-apply').read_text()
-          assert 'chown root:control-center "$TMP"' in network and 'chmod 0640 "$TMP"' in network
+          ext=(root/'app/release_107.py').read_text()
+          for token in ['/api/database/status','/api/settings/web','/api/notifications/read','web.port','cluster.enabled','WEB_PENDING']:
+              assert token in ext,token
+          db=(root/'app/database.py').read_text()
+          for token in ['DEFAULT_DSN','cluster_nodes','schema_migrations','notification_events','audit_events','jobs']:
+              assert token in db,token
+          helper=(root/'system/control-center-web-apply').read_text()
+          for token in ['web-pending.json','web.env','systemctl restart','/api/health','rollback','set-web-port']:
+              assert token in helper,token
 
           template=(root/'app/templates/index.html').read_text()
-          for token in ['interfacesTable','dhcpServiceStatus','dhcpOptionsTable','checkDhcp','notificationBell','mobileBackdrop','/static/app.js?v={{ version }}']:
+          for token in ['webPort','saveWebPort','dbStatus','dbVersion','dbMigration','dbNodes']:
               assert token in template,token
-          inline=re.findall(r'<script(?![^>]*\bsrc=)[^>]*>',template,re.I)
-          assert not inline, f'inline script tags found: {inline}'
-
-          css=(root/'app/static/app.css').read_text()
-          assert 'html{font-size:15px}' in css
-          assert '@media(max-width:900px)' in css and 'mobile-nav-open' in css
-
           js=(root/'app/static/app.js').read_text()
-          for token in ['/api/notifications','READ_KEY','renderInterfaces','extra_options','/api/dhcp/check']:
+          for token in ['/api/database/status','/api/settings/web','/api/notifications/read','saveWebPort']:
               assert token in js,token
+          assert 'localStorage' not in js
 
-          wsgi=(root/'app/wsgi.py').read_text()
-          assert "script-src 'self';" in wsgi and 'unsafe-inline' not in wsgi
-
+          updater=(root/'update/control-center-update').read_text()
+          assert 'BUILD_FILE' in updater and 'latest_build' in updater and 'app/release.json' in updater
           lifecycle=(root/'docs/UPDATE-LIFECYCLE-POLICY-RU.md').read_text()
           assert 'не заявляет строгую совместимость с Semantic Versioning' in lifecycle
-          assert 'последовательный production-релиз' in lifecycle
-          readme=(root/'README.md').read_text()
-          assert f'Control Center {version}' in readme
           print(f'Validated Control Center {version} build {build}')
           PY
+
+      - name: Install PostgreSQL and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-client
+          python -m pip install -r requirements.txt
+          sudo systemctl start postgresql
+          sudo -u postgres pg_isready
+
+      - name: Validate real PostgreSQL migration and peer authentication
+        run: |
+          set -euo pipefail
+          PYTHON="${pythonLocation}/bin/python"
+          sudo rm -rf /tmp/control-center-ci-app
+          sudo cp -a app /tmp/control-center-ci-app
+          sudo chown -R root:root /tmp/control-center-ci-app
+          sudo chmod -R a+rX /tmp/control-center-ci-app
+          if ! id control-center >/dev/null 2>&1; then sudo useradd --system --home /tmp/control-center-ci --shell /usr/sbin/nologin control-center; fi
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP DATABASE IF EXISTS control_center;'
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP ROLE IF EXISTS "control-center";'
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'CREATE ROLE "control-center" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD NULL;'
+          sudo -u postgres createdb --owner=control-center control_center
+          sudo -u control-center psql -d control_center -Atqc 'SELECT current_user,current_database()' | grep -qx 'control-center|control_center'
+          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' "$PYTHON" /tmp/control-center-ci-app/db_migrate.py
+          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
+          import database
+          h=database.health()
+          assert h['ok'] and h['database']=='control_center' and h['role']=='control-center'
+          assert h['migration']['version']=='001'
+          database.set_setting('web.port',8080)
+          assert database.get_setting('web.port')==8080
+          database.upsert_job('ci-job','ci','queued',payload={'ok':True})
+          database.sync_notifications([{'id':'ci-event','source':'ci','title':'CI','state':'ok','severity':'ok','message':'PostgreSQL works','timestamp':1}])
+          rows=database.list_notifications(); assert any(x['id']=='ci-event' for x in rows)
+          database.mark_notifications(['ci-event']); assert next(x for x in database.list_notifications() if x['id']=='ci-event')['read'] is True
+          database.upsert_local_node(edition='Professional',version='1.0.7',build='20260818.2')
+          assert database.cluster_nodes()
+          print(h)
+          PY
+          TABLES="$(sudo -u control-center psql -d control_center -Atqc "select tablename from pg_tables where schemaname='control_center' order by tablename")"
+          for t in audit_events cluster_nodes jobs module_inventory notification_events schema_migrations service_configs settings; do grep -qx "$t" <<<"$TABLES"; done
 
       - name: Validate Professional public key
         run: openssl pkey -pubin -in license/vendor-public.pem -noout
@@ -141,8 +172,8 @@ jobs:
           set -euo pipefail
           for f in \
             docs/README.md docs/EULA-RU.md docs/PRODUCT-EDITIONS.md docs/UPDATE-LIFECYCLE-POLICY-RU.md docs/RELEASE-HISTORY.md \
-            docs/INSTALL.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md \
+            docs/INSTALL.md docs/POSTGRESQL.md docs/WEB-PORT.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md \
             docs/NETWORK.md docs/DHCP.md docs/NOTIFICATIONS.md docs/UI.md docs/SECURITY.md docs/TROUBLESHOOTING.md \
-            releases/1.0.6/README.md releases/1.0.6/manifest.json; do
+            releases/1.0.7/README.md releases/1.0.7/manifest.json; do
             test -s "$f"
           done

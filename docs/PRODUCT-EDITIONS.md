@@ -19,7 +19,7 @@ Home — редакция по умолчанию, не требующая ак�
 
 Professional — активируемая редакция для коммерческого использования и конфигураций, выходящих за пределы Home. Стоимость и индивидуальные entitlements определяются предложением/договором; запрос стоимости: **8 (910) 220-00-02**.
 
-В текущей технической реализации Professional подтверждается RSA/SHA-256 подписанной лицензией, привязанной к `device_id` сервера.
+Professional подтверждается RSA/SHA-256 подписанной лицензией, привязанной к `device_id` сервера.
 
 ## Единая кодовая база
 
@@ -30,20 +30,40 @@ Home          — лицензия Professional отсутствует или н
 Professional  — валидная подписанная лицензия для текущего device_id
 ```
 
-## Текущее состояние 1.0.6
+## Состояние 1.0.7
 
-В 1.0.6 реализованы:
+В 1.0.7 реализованы:
 
-- отображение текущей редакции;
-- device ID;
-- выпуск и проверка подписанной Professional-лицензии;
-- защищённое хранение подтверждённой лицензии;
-- отображение license status в общем центре уведомлений.
+- отображение текущей редакции и device ID;
+- выпуск и проверка Professional-лицензии;
+- защищённое хранение лицензии;
+- PostgreSQL как базовый application data layer;
+- audit/jobs/notifications/settings/module/service data в PostgreSQL;
+- `cluster_nodes` и заменяемый runtime DSN как **архитектурная подготовка** к будущему Professional Cluster.
 
-Наличие редакции Professional не отменяет ограничения безопасности административного Web UI. До появления встроенной Web-аутентификации TCP/8080 должен оставаться доступным только из доверенной административной сети/VPN/firewall.
+## Professional Cluster — следующий этап
+
+Кластерный функционал **ещё не является доступной функцией 1.0.7**. В текущем релизе локальный сервер регистрируется как `standalone` node, а PostgreSQL работает локально через Unix socket.
+
+Будущий Professional Cluster предполагается развивать поверх подготовленной модели данных с отдельными механизмами:
+
+- cluster enrollment;
+- node identity и роли;
+- безопасный межузловой transport/TLS;
+- topology/quorum;
+- replication/failover;
+- cluster-wide tasks/audit;
+- backup/restore и split-brain protection.
+
+Нельзя считать ручное направление `CONTROL_CENTER_DB_DSN` на удалённый PostgreSQL поддерживаемым кластерным режимом до выпуска соответствующей Professional-функции.
+
+## Безопасность Web UI
+
+Наличие Professional или PostgreSQL не отменяет ограничения административного Web UI. Встроенная Web-аутентификация пока отсутствует; административный порт должен оставаться доступным только из доверенной сети/VPN/firewall.
 
 ## Связанные документы
 
 - [EULA-RU.md](EULA-RU.md)
 - [LICENSING.md](LICENSING.md)
+- [POSTGRESQL.md](POSTGRESQL.md)
 - [UPDATE-LIFECYCLE-POLICY-RU.md](UPDATE-LIFECYCLE-POLICY-RU.md)

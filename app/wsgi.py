@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from flask import abort, request
 import main
+import release_107
 
 app = main.app
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
@@ -31,6 +32,7 @@ def atomic_write_json(path, data):
 
 
 main._write_json = atomic_write_json
+release_107.register(app, main)
 
 
 @app.before_request

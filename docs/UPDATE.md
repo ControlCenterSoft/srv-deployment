@@ -1,85 +1,92 @@
-# Обновление Control Center 1.0.6
+# Обновление Control Center 1.0.7
 
 ## Архитектура
 
-Web UI не запускает root-команды. Раздел **Настройки** хранит разрешённые параметры в `/var/lib/control-center/update-settings.json`. Проверку и установку выполняет `control-center-update.service`, запускаемый `control-center-update.timer`.
+Web UI не запускает installer от root. Проверку и установку выполняет `control-center-update.service`, запускаемый `control-center-update.timer`.
 
-Результат worker хранится в защищённом state:
+Настройки хранятся в PostgreSQL `control_center.settings`; compatibility mirror `/var/lib/control-center/update-settings.json` остаётся для root updater.
+
+Результат worker:
 
 ```text
 /var/lib/control-center-system/update-status.json
 ```
 
-Rollback приложения:
+Rollback directory:
 
 ```text
-/var/lib/control-center-root/rollback-<version>-<timestamp>/
+/var/lib/control-center-root/rollback-<version>-<build>-<timestamp>/
 ```
+
+Он может содержать application payload, systemd unit, `web.env`, `database.env` и PostgreSQL `pg_dump`.
+
+## Version + build
+
+Updater сравнивает и `release`, и `build`. Обновление требуется, если remote version выше либо version совпадает, но build отличается от `/opt/control-center/BUILD`.
+
+Payload проверяется по `app/release.json` и `APP_VERSION` в `app/main.py`.
+
+## PostgreSQL migrations
+
+Installer запускает `app/db_migrate.py`. Migration выполняется транзакционно и регистрируется в `control_center.schema_migrations` вместе с SHA-256 checksum. Изменение уже применённого migration под прежним номером запрещено checksum-контролем.
+
+## PostgreSQL rollback
+
+Если перед обновлением БД `control_center` уже существует, updater **до запуска installer** создаёт:
+
+```text
+control-center-db.dump
+```
+
+формата `pg_dump -Fc` внутри root-only rollback directory.
+
+Если installer нового релиза завершается ошибкой, updater:
+
+1. останавливает новый Web runtime;
+2. восстанавливает предыдущий application payload/systemd unit/Web env;
+3. завершает соединения с изменённой БД;
+4. пересоздаёт `control_center` с владельцем `control-center`;
+5. выполняет `pg_restore` предыдущего dump;
+6. запускает прежний Control Center.
+
+Если PostgreSQL до обновления вообще не существовал, а неудачный installer создал БД/роль впервые, rollback удаляет созданную БД и, когда это была новая роль, роль `control-center`, возвращая состояние ближе к исходной 1.0.6.
+
+Невозможность создать `pg_dump` **блокирует обновление до запуска installer** — обновление без DB backup не продолжается.
+
+## Сохранение Web-порта
+
+Updater/installer сохраняют `/etc/control-center/web.env`, поэтому выбранный порт сохраняется между релизами. При rollback возвращается прежний `web.env`.
+
+## Алгоритм
+
+1. Получить production `deployment.json`.
+2. Проверить `channel`, `release`, `build`, `release_branch`.
+3. Сравнить remote version/build с текущими VERSION/BUILD.
+4. Клонировать точно указанную release branch.
+5. Проверить payload metadata.
+6. Создать root-only application backup и PostgreSQL dump, если БД уже существует.
+7. Запустить installer.
+8. Installer проверяет PostgreSQL, применяет migrations и запускает Web service на сохранённом порту.
+9. Installer проверяет `/api/health` и `/api/database/status`.
+10. При ошибке восстановить приложение, Web config и PostgreSQL state.
 
 ## Настройки
 
-- автоматическое обновление on/off;
-- интервал 5–10080 минут;
-- production channel;
-- ручная проверка доступного релиза.
-
-```json
-{
-  "automatic_updates": true,
-  "interval_minutes": 60,
-  "channel": "production"
-}
-```
-
-Timer запускает лёгкий worker раз в минуту, но обращение к metadata выполняется только после истечения выбранного интервала.
-
-## Metadata 1.0.6
-
-`deployment.json` содержит и семантическую версию, и идентификатор сборки:
-
-```json
-{
-  "release": "1.0.6",
-  "build": "20260818.1",
-  "channel": "production",
-  "release_branch": "release/1.0.6"
-}
-```
-
-Текущий updater принимает решение о переходе между релизами по semver `release`; `build` отображается в UI/API для точной идентификации установленной сборки.
-
-## Алгоритм обновления
-
-1. Получить production `deployment.json` из `main`.
-2. Проверить канал и формат версии.
-3. Сравнить `release` с `/opt/control-center/VERSION` через `dpkg --compare-versions`.
-4. Клонировать `release/<version>`.
-5. Проверить обязательные payload-файлы.
-6. Сверить `APP_VERSION` с metadata.
-7. Создать root-only rollback-копию.
-8. Запустить installer нового релиза.
-9. Installer выполняет health-check и проверяет, что API сообщает ожидаемую версию.
-10. При ошибке восстановить предыдущие приложение и systemd unit.
-
-## Переход 1.0.5 → 1.0.6
-
-1.0.6 создана непосредственно от аудированной `release/1.0.5`, поэтому сохраняет protected-state, licensing, DHCP ownership/runtime и rollback архитектуру 1.0.5.
-
-После обновления существующие применённые сетевые и DHCP параметры сохраняются и дополнительно считываются из фактических Control Center-managed Netplan/dnsmasq файлов.
+- automatic update on/off;
+- interval 5–10080 минут;
+- production channel.
 
 ## Диагностика
 
 ```bash
 systemctl status control-center-update.timer --no-pager
-systemctl status control-center-update.service --no-pager
 journalctl -u control-center-update.service -n 200 --no-pager
-cat /var/lib/control-center/update-settings.json
-sudo cat /var/lib/control-center-system/update-status.json
 cat /opt/control-center/VERSION
-curl -fsS http://127.0.0.1:8080/api/health | python3 -m json.tool
-sudo ls -ld /var/lib/control-center-root/rollback-* 2>/dev/null || true
+cat /opt/control-center/BUILD
+sudo -u control-center psql -d control_center -c 'select * from control_center.schema_migrations order by version;'
+sudo find /var/lib/control-center-root -maxdepth 2 -name 'control-center-db.dump' -ls
 ```
 
 ## Важно
 
-Обновление Control Center и обновление системных пакетов — независимые механизмы. Обновление ОС/пакетов описано в `docs/OS_UPDATES.md`.
+Control Center updater и OS/package updater — независимые механизмы. Автоматический major PostgreSQL server upgrade между несовместимыми PostgreSQL major versions в 1.0.7 отдельно не реализован.

@@ -115,10 +115,12 @@
       </section>
 
       <section id="settings" class="panel">
-        <div class="page-head"><div><h1>Настройки</h1><p>Редакция, лицензия и обновления</p></div></div>
+        <div class="page-head"><div><h1>Настройки</h1><p>Редакция, PostgreSQL, Web-панель и обновления</p></div></div>
         <div class="two-col">
           <article class="section-card form-card"><h3>Редакция Control Center</h3><div class="detail-list"><div><span>Текущая редакция</span><b id="licenseEdition">Home</b></div><div><span>Версия</span><b>{{ version }}</b></div><div><span>Сборка</span><b>{{ build }}</b></div><div><span>ID устройства</span><b id="deviceId">—</b></div><div><span>Лицензия</span><b id="licenseId">Не активирована</b></div></div><h3>Активация Professional</h3><label>Payload<input id="licensePayload" placeholder="Код payload" autocomplete="off"></label><label>Signature<input id="licenseSignature" placeholder="Подпись" autocomplete="off"></label><button class="primary" id="activateProfessional">Активировать Professional</button><span class="inline-message" id="licenseMessage"></span></article>
           <article class="section-card form-card"><h3>Обновления Control Center</h3><label class="switch-row">Автоматические обновления <input id="autoUpdates" type="checkbox"></label><label>Интервал проверки, минут<input id="updateInterval" type="number" min="5" max="10080" value="60"></label><div class="button-row"><button class="primary" id="saveSettings">Сохранить</button><button class="secondary" id="checkUpdate">Проверить обновление</button></div><span class="inline-message" id="settingsMessage"></span><hr><h3>Обновления ОС и пакетов</h3><label class="switch-row">Автоматически <input id="autoOsUpdates" type="checkbox"></label><label>Интервал, минут<input id="osUpdateInterval" type="number" min="60" max="10080" value="1440"></label><div class="button-row"><button class="primary" id="saveOsUpdates">Сохранить</button><button class="secondary" id="runOsUpdate">Обновить сейчас</button></div><span class="inline-message" id="osUpdateMessage"></span></article>
+          <article class="section-card form-card"><div class="card-title-row"><h3>Web-панель</h3><span class="status-pill compact" id="webPortStatus">—</span></div><div class="detail-list"><div><span>Текущий порт</span><b id="webRuntimePort">—</b></div><div><span>Сохранённый порт</span><b id="webSavedPort">—</b></div></div><label>Порт Control Center<input id="webPort" type="number" min="1024" max="65535" value="8080"></label><p class="section-description">После изменения Gunicorn будет перезапущен. Текущее соединение с Web UI может прерваться; затем откройте панель на новом порту.</p><button class="primary" id="saveWebPort">Применить порт</button><span class="inline-message" id="webPortMessage"></span></article>
+          <article class="section-card"><div class="card-title-row"><h3>PostgreSQL</h3><span class="status-pill compact" id="dbStatus">—</span></div><div class="detail-list"><div><span>Сервер</span><b id="dbVersion">—</b></div><div><span>База</span><b id="dbName">—</b></div><div><span>Роль</span><b id="dbRole">—</b></div><div><span>Схема</span><b id="dbSchema">—</b></div><div><span>Migration</span><b id="dbMigration">—</b></div><div><span>Узлы</span><b id="dbNodes">—</b></div><div><span>Режим</span><b id="dbMode">—</b></div></div><p class="section-description">Локальная БД работает через Unix socket. Схема 1.0.7 уже содержит модель узлов для будущего Professional Cluster; удалённый PostgreSQL в этом релизе автоматически не открывается.</p></article>
         </div>
       </section>
     </div>
@@ -126,7 +128,7 @@
 </div>
 
 <aside class="notification-drawer" id="notificationDrawer" aria-hidden="true">
-  <div class="notification-head"><div><h2>Уведомления</h2><p>Сеть, сервисы, задания и обновления</p></div><button id="closeNotifications" class="icon-button" type="button" aria-label="Закрыть">×</button></div>
+  <div class="notification-head"><div><h2>Уведомления</h2><p>Сеть, сервисы, задания и обновления · PostgreSQL</p></div><button id="closeNotifications" class="icon-button" type="button" aria-label="Закрыть">×</button></div>
   <div class="notification-actions"><button class="secondary" id="markNotificationsRead">Отметить все прочитанными</button></div>
   <div id="notificationList" class="notification-list"></div>
 </aside>

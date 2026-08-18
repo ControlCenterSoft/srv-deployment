@@ -1,89 +1,114 @@
-# Control Center 1.0.6
+# Control Center 1.0.7
 
-Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.6**.
+Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.7**, build **20260818.2**.
 
 ## Редакции
 
 - **Home** — редакция по умолчанию, без активации.
-- **Professional** — активируемая RSA/SHA-256 подписанной лицензией, привязанной к ID сервера.
+- **Professional** — активируемая подписанной лицензией; архитектура 1.0.7 подготовлена к будущей кластерной редакции Professional.
 
-## Возможности 1.0.6
+## Что нового в 1.0.7
 
-- Система: CPU/RAM-графики, Top-3 процессов, хранилища, WAN RX/TX;
-- Сети: WAN/LAN и **полный перечень интерфейсов** с ролью, типом, состоянием, IPv4, шлюзом, DNS, MAC, MTU и скоростью;
-- загрузка уже применённых WAN/LAN параметров из protected state и фактического Control Center Netplan;
-- Маркет: установка/удаление DHCP Server;
-- DHCP: загрузка существующей конфигурации из protected state и `control-center-dhcp.conf`;
-- DHCP additional options: код 1–254 + значение, просмотр, добавление и удаление;
-- статус `control-center-dhcp-server.service` и проверка `dnsmasq --test` из Web UI;
-- RBAC: просмотр локальных Linux-пользователей и групп;
-- общий **центр уведомлений**: сеть, Маркет, DHCP, лицензия, обновления Control Center и ОС;
-- колокольчик: непрочитанная ошибка — красный, непрочитанные события без ошибок — зелёный, всё прочитано — нейтральный;
-- увеличенная типографика и семантические SVG-ярлычки меню;
-- полностью переработанная мобильная верстка с off-canvas sidebar;
-- обновление Control Center и отдельное обновление ОС/пакетов;
-- production Gunicorn WSGI, CSP без `unsafe-inline`.
+- **PostgreSQL** стал базовым application data layer Control Center;
+- автоматическая установка локального PostgreSQL, БД `control_center` и роли `control-center`;
+- локальное соединение через Unix socket и peer authentication, без пароля БД в приложении;
+- versioned SQL migrations с checksum-контролем;
+- PostgreSQL tables для settings, notifications/read state, audit, jobs, module inventory, service configs и будущих cluster nodes;
+- центр уведомлений хранит read/unread на сервере, а не в browser localStorage;
+- настройки обновления Control Center и ОС сохраняются в PostgreSQL, с compatibility mirror для существующих root workers;
+- API и карточка состояния PostgreSQL;
+- **Настройки → Web-панель**: изменение TCP-порта Control Center от 1024 до 65535;
+- root-helper смены порта: проверка, restart Gunicorn, health-check и rollback;
+- выбранный Web-порт сохраняется при обновлениях;
+- updater стал version/build-aware.
 
-## Источники параметров
+Все функции 1.0.6 сохранены: dashboard, полный перечень интерфейсов, WAN/LAN, DHCP с дополнительными options/status/config check, Market, RBAC, notification bell, мобильная верстка и Home/Professional.
 
-Control Center 1.0.6 различает запросы Web UI и фактически применённое состояние:
+## Роль PostgreSQL
 
-```text
-/var/lib/control-center          # настройки и pending requests
-/var/lib/control-center-system   # applied config/status/module ownership
-/var/lib/control-center-root     # root-only rollback
-/var/lib/control-center-license  # подтверждённая Professional license
-```
-
-Дополнительно Web UI только читает:
+PostgreSQL хранит **данные приложения и управления**, но не подменяет фактическое состояние Linux:
 
 ```text
-/etc/netplan/90-control-center.yaml
-/etc/dnsmasq.d/control-center-dhcp.conf
-/sys/class/net
-ip / resolvectl / systemctl
+PostgreSQL                    -> settings, notifications, audit, jobs, modules, service configs, cluster nodes
+Netplan                       -> фактическая конфигурация сети
+systemd                       -> фактическое состояние служб
+/etc/dnsmasq.d/...            -> фактическая DHCP-конфигурация
+/proc, /sys, ip, resolvectl   -> live telemetry
 ```
 
-Это позволяет после перезапуска или обновления показывать не пустые формы, а уже применённые параметры и live-состояние.
+Локальная БД:
 
-## DHCP additional options
+```text
+database: control_center
+schema:   control_center
+role:     control-center
+socket:   /var/run/postgresql
+```
 
-Основные поля управляют стандартными параметрами сети. Дополнительные numeric DHCP options можно добавлять отдельно. Options `1`, `3`, `6`, `51` зарезервированы за основными полями Control Center и не допускаются в дополнительном списке.
+Control Center 1.0.7 **не включает PostgreSQL TCP listener для внешней сети** и не реализует межузловую репликацию. Таблица `cluster_nodes` и заменяемый `CONTROL_CENTER_DB_DSN` — задел для следующего этапа Professional Cluster, а не заявление о готовом кластере.
+
+## Схема PostgreSQL
+
+```text
+control_center.schema_migrations
+control_center.settings
+control_center.notification_events
+control_center.audit_events
+control_center.jobs
+control_center.module_inventory
+control_center.service_configs
+control_center.cluster_nodes
+```
+
+## Web-порт
+
+По умолчанию Web UI работает на `8080`. В **Настройки → Web-панель** можно задать порт `1024–65535`.
+
+Применение выполняется через:
+
+```text
+/api/settings/web
+/var/lib/control-center/web-pending.json
+control-center-web-apply.path
+control-center-web-apply.service
+/usr/local/sbin/control-center-web-apply
+/etc/control-center/web.env
+```
+
+Helper проверяет доступность порта, перезапускает Gunicorn, делает health-check нового адреса и возвращает предыдущий порт при неудаче.
 
 ## Установка
 
 ```bash
-git clone --depth 1 --branch release/1.0.6 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.7 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Web UI:
-
-```text
-http://SERVER_IP:8080
-```
+Установщик сам установит PostgreSQL, создаст приложение/БД, применит SQL migrations и сохранит текущий Web-порт при обновлении существующей установки.
 
 ## Acceptance
 
 ```bash
-sudo bash scripts/acceptance-1.0.6.sh
+sudo bash scripts/acceptance-1.0.7.sh
 ```
 
-Проверяются API/version/build, Gunicorn/CSP, network inventory, protected state, Netplan, notification API и DHCP status/config check при установленном модуле.
+Проверяются PostgreSQL, peer connection, schema migration, API database status, версия/build, Web-port configuration, systemd helpers и существующие network/DHCP компоненты.
 
 ## Документация
 
 - `docs/README.md` — индекс;
+- `docs/POSTGRESQL.md` — архитектура PostgreSQL и подготовка к кластеру;
+- `docs/WEB-PORT.md` — безопасная смена порта Web UI;
 - `docs/INSTALL.md` — установка/обновление/удаление;
-- `docs/NETWORK.md` — WAN/LAN и перечень интерфейсов;
-- `docs/DHCP.md` — DHCP, additional options, status и config check;
-- `docs/NOTIFICATIONS.md` — центр уведомлений;
-- `docs/UI.md` — типографика, меню и мобильная верстка;
-- `docs/SECURITY.md` — модель доверия и ограничения;
+- `docs/UPDATE.md` — updater;
+- `docs/NETWORK.md` — WAN/LAN;
+- `docs/DHCP.md` — DHCP;
+- `docs/NOTIFICATIONS.md` — уведомления;
+- `docs/SECURITY.md` — trust boundaries;
 - `docs/TROUBLESHOOTING.md` — диагностика;
-- `releases/1.0.6/README.md` — release notes.
+- `releases/1.0.7/README.md` — release notes.
 
-## Ограничение безопасности
+## Важное ограничение безопасности
 
-В 1.0.6 ещё нет полноценной встроенной аутентификации Web UI. TCP/8080 необходимо ограничивать доверенной административной LAN/VPN/firewall и не публиковать напрямую в Интернет.
+Встроенная Web-аутентификация ещё не реализована. Независимо от выбранного Web-порта административную панель необходимо ограничивать доверенной LAN/VPN/firewall и не публиковать напрямую в Интернет.

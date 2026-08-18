@@ -2,6 +2,18 @@
 
 Авторитетное production-состояние определяется `../deployment.json`; подробности каждого релиза — каталогом `../releases/<version>/`.
 
+## 1.0.7 — 18.08.2026
+
+- PostgreSQL стал базовым application data layer;
+- локальная БД `control_center`, непривилегированная роль `control-center`, Unix socket + peer authentication;
+- versioned SQL migrations с checksum-контролем;
+- settings, notifications/read state, audit, jobs, module inventory и service configs в PostgreSQL;
+- `cluster_nodes` как архитектурный задел будущего Professional Cluster без заявления о готовом HA/replication runtime;
+- настройка TCP-порта Web UI из панели;
+- privileged Web-port apply с restart/health-check/rollback;
+- серверная прочитанность уведомлений;
+- version/build-aware updater.
+
 ## 1.0.6 — 18.08.2026
 
 - возвращён полный перечень сетевых интерфейсов;
@@ -9,7 +21,7 @@
 - увеличена типографика и добавлены семантические SVG-иконки меню;
 - полностью переработана мобильная верстка;
 - DHCP: дополнительные numeric options, service status и config check;
-- общий центр уведомлений с read/unread состоянием;
+- общий центр уведомлений;
 - CSP без `unsafe-inline`.
 
 ## 1.0.5 — 18.08.2026
