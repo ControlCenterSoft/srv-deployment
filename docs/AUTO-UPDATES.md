@@ -1,8 +1,8 @@
 # Обновления Control Center с GitHub
 
-Control Center использует `main` репозитория как единственный production-канал. Updater сравнивает **product release fingerprint**, а не просто SHA последнего commit.
+Control Center использует `main` как production-канал. Активный production release определяется `deployment.json`; сейчас это **2.0.0**.
 
-Активный release определяется `deployment.json`. На момент этой редакции production pointer указывает на 1.3.8, но инструкция намеренно не зависит от жёстко зашитого номера версии.
+Updater 2.0.0 сравнивает **product/release fingerprint**, а не просто SHA последнего commit, и разделяет проверку обновления и применение release.
 
 ## Настройка
 
@@ -39,62 +39,63 @@ sudo /usr/local/sbin/srvcc-github-agent check --actor root
 sudo /usr/local/sbin/srvcc-github-agent apply --actor root
 ```
 
-`check` выполняет fetch `origin/main`, читает `deployment.json`, вычисляет fingerprint активного release и обновляет `github-update-status.json`. Приложение и system state не изменяются.
+`check` получает `origin/main`, читает `deployment.json`, вычисляет fingerprint active release и обновляет updater status без изменения application state.
 
-`apply` повторяет проверку и запускает deployment только когда активный product release отличается от принятого установленного fingerprint. В automatic mode systemd timer запускает `apply --actor system`.
+`apply` запускает deployment только когда active product release отличается от принятого установленного fingerprint. В automatic mode systemd timer запускает apply через managed updater runtime.
 
-## Product fingerprint
+## Product fingerprint и состояние 2.0
 
-Fingerprint формируется из release identity и Git-объектов активного product release, включая:
+Fingerprint привязан к release identity и Git-объектам активного product release. Documentation-only commit вне active release tree не должен вызывать повторный apply.
 
-- `release_id`;
-- `release_version`;
-- blob `deployment.json`;
-- Git tree активного `release_path`.
-
-Состояние updater хранится отдельно от application payload, включая:
+2.0.0 хранит отдельное состояние принятого/неуспешного release, включая файлы класса:
 
 ```text
-/var/lib/srvcc-agent/last-deployed-sha
-/var/lib/srvcc-agent/last-seen-sha
+/var/lib/srvcc-agent/accepted-release-fingerprint
 /var/lib/srvcc-agent/last-release-fingerprint
+/var/lib/srvcc-agent/blocked-release.json
 /var/lib/srv-control/github-update-config.json
 /var/lib/srv-control/github-update-status.json
 ```
 
-Documentation-only commit или другое изменение вне активного release tree не должно вызывать повторный apply неизменившегося product release.
-
-## Adoption существующего release
-
-При установке нового updater поверх уже установленного того же product release допускается adoption: updater сравнивает текущие release ID/version и Git tree с `origin/main`. Только при полном совпадении fingerprint принимается без повторного deployment.
+Конкретный набор state files определяется active frozen release; не создавайте и не редактируйте их вручную без диагностической необходимости.
 
 ## Защита от бесконечного failed retry
 
-Линия 1.3.x добавила suppression для ранее failed release fingerprint. Automatic updater не должен бесконечно повторять одну и ту же заведомо неуспешную transaction после каждого timer tick.
+Если automatic apply конкретного release fingerprint завершился неуспешно, updater не должен повторять тот же destructive apply на каждом timer tick. Failed release фиксируется как blocked/suppressed до изменения release или осознанного manual retry.
 
-После устранения причины администратор может выполнить осознанный manual retry. Успешная transaction очищает failed-state и принимает новый fingerprint.
+Manual retry допустим после устранения причины. Успешная transaction принимает fingerprint и очищает соответствующее failed-state.
+
+## Устойчивость automatic timer
+
+Одна из целей 2.0.0 — исключить дефект 1.3.x, при котором после неуспешной update transaction automatic schedule мог остаться выключенным.
+
+После release apply updater/configurator восстанавливает выбранный режим и systemd timer. Для automatic mode timer должен оставаться enabled/active после успешной установки и после recoverable failed attempt.
+
+## Timestamps
+
+UI и status model разделяют как минимум:
+
+- **Последняя проверка обновления**;
+- timestamp последней попытки apply — диагностическое состояние;
+- **Последнее успешное обновление**.
+
+Не интерпретируйте `checked_at` как доказательство успешной установки: обычная проверка может обновить время проверки без product apply.
 
 ## Backup before update
 
-`backup_before_update` — отдельная safety policy:
+`backup_before_update` — отдельная safety policy и не равна расписанию ежедневных backup.
 
-```json
-{
-  "backup_before_update": true
-}
-```
+В 2.0.0 отключение `backup_before_update` должно реально запрещать **пользовательский pre-update backup** и для product update, и для OS update. При этом внутренний rollback snapshot release transaction может создаваться независимо: это механизм rollback, а не пользовательская резервная копия.
 
-Если она включена, перед product apply updater обязан успешно создать резервную копию через `/usr/local/libexec/srv-control-backup`. Ошибка backup блокирует deployment.
-
-Эта настройка **не равна** расписанию ежедневных резервных копий. Отключение scheduled backup не должно автоматически отключать safety backup перед update, и наоборот.
+Если policy включена, ошибка обязательного pre-update backup блокирует deployment.
 
 ## Deployment transaction
 
 Базовая цепочка:
 
 ```text
-check → backup (если policy включена) → preflight → apply → acceptance → healthcheck
-                                                     ↘ failure → rollback
+check → policy gate/backup → preflight → apply → acceptance → healthcheck
+                                           ↘ failure → rollback
 ```
 
 Новый fingerprint принимается только после успешного завершения требуемой release transaction.
@@ -103,12 +104,7 @@ check → backup (если policy включена) → preflight → apply → 
 
 На странице «Система» администратор может настроить GitHub source, manual/automatic mode и период проверки, выполнить явную проверку и применить доступное обновление.
 
-UI должен различать:
-
-- состояние automatic update schedule;
-- **последнюю проверку обновления** (`checked_at`);
-- последний результат/успешное применение, если такая информация доступна status model;
-- наличие доступного нового product release.
+UI должен показывать отдельно schedule state, последнюю проверку, последний успешный update, наличие update и диагностический failed/blocked state при необходимости.
 
 Эти операции выполняются через privileged system action path; web-процесс не запускает Git/systemctl/root-команды напрямую.
 
@@ -119,15 +115,18 @@ systemctl status srvcc-github-agent.timer --no-pager -l
 systemctl status srvcc-github-agent.service --no-pager -l
 cat /var/lib/srv-control/github-update-config.json
 cat /var/lib/srv-control/github-update-status.json
+cat /var/lib/srvcc-agent/blocked-release.json 2>/dev/null || true
 tail -n 100 /var/log/srvcc-agent.log
 ```
 
 При разборе проблемы отдельно фиксируйте:
 
-1. активный release из `deployment.json`;
-2. фактически установленный release из `/var/lib/srv-control/release.json`;
-3. `checked_at`, `result`, `detail`, `remote_sha`, `release_id`, `release_version`, `update_available` из updater status;
+1. active release из `deployment.json`;
+2. installed release из `/var/lib/srv-control/release.json`;
+3. last check / last attempt / last success и `result/detail` updater status;
 4. состояние timer/service;
-5. последний deployment stage и rollback result.
+5. accepted/blocked fingerprint state;
+6. последний deployment stage и rollback result;
+7. значение `backup_before_update`.
 
-Не публикуйте credentials, tokens, session keys и private key material вместе с диагностикой.
+Не публикуйте credentials, tokens, session keys, private keys или содержимое backup вместе с диагностикой.
