@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "release_id": "2.1.4",
+  "release_version": "2.1.4",
+  "description": "Control Center 2.1.4 repairs production clean installation after delta patch releases by reconstructing the full application from the frozen 2.1.0 baseline plus 2.1.1/2.1.2 deltas, fixes nginx package-default port detection, and validates the public reverse-proxy entrypoint.",
+  "upgrade_from": ">=1.3.8,<2.1.4",
+  "scripts": {
+    "preflight": {
+      "path": "preflight-2.1.4.sh",
+      "sha256": "6888db1a16b83db73383bf285a6129ba173f33aa63d0544239ba3db589fd4cc8"
+    },
+    "apply": {
+      "path": "apply-2.1.4.sh",
+      "sha256": "fee9e402f836254ac74b3d29eb5407a613597e5d328755687cc9d5643fc443e2"
+    },
+    "acceptance": {
+      "path": "acceptance-2.1.4.sh",
+      "sha256": "0f24b42727fe841058019e05882138b794e19c13f6c3a35cbb73828ee3248c25"
+    },
+    "rollback": {
+      "path": "rollback-2.1.4.sh",
+      "sha256": "2a989a2d76f88c988497edc32af98d3bb6f1d63361c3eca20144d87a91721391"
+    }
+  }
+}
