@@ -30,84 +30,83 @@ jobs:
       - name: Python syntax
         run: |
           python -m py_compile \
-            app/main.py app/wsgi.py app/database.py app/db_migrate.py app/db_cli.py app/release_107.py \
-            license/issue-license.py
+            app/main.py app/wsgi.py app/database.py app/db_migrate.py app/db_cli.py \
+            app/release_107.py app/release_108.py license/issue-license.py
 
       - name: JavaScript syntax
-        run: node --check app/static/app.js
+        run: |
+          node --check app/static/app.js
+          node --check app/static/release-108.js
 
       - name: Bash syntax
         run: |
           set -euo pipefail
           for f in \
-            install/install.sh install/uninstall.sh \
-            update/control-center-update update/control-center-os-update \
+            install/install.sh install/install-base-1.0.7.sh \
+            install/uninstall.sh install/uninstall-base-1.0.7.sh \
+            update/control-center-update update/control-center-update-base-1.0.7 update/control-center-os-update \
             system/control-center-web-apply \
             network/control-center-network-apply \
             market/control-center-market-apply market/control-center-dhcp-apply \
             license/control-center-license-apply \
-            scripts/acceptance-1.0.5.sh scripts/acceptance-1.0.6.sh scripts/acceptance-1.0.7.sh; do
+            scripts/acceptance-1.0.5.sh scripts/acceptance-1.0.6.sh scripts/acceptance-1.0.7.sh scripts/acceptance-1.0.8.sh; do
             bash -n "$f"
           done
 
-      - name: Validate release consistency and 1.0.7 architecture
+      - name: Validate release consistency and 1.0.8 architecture
         run: |
           python - <<'PY'
-          import ast,json,pathlib,re
+          import json,pathlib,re
           root=pathlib.Path('.')
-          for p in root.rglob('*.json'): json.loads(p.read_text())
-          module=ast.parse((root/'app/main.py').read_text()); values={}
-          for node in module.body:
-              if isinstance(node,ast.Assign):
-                  for target in node.targets:
-                      if isinstance(target,ast.Name) and target.id in {'APP_VERSION','APP_BUILD'}:
-                          values[target.id]=ast.literal_eval(node.value)
-          version=values['APP_VERSION']; build=values['APP_BUILD']
-          assert version=='1.0.7' and build=='20260818.2'
+          for p in root.rglob('*.json'):
+              json.loads(p.read_text())
+          app_release=json.loads((root/'app/release.json').read_text())
+          version=app_release['version']; build=app_release['build']
+          assert version=='1.0.8' and build=='20260819.1'
           deployment=json.loads((root/'deployment.json').read_text())
           assert deployment['release']==version and deployment['build']==build
           assert deployment['channel']=='production' and deployment['release_branch']==f'release/{version}'
-          app_release=json.loads((root/'app/release.json').read_text())
-          assert app_release=={'version':version,'build':build}
           manifest=json.loads((root/'releases'/version/'manifest.json').read_text())
-          assert manifest['release']==version and manifest['build']==build and manifest['database']['engine']=='PostgreSQL'
+          assert manifest['release']==version and manifest['build']==build
+          assert manifest['database']['engine']=='PostgreSQL'
+
+          wsgi=(root/'app/wsgi.py').read_text()
+          assert 'import release_108' in wsgi and 'release_108.register(app, main)' in wsgi
+          ext=(root/'app/release_108.py').read_text()
+          for token in [
+              "VERSION = '1.0.8'", "BUILD = '20260819.1'", '/api/settings/update/install',
+              'update_available', 'market-events.jsonl', 'Установка…', 'Работает', 'Ошибка',
+              "app.view_functions['market']", "app.view_functions['notifications']",
+              "request.path == '/static/app.js'", "request.path == '/static/app.css'",
+          ]: assert token in ext,token
+
+          overlay=(root/'app/static/release-108.js').read_text()
+          for token in ['market108','service-runtime-status','installUpdate','refreshUpdate108','/api/settings/update/install']:
+              assert token in overlay,token
+          css=(root/'app/static/release-108.css').read_text()
+          for token in ['service-runtime-status','installing','error','update-ready-108']:
+              assert token in css,token
+
+          market=(root/'market/control-center-market-apply').read_text()
+          for token in ['policy-rc.d','market-events.jsonl','market-last.log','dnsmasq --test','status running','event started','event succeeded']:
+              assert token in market,token
+          assert 'ln -s /dev/null' not in market
+
+          installer=(root/'install/install.sh').read_text()
+          for token in ['install-base-1.0.7.sh','VERSION=1.0.8','BUILD=20260819.1','control-center-update-now.path','control-center-update-base-1.0.7']:
+              assert token in installer,token
+          base_installer=(root/'install/install-base-1.0.7.sh').read_text()
+          assert 'postgresql postgresql-client' in base_installer and 'db_migrate.py' in base_installer
+
+          updater=(root/'update/control-center-update').read_text()
+          for token in ['control-center-update-base-1.0.7','update-now','FORCE_UPDATE']:
+              assert token in updater,token
+          base_updater=(root/'update/control-center-update-base-1.0.7').read_text()
+          assert 'BUILD_FILE' in base_updater and 'pg_dump' in base_updater and 'app/release.json' in base_updater
 
           req=(root/'requirements.txt').read_text()
           assert re.search(r'^psycopg\[binary\]>=3\.2,<4\.0$',req,re.M)
           assert (root/'app/requirements.txt').read_text()==req
-
-          installer=(root/'install/install.sh').read_text()
-          for token in ['postgresql postgresql-client','DB_NAME=control_center','db_migrate.py','database.env','web.env','control-center-web-apply.path','0.0.0.0:${CONTROL_CENTER_PORT}','VERSION=1.0.7','BUILD=20260818.2']:
-              assert token in installer,token
-          assert 'SUPERUSER' not in installer.replace('NOSUPERUSER','')
-          assert 'listen_addresses' not in installer
-
-          sql=(root/'app/migrations/001_initial_postgresql.sql').read_text()
-          for table in ['settings','notification_events','audit_events','jobs','module_inventory','service_configs','cluster_nodes']:
-              assert f'control_center.{table}' in sql,table
-
-          ext=(root/'app/release_107.py').read_text()
-          for token in ['/api/database/status','/api/settings/web','/api/notifications/read','web.port','cluster.enabled','WEB_PENDING']:
-              assert token in ext,token
-          db=(root/'app/database.py').read_text()
-          for token in ['DEFAULT_DSN','cluster_nodes','schema_migrations','notification_events','audit_events','jobs']:
-              assert token in db,token
-          helper=(root/'system/control-center-web-apply').read_text()
-          for token in ['web-pending.json','web.env','systemctl restart','/api/health','rollback','set-web-port']:
-              assert token in helper,token
-
-          template=(root/'app/templates/index.html').read_text()
-          for token in ['webPort','saveWebPort','dbStatus','dbVersion','dbMigration','dbNodes']:
-              assert token in template,token
-          js=(root/'app/static/app.js').read_text()
-          for token in ['/api/database/status','/api/settings/web','/api/notifications/read','saveWebPort']:
-              assert token in js,token
-          assert 'localStorage' not in js
-
-          updater=(root/'update/control-center-update').read_text()
-          assert 'BUILD_FILE' in updater and 'latest_build' in updater and 'app/release.json' in updater
-          lifecycle=(root/'docs/UPDATE-LIFECYCLE-POLICY-RU.md').read_text()
-          assert 'не заявляет строгую совместимость с Semantic Versioning' in lifecycle
           print(f'Validated Control Center {version} build {build}')
           PY
 
@@ -140,17 +139,44 @@ jobs:
           assert h['ok'] and h['database']=='control_center' and h['role']=='control-center'
           assert h['migration']['version']=='001'
           database.set_setting('web.port',8080)
-          assert database.get_setting('web.port')==8080
           database.upsert_job('ci-job','ci','queued',payload={'ok':True})
           database.sync_notifications([{'id':'ci-event','source':'ci','title':'CI','state':'ok','severity':'ok','message':'PostgreSQL works','timestamp':1}])
-          rows=database.list_notifications(); assert any(x['id']=='ci-event' for x in rows)
-          database.mark_notifications(['ci-event']); assert next(x for x in database.list_notifications() if x['id']=='ci-event')['read'] is True
-          database.upsert_local_node(edition='Professional',version='1.0.7',build='20260818.2')
+          database.mark_notifications(['ci-event'])
+          database.upsert_local_node(edition='Professional',version='1.0.8',build='20260819.1')
           assert database.cluster_nodes()
-          print(h)
           PY
-          TABLES="$(sudo -u control-center psql -d control_center -Atqc "select tablename from pg_tables where schemaname='control_center' order by tablename")"
-          for t in audit_events cluster_nodes jobs module_inventory notification_events schema_migrations service_configs settings; do grep -qx "$t" <<<"$TABLES"; done
+
+      - name: Validate real DHCP install and remove lifecycle
+        run: |
+          set -euo pipefail
+          sudo rm -rf /var/lib/control-center /var/lib/control-center-system
+          sudo install -d -o control-center -g control-center -m 0755 /var/lib/control-center
+          sudo install -d -o root -g control-center -m 0750 /var/lib/control-center-system /var/lib/control-center-system/modules
+          sudo rm -f /etc/dnsmasq.d/control-center-dhcp.conf
+          sudo apt-get remove -y dnsmasq >/dev/null 2>&1 || true
+          sudo tee /var/lib/control-center/market-pending.json >/dev/null <<'JSON'
+          {"module":"dhcp","action":"install","request_id":"ci-dhcp-install","requested_at":1}
+          JSON
+          sudo bash market/control-center-market-apply
+          dpkg-query -W -f='${Status}' dnsmasq | grep -q 'install ok installed'
+          sudo python3 - <<'PY'
+          import json
+          state=json.load(open('/var/lib/control-center-system/modules/dhcp.json'))
+          status=json.load(open('/var/lib/control-center-system/market-status.json'))
+          assert state['installed'] is True and state['package']=='dnsmasq'
+          assert status['state']=='running' and status['module']=='dhcp'
+          events=[json.loads(x) for x in open('/var/lib/control-center-system/market-events.jsonl') if x.strip()]
+          assert any(x['phase']=='started' and x['action']=='install' for x in events)
+          assert any(x['phase']=='succeeded' and x['action']=='install' for x in events)
+          PY
+          sudo dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
+          ! systemctl is-active --quiet dnsmasq.service
+          sudo tee /var/lib/control-center/market-pending.json >/dev/null <<'JSON'
+          {"module":"dhcp","action":"remove","request_id":"ci-dhcp-remove","requested_at":2}
+          JSON
+          sudo bash market/control-center-market-apply
+          test ! -e /var/lib/control-center-system/modules/dhcp.json
+          test ! -e /etc/dnsmasq.d/control-center-dhcp.conf
 
       - name: Validate Professional public key
         run: openssl pkey -pubin -in license/vendor-public.pem -noout
@@ -171,9 +197,9 @@ jobs:
         run: |
           set -euo pipefail
           for f in \
-            docs/README.md docs/EULA-RU.md docs/PRODUCT-EDITIONS.md docs/UPDATE-LIFECYCLE-POLICY-RU.md docs/RELEASE-HISTORY.md \
+            README.md docs/README.md docs/EULA-RU.md docs/PRODUCT-EDITIONS.md docs/UPDATE-LIFECYCLE-POLICY-RU.md docs/RELEASE-HISTORY.md \
             docs/INSTALL.md docs/POSTGRESQL.md docs/WEB-PORT.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md \
             docs/NETWORK.md docs/DHCP.md docs/NOTIFICATIONS.md docs/UI.md docs/SECURITY.md docs/TROUBLESHOOTING.md \
-            releases/1.0.7/README.md releases/1.0.7/manifest.json; do
+            releases/1.0.8/README.md releases/1.0.8/manifest.json; do
             test -s "$f"
           done

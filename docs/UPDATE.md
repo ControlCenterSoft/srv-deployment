@@ -1,92 +1,87 @@
-# Обновление Control Center 1.0.7
+# Обновление Control Center 1.0.8
 
-## Архитектура
+## Проверка доступности
 
-Web UI не запускает installer от root. Проверку и установку выполняет `control-center-update.service`, запускаемый `control-center-update.timer`.
+`GET /api/settings/update/check` сравнивает установленный `release/build` с Production metadata и возвращает:
 
-Настройки хранятся в PostgreSQL `control_center.settings`; compatibility mirror `/var/lib/control-center/update-settings.json` остаётся для root updater.
-
-Результат worker:
-
-```text
-/var/lib/control-center-system/update-status.json
+```json
+{
+  "current_version": "1.0.8",
+  "current_build": "20260819.1",
+  "remote": {},
+  "update_available": false,
+  "reason": "up-to-date"
+}
 ```
 
-Rollback directory:
+`update_available=true`, если remote release выше либо release совпадает, но Production build отличается.
+
+## Кнопка «Установить обновление»
+
+В **Настройки → Обновления Control Center** кнопка автоматически:
+
+- отключена при актуальной версии;
+- активируется только при обнаружении нового Production release/build;
+- показывает целевую версию, когда она известна.
+
+Нажатие вызывает:
 
 ```text
-/var/lib/control-center-root/rollback-<version>-<build>-<timestamp>/
+POST /api/settings/update/install
+  -> /var/lib/control-center/update-now
+  -> control-center-update-now.path
+  -> control-center-update.service
 ```
 
-Он может содержать application payload, systemd unit, `web.env`, `database.env` и PostgreSQL `pg_dump`.
+Ручной запрос не превращает Web-процесс в root: marker создаёт непривилегированный API, а actual install выполняет существующий root updater.
 
-## Version + build
+## Отличие ручного запуска
 
-Updater сравнивает и `release`, и `build`. Обновление требуется, если remote version выше либо version совпадает, но build отличается от `/opt/control-center/BUILD`.
+Manual update request обходится без ожидания выбранного интервала и выполняется даже если automatic updates выключены. Все проверки Production metadata, target payload, version/build, PostgreSQL backup и rollback остаются обязательными.
 
-Payload проверяется по `app/release.json` и `APP_VERSION` в `app/main.py`.
+## Rollback и PostgreSQL
 
-## PostgreSQL migrations
+Перед изменением существующей БД updater создаёт root-only `pg_dump -Fc`. При ошибке installer восстанавливаются application payload, systemd unit, Web-port state и PostgreSQL dump.
 
-Installer запускает `app/db_migrate.py`. Migration выполняется транзакционно и регистрируется в `control_center.schema_migrations` вместе с SHA-256 checksum. Изменение уже применённого migration под прежним номером запрещено checksum-контролем.
+Если DB backup создать невозможно, updater не начинает обновление.
 
-## PostgreSQL rollback
+## Version/build metadata
 
-Если перед обновлением БД `control_center` уже существует, updater **до запуска installer** создаёт:
+Authoritative target:
 
 ```text
-control-center-db.dump
+deployment.json
+app/release.json
+release/<version>
 ```
 
-формата `pg_dump -Fc` внутри root-only rollback directory.
+Начиная с 1.0.8 `app/release.json` является каноническим payload marker для updater. Runtime version выставляется release extension после загрузки базового приложения.
 
-Если installer нового релиза завершается ошибкой, updater:
-
-1. останавливает новый Web runtime;
-2. восстанавливает предыдущий application payload/systemd unit/Web env;
-3. завершает соединения с изменённой БД;
-4. пересоздаёт `control_center` с владельцем `control-center`;
-5. выполняет `pg_restore` предыдущего dump;
-6. запускает прежний Control Center.
-
-Если PostgreSQL до обновления вообще не существовал, а неудачный installer создал БД/роль впервые, rollback удаляет созданную БД и, когда это была новая роль, роль `control-center`, возвращая состояние ближе к исходной 1.0.6.
-
-Невозможность создать `pg_dump` **блокирует обновление до запуска installer** — обновление без DB backup не продолжается.
-
-## Сохранение Web-порта
-
-Updater/installer сохраняют `/etc/control-center/web.env`, поэтому выбранный порт сохраняется между релизами. При rollback возвращается прежний `web.env`.
-
-## Алгоритм
-
-1. Получить production `deployment.json`.
-2. Проверить `channel`, `release`, `build`, `release_branch`.
-3. Сравнить remote version/build с текущими VERSION/BUILD.
-4. Клонировать точно указанную release branch.
-5. Проверить payload metadata.
-6. Создать root-only application backup и PostgreSQL dump, если БД уже существует.
-7. Запустить installer.
-8. Installer проверяет PostgreSQL, применяет migrations и запускает Web service на сохранённом порту.
-9. Installer проверяет `/api/health` и `/api/database/status`.
-10. При ошибке восстановить приложение, Web config и PostgreSQL state.
-
-## Настройки
-
-- automatic update on/off;
-- interval 5–10080 минут;
-- production channel.
-
-## Диагностика
+## Systemd
 
 ```bash
 systemctl status control-center-update.timer --no-pager
+systemctl status control-center-update-now.path --no-pager
+systemctl status control-center-update.service --no-pager
 journalctl -u control-center-update.service -n 200 --no-pager
-cat /opt/control-center/VERSION
-cat /opt/control-center/BUILD
-sudo -u control-center psql -d control_center -c 'select * from control_center.schema_migrations order by version;'
-sudo find /var/lib/control-center-root -maxdepth 2 -name 'control-center-db.dump' -ls
 ```
 
-## Важно
+## API диагностика
 
-Control Center updater и OS/package updater — независимые механизмы. Автоматический major PostgreSQL server upgrade между несовместимыми PostgreSQL major versions в 1.0.7 отдельно не реализован.
+```bash
+PORT=$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
+curl -fsS "http://127.0.0.1:${PORT}/api/settings/update/check" | python3 -m json.tool
+```
+
+Запуск вручную через API допустим только если `update_available=true`:
+
+```bash
+curl -fsS -X POST -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:${PORT}/api/settings/update/install" | python3 -m json.tool
+```
+
+## Compatibility mirror
+
+Web settings хранятся в PostgreSQL, а `/var/lib/control-center/update-settings.json` остаётся compatibility mirror для root updater.
+
+Control Center updater и OS/package updater — независимые механизмы.

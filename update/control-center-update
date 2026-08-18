@@ -1,139 +1,35 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-REPO_URL="https://github.com/filosoff31/srv-deployment.git"
-DEPLOYMENT_URL="https://raw.githubusercontent.com/filosoff31/srv-deployment/main/deployment.json"
-STATE_DIR="/var/lib/control-center"
-SYSTEM_STATE="/var/lib/control-center-system"
-ROOT_STATE="/var/lib/control-center-root"
-SETTINGS="$STATE_DIR/update-settings.json"
-STATUS="$SYSTEM_STATE/update-status.json"
-VERSION_FILE="/opt/control-center/VERSION"
-BUILD_FILE="/opt/control-center/BUILD"
-LOCK_FILE="/run/control-center-update.lock"
-DB_NAME=control_center
-DB_ROLE=control-center
-mkdir -p "$STATE_DIR"
-install -d -o root -g control-center -m 0750 "$SYSTEM_STATE"
-install -d -o root -g root -m 0700 "$ROOT_STATE"
-exec 9>"$LOCK_FILE"
-flock -n 9 || exit 0
-write_status(){ local result="$1" message="$2" latest="${3:-}" build="${4:-}"; python3 - "$STATUS" "$result" "$message" "$latest" "$build" <<'PY'
-import json,sys,time
-p,result,msg,latest,build=sys.argv[1:]
-data={'last_check':int(time.time()),'result':result,'message':msg}
-if latest:data['latest_version']=latest
-if build:data['latest_build']=build
-open(p,'w').write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+BASE=/usr/local/lib/control-center/control-center-update-base-1.0.7
+[[ -x "$BASE" ]] || { echo "Control Center updater base is missing: $BASE" >&2; exit 1; }
+TMP="$(mktemp /tmp/control-center-update-1.0.8.XXXXXX)"
+trap 'rm -f "$TMP"' EXIT
+python3 - "$BASE" "$TMP" <<'PY'
+from pathlib import Path
+import re,sys
+src,dst=map(Path,sys.argv[1:])
+text=src.read_text()
+needle='flock -n 9 || exit 0\n'
+insert='''flock -n 9 || exit 0
+FORCE_UPDATE=0
+if [[ -f "$STATE_DIR/update-now" ]]; then
+  FORCE_UPDATE=1
+  rm -f "$STATE_DIR/update-now"
+fi
+'''
+if needle not in text: raise SystemExit('updater lock marker not found')
+text=text.replace(needle,insert,1)
+old='[[ "${cfg[0]}" == "1" ]] || exit 0'
+new='[[ "$FORCE_UPDATE" == "1" || "${cfg[0]}" == "1" ]] || exit 0'
+if old not in text: raise SystemExit('automatic update gate marker not found')
+text=text.replace(old,new,1)
+old='(( now - cfg[3] >= cfg[2] )) || exit 0'
+new='[[ "$FORCE_UPDATE" == "1" ]] || (( now - cfg[3] >= cfg[2] )) || exit 0'
+if old not in text: raise SystemExit('update interval gate marker not found')
+text=text.replace(old,new,1)
+text,n=re.subn(r'\nmain_version="\$\(grep -E .*?\n\[\[ "\$main_version" == "\$latest" \]\] \|\| \{ write_status error .*?; exit 1; \}\n','\n',text,count=1)
+if n != 1: raise SystemExit('legacy APP_VERSION verification block not found')
+dst.write_text(text)
 PY
-chown root:control-center "$STATUS"; chmod 0640 "$STATUS"; }
-[[ -f "$SETTINGS" ]] || printf '%s\n' '{"automatic_updates":true,"interval_minutes":60,"channel":"production"}' >"$SETTINGS"
-readarray -t cfg < <(python3 - "$SETTINGS" "$STATUS" <<'PY'
-import json,sys
-try:s=json.load(open(sys.argv[1]))
-except:s={}
-try:st=json.load(open(sys.argv[2]))
-except:st={}
-legacy={'hourly':60,'daily':1440,'weekly':10080}
-try:mins=int(s.get('interval_minutes',legacy.get(s.get('frequency'),60)))
-except:mins=60
-mins=max(5,min(mins,10080))
-print('1' if s.get('automatic_updates',True) else '0')
-print(s.get('channel','production'))
-print(mins*60)
-print(int(st.get('last_check',0)))
-PY
-)
-[[ "${cfg[0]}" == "1" ]] || exit 0
-[[ "${cfg[1]}" == "production" ]] || { write_status error "Неподдерживаемый канал обновлений"; exit 1; }
-now=$(date +%s)
-(( now - cfg[3] >= cfg[2] )) || exit 0
-remote_json="$(curl -fsSL --connect-timeout 8 --max-time 20 "$DEPLOYMENT_URL")" || { write_status error "Не удалось получить deployment.json"; exit 1; }
-readarray -t REMOTE < <(python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("release","")); print(j.get("build","")); print(j.get("channel","")); print(j.get("release_branch",""))' <<<"$remote_json")
-latest="${REMOTE[0]}"; latest_build="${REMOTE[1]}"; channel="${REMOTE[2]}"; branch="${REMOTE[3]}"
-[[ "$channel" == "production" && "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$branch" == "release/$latest" ]] || { write_status error "Некорректные metadata релиза" "$latest" "$latest_build"; exit 1; }
-[[ -z "$latest_build" || "$latest_build" =~ ^[A-Za-z0-9._-]+$ ]] || { write_status error "Некорректный build metadata" "$latest" "$latest_build"; exit 1; }
-current="$(cat "$VERSION_FILE" 2>/dev/null || echo 0.0.0)"
-current_build="$(cat "$BUILD_FILE" 2>/dev/null || true)"
-need=0
-if dpkg --compare-versions "$latest" gt "$current"; then
-  need=1
-elif dpkg --compare-versions "$latest" eq "$current" && [[ -n "$latest_build" && "$latest_build" != "$current_build" ]]; then
-  need=1
-fi
-if [[ "$need" != 1 ]]; then write_status ok "Установлена актуальная версия $current${current_build:+ build $current_build}" "$latest" "$latest_build"; exit 0; fi
-TMP="$(mktemp -d /tmp/control-center-update.XXXXXX)"
-BACKUP="$ROOT_STATE/rollback-$current-${current_build:-legacy}-$(date +%Y%m%d%H%M%S)"
-trap 'rm -rf "$TMP"' EXIT
-git clone --depth 1 --branch "$branch" "$REPO_URL" "$TMP/repo" >/dev/null 2>&1 || { write_status error "Не удалось получить $branch" "$latest" "$latest_build"; exit 1; }
-[[ -x "$TMP/repo/install/install.sh" && -f "$TMP/repo/app/main.py" && -f "$TMP/repo/app/release.json" ]] || { write_status error "Релиз неполный" "$latest" "$latest_build"; exit 1; }
-readarray -t PAYLOAD < <(python3 - "$TMP/repo/app/release.json" <<'PY'
-import json,sys
-j=json.load(open(sys.argv[1])); print(j.get('version','')); print(j.get('build',''))
-PY
-)
-payload_version="${PAYLOAD[0]}"; payload_build="${PAYLOAD[1]}"
-[[ "$payload_version" == "$latest" && "$payload_build" == "$latest_build" ]] || { write_status error "Payload version/build не совпадает с release metadata" "$latest" "$latest_build"; exit 1; }
-main_version="$(grep -E '^APP_VERSION[[:space:]]*=' "$TMP/repo/app/main.py" | head -1 | tr -cd '0-9.')"
-[[ "$main_version" == "$latest" ]] || { write_status error "APP_VERSION ($main_version) не совпадает с release metadata ($latest)" "$latest" "$latest_build"; exit 1; }
-mkdir -m 0700 "$BACKUP"
-[[ -d /opt/control-center ]] && cp -a /opt/control-center "$BACKUP/opt-control-center"
-[[ -f /etc/systemd/system/control-center.service ]] && cp -a /etc/systemd/system/control-center.service "$BACKUP/control-center.service"
-[[ -f /etc/control-center/web.env ]] && cp -a /etc/control-center/web.env "$BACKUP/web.env"
-[[ -f /etc/control-center/database.env ]] && cp -a /etc/control-center/database.env "$BACKUP/database.env"
-
-DB_EXISTED=0
-ROLE_EXISTED=0
-if command -v psql >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
-  if runuser -u postgres -- psql -d postgres -Atqc "SELECT 1 FROM pg_roles WHERE rolname='$DB_ROLE'" 2>/dev/null | grep -qx 1; then ROLE_EXISTED=1; fi
-  if runuser -u postgres -- psql -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null | grep -qx 1; then
-    DB_EXISTED=1
-    if id control-center >/dev/null 2>&1 && command -v pg_dump >/dev/null 2>&1; then
-      if ! runuser -u control-center -- pg_dump -Fc "$DB_NAME" >"$BACKUP/control-center-db.dump"; then
-        write_status error 'Не удалось создать PostgreSQL backup перед обновлением' "$latest" "$latest_build"
-        exit 1
-      fi
-      chmod 0600 "$BACKUP/control-center-db.dump"
-    else
-      write_status error 'PostgreSQL database существует, но pg_dump/control-center identity недоступны' "$latest" "$latest_build"
-      exit 1
-    fi
-  fi
-fi
-printf '%s\n' "$DB_EXISTED" >"$BACKUP/db-existed"
-printf '%s\n' "$ROLE_EXISTED" >"$BACKUP/db-role-existed"
-
-if bash "$TMP/repo/install/install.sh" --update-from "$current"; then
-  write_status updated "Автоматически обновлено с $current${current_build:+/$current_build} до $latest${latest_build:+/$latest_build}" "$latest" "$latest_build"
-  find "$ROOT_STATE" -maxdepth 1 -type d -name 'rollback-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
-  exit 0
-fi
-
-systemctl stop control-center 2>/dev/null || true
-rm -rf /opt/control-center
-[[ -d "$BACKUP/opt-control-center" ]] && cp -a "$BACKUP/opt-control-center" /opt/control-center
-[[ -f "$BACKUP/control-center.service" ]] && cp -a "$BACKUP/control-center.service" /etc/systemd/system/control-center.service
-[[ -f "$BACKUP/web.env" ]] && { install -d -m 0755 /etc/control-center; cp -a "$BACKUP/web.env" /etc/control-center/web.env; }
-[[ -f "$BACKUP/database.env" ]] && { install -d -m 0755 /etc/control-center; cp -a "$BACKUP/database.env" /etc/control-center/database.env; }
-
-if command -v psql >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
-  systemctl start postgresql >/dev/null 2>&1 || true
-  if [[ "$DB_EXISTED" == 1 && -s "$BACKUP/control-center-db.dump" ]]; then
-    runuser -u postgres -- psql -d postgres -Atqc "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB_NAME' AND pid<>pg_backend_pid()" >/dev/null 2>&1 || true
-    runuser -u postgres -- dropdb --if-exists "$DB_NAME" >/dev/null 2>&1 || true
-    if [[ "$ROLE_EXISTED" == 1 ]]; then
-      runuser -u postgres -- createdb --owner="$DB_ROLE" "$DB_NAME" >/dev/null 2>&1 || true
-      runuser -u control-center -- pg_restore --no-owner -d "$DB_NAME" "$BACKUP/control-center-db.dump" >/dev/null 2>&1 || true
-    fi
-  elif [[ "$DB_EXISTED" == 0 ]]; then
-    runuser -u postgres -- psql -d postgres -Atqc "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB_NAME' AND pid<>pg_backend_pid()" >/dev/null 2>&1 || true
-    runuser -u postgres -- dropdb --if-exists "$DB_NAME" >/dev/null 2>&1 || true
-  fi
-  if [[ "$ROLE_EXISTED" == 0 ]]; then
-    runuser -u postgres -- psql -d postgres -c 'DROP ROLE IF EXISTS "control-center";' >/dev/null 2>&1 || true
-  fi
-fi
-
-systemctl daemon-reload
-systemctl restart control-center 2>/dev/null || true
-write_status rollback "Обновление до $latest/$latest_build завершилось ошибкой; восстановлена $current/$current_build вместе с PostgreSQL state" "$latest" "$latest_build"
-exit 1
+chmod 0755 "$TMP"
+bash "$TMP"
