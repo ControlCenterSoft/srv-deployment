@@ -1,9 +1,0 @@
-[Unit]
-Description=SRV Control Center backup retention enforcement
-After=srv-control-backup.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/libexec/srv-control-release14-agent --prune-backups
-User=root
-Group=root

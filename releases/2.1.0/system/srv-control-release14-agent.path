@@ -1,9 +1,0 @@
-[Unit]
-Description=Watch SRV Control Center 1.4 action queue
-
-[Path]
-PathExistsGlob=/var/lib/srv-control/release14-actions/*.json
-Unit=srv-control-release14-agent.service
-
-[Install]
-WantedBy=multi-user.target
