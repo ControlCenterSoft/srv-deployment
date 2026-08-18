@@ -57,11 +57,21 @@ if [[ "$SSL" == 1 ]]; then
   install -d -o root -g control-center -m 0750 "$TLS_DIR"
   if [[ ! -s "$CERT" || ! -s "$KEY" ]]; then
     HOST="$(hostname -f 2>/dev/null || hostname)"
+    SHORT_HOST="$(hostname -s 2>/dev/null || true)"
+    SHORT_HOST="${SHORT_HOST%%.*}"
+    [[ -n "$SHORT_HOST" ]] || SHORT_HOST=control-center
+    SHORT_HOST="${SHORT_HOST:0:63}"
     SAN="DNS:${HOST},DNS:localhost,IP:127.0.0.1"
     while read -r ip; do [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && SAN+=",IP:${ip}"; done < <(hostname -I 2>/dev/null | tr ' ' '\n')
-    openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 825 \
-      -subj "/CN=${HOST}" -addext "subjectAltName=${SAN}" \
-      -keyout "$KEY" -out "$CERT" >/dev/null 2>&1
+    if ! openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 825 \
+      -subj "/CN=${SHORT_HOST}" -addext "subjectAltName=${SAN}" \
+      -keyout "$KEY" -out "$CERT" >/tmp/control-center-openssl.log 2>&1; then
+      DETAIL="$(tail -n 20 /tmp/control-center-openssl.log 2>/dev/null | tail -c 1800 || true)"
+      rm -f "$KEY" "$CERT"
+      status rejected 'Не удалось создать SSL-сертификат Control Center' "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD"
+      [[ -n "$DETAIL" ]] && echo "$DETAIL" >&2
+      exit 1
+    fi
     chown root:control-center "$KEY" "$CERT"; chmod 0640 "$KEY"; chmod 0644 "$CERT"
   fi
 fi
