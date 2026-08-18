@@ -19,9 +19,9 @@ rm -rf /opt/control-center /etc/control-center
 systemctl daemon-reload
 systemctl reset-failed >/dev/null 2>&1 || true
 if ! $KEEP_DATA; then
-  rm -rf /var/lib/control-center /var/lib/control-center-license
+  rm -rf /var/lib/control-center /var/lib/control-center-root /var/lib/control-center-license
 else
-  echo 'Данные и лицензия сохранены (--keep-data).'
+  echo 'Данные, root rollback state и лицензия сохранены (--keep-data).'
 fi
 id control-center >/dev/null 2>&1 && userdel control-center || true
 echo 'Control Center удален.'
