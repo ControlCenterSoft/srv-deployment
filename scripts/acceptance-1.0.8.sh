@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Запустите: sudo bash scripts/acceptance-1.0.8.sh' >&2; exit 2; }
 EXPECTED=1.0.8
-BUILD=20260819.1
+BUILD=20260819.2
 FAIL=0
 pass(){ printf 'PASS  %s\n' "$*"; }
 fail(){ printf 'FAIL  %s\n' "$*" >&2; FAIL=1; }
@@ -46,6 +46,8 @@ systemctl is-active --quiet control-center-update-now.path && pass 'manual updat
 systemctl is-enabled --quiet control-center-update-now.path && pass 'manual update path watcher enabled' || fail 'control-center-update-now.path disabled'
 [[ -x /usr/local/sbin/control-center-update ]] && pass 'update wrapper installed' || fail 'update wrapper missing'
 [[ -x /usr/local/lib/control-center/control-center-update-base-1.0.7 ]] && pass 'version/build updater base installed' || fail 'updater base missing'
+[[ -x /usr/local/lib/control-center/control-center-os-update-base-1.0.8 ]] && pass 'OS updater base installed' || fail 'OS updater base missing'
+[[ -x /usr/local/lib/control-center/control-center-market-apply-base-1.0.8 ]] && pass 'Market helper base installed' || fail 'Market helper base missing'
 
 JS="$(curl -fsS --max-time 10 "http://127.0.0.1:${PORT}/static/app.js?v=${EXPECTED}" 2>/dev/null || true)"
 grep -Fq 'market108' <<<"$JS" && grep -Fq 'installUpdate' <<<"$JS" && pass '1.0.8 Market/update UI overlay served' || fail '1.0.8 JS overlay missing'
@@ -77,6 +79,12 @@ PY
     dpkg-query -W -f='${Status}' dnsmasq 2>/dev/null | grep -q 'install ok installed' && pass 'DHCP package installed' || fail 'DHCP state exists but dnsmasq package missing'
     dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf >/dev/null 2>&1 && pass 'DHCP config passes dnsmasq --test' || fail 'DHCP config invalid'
   fi
+fi
+
+if dpkg --audit | grep -q .; then
+  fail 'dpkg reports half-configured/unpacked packages'
+else
+  pass 'dpkg package database clean'
 fi
 
 printf '\n'

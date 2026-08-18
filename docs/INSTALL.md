@@ -1,12 +1,8 @@
 # Установка Control Center 1.0.8
 
-## Целевая платформа
+Текущий production build: **20260819.2**.
 
-Ubuntu Server 26.04 LTS, systemd, Netplan, root/sudo и доступ к APT-репозиториям. Установщик автоматически устанавливает PostgreSQL из репозитория ОС.
-
-Web UI по умолчанию слушает TCP/8080. Пользовательский порт из `/etc/control-center/web.env` сохраняется при обновлении.
-
-## Установка
+## Обычная установка / обновление
 
 ```bash
 git clone --depth 1 --branch release/1.0.8 https://github.com/filosoff31/srv-deployment.git
@@ -14,62 +10,49 @@ cd srv-deployment
 sudo bash install/install.sh
 ```
 
-После чистой установки:
+Целевая платформа: Ubuntu Server 26.04 LTS, systemd, Netplan, root/sudo и доступ к APT-репозиториям.
 
-```text
-http://IP_СЕРВЕРА:8080
+Installer автоматически:
+
+1. выполняет guarded repair `dpkg --configure -a` / `apt-get -f install -y` перед основной миграцией;
+2. не удаляет существующую конфигурацию dnsmasq;
+3. блокирует автозапуск `dnsmasq` во время package-repair через временный `policy-rc.d`;
+4. устанавливает/проверяет PostgreSQL;
+5. применяет SQL migrations;
+6. сохраняет текущий Web-порт;
+7. устанавливает root helpers, timers/path units и production Gunicorn runtime;
+8. проверяет `/api/health` и `/api/database/status`.
+
+## Сервер застрял на 1.0.6 после code 100
+
+Если наблюдаются одновременно:
+
+- Control Center остаётся на `1.0.6`;
+- notification: `Обновление ... завершилось ошибкой; восстановлена версия 1.0.6`;
+- Market: `код 100` или `dnsmasq, установленный вне Control Center`;
+- OS/package update также завершается ошибкой,
+
+используйте специальный recovery script:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/filosoff31/srv-deployment/release/1.0.8/scripts/repair-upgrade-1.0.6-to-1.0.8.sh \
+  | sudo bash
 ```
 
-## Что добавляет installer 1.0.8
+Скрипт не заменяет updater. Он:
 
-Помимо PostgreSQL/Web/runtime архитектуры 1.0.7 installer включает:
+1. создаёт backup/diagnostics в `/var/lib/control-center-root/manual-repair-<timestamp>/`;
+2. сохраняет dnsmasq config и текущие update/Market statuses;
+3. подготавливает safe recovery marker только если stale dnsmasq не имеет активной внешней конфигурации;
+4. временно разрешает немедленную production-проверку;
+5. запускает существующий updater 1.0.6, поэтому его штатный application rollback остаётся активным;
+6. после успешного перехода на 1.0.8 восстанавливает пользовательские настройки автообновления;
+7. при безопасном legacy-сценарии восстанавливает DHCP module state.
 
-- Market lifecycle 1.0.8;
-- persistent service status/event history;
-- исправленный DHCP installer;
-- `control-center-update-now.path` для ручной установки обнаруженного обновления;
-- сохранение зрелого version/build-aware updater с PostgreSQL rollback.
+Если обнаружена активная пользовательская конфигурация `/etc/dnsmasq.conf` или `/etc/dnsmasq.d/*`, автоматический захват пакета не выполняется.
 
-## PostgreSQL
-
-Installer:
-
-1. устанавливает `postgresql` и `postgresql-client`;
-2. запускает локальный PostgreSQL;
-3. создаёт непривилегированную роль `control-center`;
-4. создаёт БД `control_center`, owner `control-center`;
-5. проверяет local peer authentication;
-6. создаёт Python venv с Psycopg 3;
-7. применяет versioned SQL migrations;
-8. выполняет DB health-check.
-
-Runtime DSN:
-
-```text
-dbname=control_center user=control-center host=/var/run/postgresql
-```
-
-Пароль PostgreSQL в приложении не хранится. Внешний PostgreSQL listener installer не включает.
-
-## State
-
-```text
-/var/lib/control-center
-/var/lib/control-center-system
-/var/lib/control-center-root
-/var/lib/control-center-license
-PostgreSQL database: control_center
-```
-
-Market 1.0.8 дополнительно использует:
-
-```text
-/var/lib/control-center-system/market-status.json
-/var/lib/control-center-system/market-events.jsonl
-/var/lib/control-center-system/market-last.log
-```
-
-## Проверка после установки
+## После установки
 
 ```bash
 cat /opt/control-center/VERSION
@@ -78,24 +61,36 @@ PORT=$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
 curl -fsS "http://127.0.0.1:${PORT}/api/health" | python3 -m json.tool
 curl -fsS "http://127.0.0.1:${PORT}/api/database/status" | python3 -m json.tool
 curl -fsS "http://127.0.0.1:${PORT}/api/market" | python3 -m json.tool
-curl -fsS "http://127.0.0.1:${PORT}/api/settings/update/check" | python3 -m json.tool
-systemctl status control-center-update-now.path --no-pager
-```
-
-Ожидаемые version/build:
-
-```text
-1.0.8
-20260819.1
-```
-
-## Acceptance
-
-```bash
 sudo bash scripts/acceptance-1.0.8.sh
 ```
 
-Acceptance не устанавливает/удаляет DHCP. Реальный install/remove lifecycle отдельно проверяется в GitHub Actions release validation.
+Ожидается:
+
+```text
+1.0.8
+20260819.2
+ACCEPTANCE: PASSED
+```
+
+## PostgreSQL
+
+Runtime DSN:
+
+```text
+dbname=control_center user=control-center host=/var/run/postgresql
+```
+
+Локальное подключение идёт через Unix socket/peer authentication. Пароль PostgreSQL в приложении не хранится, внешний PostgreSQL listener installer не включает.
+
+## Web UI
+
+По умолчанию:
+
+```text
+http://SERVER_IP:8080
+```
+
+Если Web-порт был изменён ранее, installer сохраняет его.
 
 ## Удаление
 
@@ -103,21 +98,19 @@ Acceptance не устанавливает/удаляет DHCP. Реальный
 sudo bash install/uninstall.sh
 ```
 
-С сохранением application state, PostgreSQL database и service identity:
+С сохранением application data:
 
 ```bash
 sudo bash install/uninstall.sh --keep-data
 ```
 
-1.0.8 uninstall также удаляет manual update path watcher и internal updater compatibility copy.
-
 ## Диагностика
 
 ```bash
-journalctl -u control-center -n 200 --no-pager
-journalctl -u control-center-market-apply.service -n 200 --no-pager
 journalctl -u control-center-update.service -n 200 --no-pager
+journalctl -u control-center-market-apply.service -n 200 --no-pager
+journalctl -u control-center-os-update.service -n 200 --no-pager
+sudo tail -n 100 /var/lib/control-center-root/upgrade-preflight-1.0.8.log 2>/dev/null || true
 sudo tail -n 100 /var/lib/control-center-system/market-last.log 2>/dev/null || true
+dpkg --audit
 ```
-
-См. `docs/MARKET.md`, `docs/DHCP.md`, `docs/UPDATE.md`, `docs/POSTGRESQL.md`, `docs/WEB-PORT.md` и `docs/TROUBLESHOOTING.md`.

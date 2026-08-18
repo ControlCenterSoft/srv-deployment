@@ -1,6 +1,6 @@
 # Control Center 1.0.8
 
-Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.8**, build **20260819.1**.
+Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.8**, build **20260819.2**.
 
 ## Главное в 1.0.8
 
@@ -11,8 +11,23 @@ Control Center — web-панель управления Linux-сервером.
 - переработана и реально проверяется установка **DHCP Server / dnsmasq**;
 - recovery незавершённой предыдущей установки DHCP без автоматического захвата внешней DHCP-конфигурации;
 - **Настройки → Обновления Control Center**: кнопка установки активируется только при наличии нового Production release/build;
-- ручная установка обновления запускает root updater через `control-center-update-now.path` и не зависит от включённости автоматических обновлений;
+- ручная установка обновления запускает root updater через `control-center-update-now.path`;
+- build `20260819.2` добавляет прямую совместимость со старым updater 1.0.6 и предварительное восстановление half-configured `dpkg/apt`;
 - PostgreSQL, Web-port, licensing, network/DHCP configuration и protected state архитектура 1.0.7 сохранены.
+
+## Восстановление проблемного обновления 1.0.6
+
+Если сервер остаётся на 1.0.6, в уведомлениях есть `код 100`, ошибка обновления ОС/пакетов и `dnsmasq, установленный вне Control Center`, используйте:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/filosoff31/srv-deployment/release/1.0.8/scripts/repair-upgrade-1.0.6-to-1.0.8.sh \
+  | sudo bash
+```
+
+Скрипт сначала сохраняет диагностику и конфигурацию в `/var/lib/control-center-root/manual-repair-<timestamp>/`, затем запускает существующий production updater 1.0.6. Его штатный rollback остаётся активным.
+
+Активная внешняя конфигурация `dnsmasq` не удаляется и не захватывается. Автоматическое восстановление DHCP выполняется только для legacy-состояния без пользовательской конфигурации.
 
 ## PostgreSQL
 
@@ -41,7 +56,7 @@ Market worker:
 /var/lib/control-center-system/modules/dhcp.json
 ```
 
-При установке `dnsmasq` используется временный `policy-rc.d`, чтобы пакет не пытался запустить обычный DNS/DHCP daemon до того, как Control Center подготовит конфигурацию. После установки выполняются package check и `dnsmasq --test`.
+Fresh install использует временный `policy-rc.d`, выполняет package check и `dnsmasq --test`. Build 20260819.2 дополнительно умеет восстановить конкретный legacy failure 1.0.6 через явный root-owned recovery marker.
 
 ## Установка
 
@@ -65,14 +80,18 @@ http://SERVER_IP:8080
 sudo bash scripts/acceptance-1.0.8.sh
 ```
 
-GitHub Actions дополнительно выполняет реальную установку и удаление `dnsmasq` тем же Market helper, которым пользуется сервер.
+Ожидаемый build:
+
+```text
+20260819.2
+```
+
+GitHub Actions проверяет legacy updater payload check, PostgreSQL, fresh DHCP install/remove и отдельный legacy DHCP recovery scenario.
 
 ## Home / Professional
 
 - **Home** — домашнее некоммерческое использование;
 - **Professional** — коммерческое использование и расширенные возможности по лицензии.
-
-Существующая Home-редакция продолжает работать без остановки сервисов из-за лицензионного состояния.
 
 ## Безопасность
 

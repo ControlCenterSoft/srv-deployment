@@ -1,68 +1,73 @@
 # Control Center 1.0.8
 
-Статус: `production`.
+Текущий build: **20260819.2**.
 
-GitHub Actions release validation успешно проверила Python/JavaScript/Bash, release metadata, PostgreSQL peer-auth/migration и **реальный DHCP lifecycle**: установка пакета `dnsmasq` тем же Market root helper, проверка module state, persistent Market status, start/success event history, `dnsmasq --test`, отсутствие дистрибутивного dnsmasq runtime и последующее удаление модуля.
+## Hotfix build 20260819.2
 
-## Что изменено
+Build исправляет сценарий, обнаруженный на работающем сервере Control Center 1.0.6:
 
-### Статусы сервисов в Маркете
+1. updater 1.0.6 проверяет `APP_VERSION` непосредственно в `app/main.py` до запуска installer;
+2. первоначальный build 1.0.8 выставлял runtime version через release extension, из-за чего legacy updater не мог корректно подтвердить payload;
+3. Market 1.0.6 временно маскировал `dnsmasq.service`; `apt-get install dnsmasq` мог вернуть **код 100 уже после установки пакета**, но до записи `modules/dhcp.json`;
+4. после этого пакет существовал, а Control Center считал его внешним, и последующие package/update операции могли продолжать падать.
 
-В верхней правой части каждой карточки сервиса добавлен постоянный статус. Для DHCP доступны состояния:
+В build 20260819.2:
 
-- **Установка…** — root Market worker выполняет установку;
-- **Работает** — пакет установлен и модуль зарегистрирован Control Center;
-- **Ошибка** — установка либо работа настроенного DHCP завершилась ошибкой;
-- **Не установлен** — модуль доступен для установки.
+- `app/main.py` снова содержит явный `APP_VERSION = '1.0.8'` для совместимости с updater 1.0.6;
+- фактическая application implementation сохранена в `main_base_107.py`, runtime остаётся единым;
+- installer перед миграцией выполняет безопасный `dpkg/apt` preflight с `apt-get -f install`, не удаляя dnsmasq config;
+- во время package repair запуск `dnsmasq` блокируется временным `policy-rc.d`;
+- добавлен скрипт `scripts/repair-upgrade-1.0.6-to-1.0.8.sh`, который делает резервную диагностическую копию, принудительно запускает production updater и сохраняет rollback старого updater;
+- если stale `dnsmasq` действительно является результатом неудачной установки Control Center 1.0.6 и внешняя конфигурация dnsmasq отсутствует, скрипт создаёт явный recovery marker и после обновления восстанавливает DHCP module state;
+- внешний dnsmasq с активной пользовательской конфигурацией не захватывается и не удаляется;
+- OS updater также ремонтирует half-configured packages и блокирует автозапуск обычного `dnsmasq.service` во время package transaction.
 
-Для будущих сервисов остаётся состояние **Запланировано**.
+## Быстрое восстановление сервера 1.0.6
 
-Состояние формируется сервером из pending request, protected Market status, module state, пакета `dnsmasq` и фактического systemd status. Поэтому обновление страницы, переход в другой раздел или повторный вход в Маркет не сбрасывают состояние.
+На проблемном сервере:
 
-При статусе **Ошибка** полный diagnostic detail доступен через tooltip при наведении мыши.
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/filosoff31/srv-deployment/release/1.0.8/scripts/repair-upgrade-1.0.6-to-1.0.8.sh \
+  | sudo bash
+```
 
-## История установки в уведомлениях
+Скрипт использует существующий updater 1.0.6, поэтому его штатный application rollback остаётся активным. До изменений создаётся каталог:
 
-Market root worker ведёт защищённый журнал:
+```text
+/var/lib/control-center-root/manual-repair-<timestamp>/
+```
+
+с копиями update/Market status, журналов и dnsmasq config.
+
+## Постоянные статусы сервисов
+
+В Маркете карточка DHCP показывает server-side lifecycle status:
+
+- **Установка…**;
+- **Работает**;
+- **Ошибка**;
+- **Не установлен**.
+
+Статус переживает reload/navigation. При `Ошибка` diagnostic detail доступен по наведению.
+
+## Уведомления установки
+
+Market root worker сохраняет start/success/failure events в:
 
 ```text
 /var/lib/control-center-system/market-events.jsonl
 ```
 
-Для установки/удаления сохраняются отдельные события start/success/failure с server timestamp. `/api/notifications` переносит эти события в PostgreSQL `notification_events`, поэтому в колокольчике остаются, например:
+События синхронизируются в PostgreSQL `notification_events` и отображаются в колокольчике с server timestamp.
 
-- `Установка началась: DHCP Server`;
-- `Установка успешно завершена: DHCP Server`;
-- `Установка DHCP Server завершилась ошибкой ...` + diagnostic detail.
+## DHCP
 
-Дата и время выводятся интерфейсом из server timestamp.
+Fresh install и legacy recovery проходят проверку `dnsmasq --test`. Рабочая DHCP-конфигурация по-прежнему запускается через `control-center-dhcp-server.service`, а не через дистрибутивный `dnsmasq.service`.
 
-## Исправление установки DHCP
+## Обновления Control Center
 
-Установка DHCP переработана:
-
-1. `dnsmasq` не запускается автоматически во время `apt` — используется временный `policy-rc.d` с обязательным восстановлением исходного файла.
-2. После установки проверяются `dpkg-query`, наличие `dnsmasq` и `dnsmasq --test`.
-3. Дистрибутивный `dnsmasq.service` отключается; дальнейшая DHCP-конфигурация управляется выделенной службой Control Center.
-4. Если предыдущая установка Control Center оборвалась после установки пакета, 1.0.8 умеет безопасно восстановить модуль, но только если нет внешних DHCP directives и есть признаки предыдущей операции Control Center.
-5. Активная внешняя DHCP-конфигурация по-прежнему не захватывается автоматически.
-6. Полный вывод последней Market операции хранится в `market-last.log` и при ошибке попадает в protected status/tooltip/notification.
-
-GitHub Actions 1.0.8 выполняет **реальную установку и удаление dnsmasq** через тот же root helper, которым пользуется сервер.
-
-## Установка обновления Control Center
-
-`GET /api/settings/update/check` возвращает `update_available` с учётом `release` и `build`.
-
-В **Настройки → Обновления Control Center** добавляется кнопка **Установить обновление**. Она:
-
-- отключена, если установлен актуальный Production build;
-- автоматически активируется при обнаружении более новой версии/build;
-- при нажатии создаёт `/var/lib/control-center/update-now`;
-- `control-center-update-now.path` немедленно запускает root updater;
-- ручной запрос выполняется даже при отключённых автоматических обновлениях и без ожидания интервала проверки.
-
-Updater сохраняет Production metadata/payload validation, application rollback и PostgreSQL `pg_dump` rollback архитектуры 1.0.7.
+`GET /api/settings/update/check` сравнивает version/build. Кнопка **Установить обновление** активна только для более нового Production target. Ручной запуск идёт через `control-center-update-now.path` в root updater.
 
 ## Acceptance
 
@@ -70,11 +75,16 @@ Updater сохраняет Production metadata/payload validation, application r
 sudo bash scripts/acceptance-1.0.8.sh
 ```
 
-Acceptance проверяет version/build, Market status API, update availability API, manual update path watcher, PostgreSQL notifications, UI overlay и DHCP consistency при установленном модуле.
+Ожидается:
+
+```text
+1.0.8
+20260819.2
+ACCEPTANCE: PASSED
+```
+
+GitHub Actions проверяет Python/JavaScript/Bash, legacy updater payload check, PostgreSQL peer migration, fresh DHCP install/remove и отдельный legacy DHCP recovery scenario.
 
 ## Безопасность
 
-- PostgreSQL остаётся локальным application data layer через Unix socket/peer authentication.
-- Системные конфигурации применяются только root helpers.
-- Внешний существующий `dnsmasq` не захватывается без безопасного recovery-контекста.
-- Встроенная Web-аутентификация административной панели пока не реализована; Web-порт необходимо ограничивать доверенной LAN/VPN/firewall.
+PostgreSQL остаётся локальным через Unix socket/peer authentication. Системные изменения выполняют root helpers. Встроенная Web-аутентификация пока не реализована, поэтому административный порт должен быть ограничен доверенной LAN/VPN/firewall.

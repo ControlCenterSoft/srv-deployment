@@ -30,8 +30,8 @@ jobs:
       - name: Python syntax
         run: |
           python -m py_compile \
-            app/main.py app/wsgi.py app/database.py app/db_migrate.py app/db_cli.py \
-            app/release_107.py app/release_108.py license/issue-license.py
+            app/main.py app/main_base_107.py app/wsgi.py app/database.py app/db_migrate.py app/db_cli.py \
+            app/release_107.py app/release_108.py app/release_108_build2.py license/issue-license.py
 
       - name: JavaScript syntax
         run: |
@@ -44,16 +44,18 @@ jobs:
           for f in \
             install/install.sh install/install-base-1.0.7.sh \
             install/uninstall.sh install/uninstall-base-1.0.7.sh \
-            update/control-center-update update/control-center-update-base-1.0.7 update/control-center-os-update \
+            update/control-center-update update/control-center-update-base-1.0.7 \
+            update/control-center-os-update update/control-center-os-update-base-1.0.8 \
             system/control-center-web-apply \
             network/control-center-network-apply \
-            market/control-center-market-apply market/control-center-dhcp-apply \
+            market/control-center-market-apply market/control-center-market-apply-base-1.0.8 market/control-center-dhcp-apply \
             license/control-center-license-apply \
+            scripts/repair-upgrade-1.0.6-to-1.0.8.sh \
             scripts/acceptance-1.0.5.sh scripts/acceptance-1.0.6.sh scripts/acceptance-1.0.7.sh scripts/acceptance-1.0.8.sh; do
             bash -n "$f"
           done
 
-      - name: Validate release consistency and 1.0.8 architecture
+      - name: Validate release consistency and legacy updater compatibility
         run: |
           python - <<'PY'
           import json,pathlib,re
@@ -62,7 +64,7 @@ jobs:
               json.loads(p.read_text())
           app_release=json.loads((root/'app/release.json').read_text())
           version=app_release['version']; build=app_release['build']
-          assert version=='1.0.8' and build=='20260819.1'
+          assert version=='1.0.8' and build=='20260819.2'
           deployment=json.loads((root/'deployment.json').read_text())
           assert deployment['release']==version and deployment['build']==build
           assert deployment['channel']=='production' and deployment['release_branch']==f'release/{version}'
@@ -70,39 +72,37 @@ jobs:
           assert manifest['release']==version and manifest['build']==build
           assert manifest['database']['engine']=='PostgreSQL'
 
+          main=(root/'app/main.py').read_text()
+          assert re.search(r"^APP_VERSION\s*=\s*['\"]1\.0\.8['\"]",main,re.M)
+          assert re.search(r"^APP_BUILD\s*=\s*['\"]20260819\.2['\"]",main,re.M)
+          assert 'main_base_107' in main and 'sys.modules[__name__] = _base' in main
+          # This reproduces the exact payload-version check used by updater 1.0.6.
+          m=re.search(r"^APP_VERSION\s*=\s*['\"]([^'\"]+)",main,re.M)
+          assert m and m.group(1)==version
+
           wsgi=(root/'app/wsgi.py').read_text()
-          assert 'import release_108' in wsgi and 'release_108.register(app, main)' in wsgi
-          ext=(root/'app/release_108.py').read_text()
-          for token in [
-              "VERSION = '1.0.8'", "BUILD = '20260819.1'", '/api/settings/update/install',
-              'update_available', 'market-events.jsonl', 'Установка…', 'Работает', 'Ошибка',
-              "app.view_functions['market']", "app.view_functions['notifications']",
-              "request.path == '/static/app.js'", "request.path == '/static/app.css'",
-          ]: assert token in ext,token
-
-          overlay=(root/'app/static/release-108.js').read_text()
-          for token in ['market108','service-runtime-status','installUpdate','refreshUpdate108','/api/settings/update/install']:
-              assert token in overlay,token
-          css=(root/'app/static/release-108.css').read_text()
-          for token in ['service-runtime-status','installing','error','update-ready-108']:
-              assert token in css,token
-
-          market=(root/'market/control-center-market-apply').read_text()
-          for token in ['policy-rc.d','market-events.jsonl','market-last.log','dnsmasq --test','status running','event started','event succeeded']:
-              assert token in market,token
-          assert 'ln -s /dev/null' not in market
+          for token in ['import release_108_build2','release_108_build2.register(app, main)']:
+              assert token in wsgi,token
+          hotfix=(root/'app/release_108_build2.py').read_text()
+          assert "BUILD = '20260819.2'" in hotfix
 
           installer=(root/'install/install.sh').read_text()
-          for token in ['install-base-1.0.7.sh','VERSION=1.0.8','BUILD=20260819.1','control-center-update-now.path','control-center-update-base-1.0.7']:
-              assert token in installer,token
-          base_installer=(root/'install/install-base-1.0.7.sh').read_text()
-          assert 'postgresql postgresql-client' in base_installer and 'db_migrate.py' in base_installer
+          for token in [
+              'BUILD=20260819.2','repair_package_database','apt-get -f install -y',
+              'policy-rc.d','control-center-os-update-base-1.0.8','control-center-market-apply-base-1.0.8'
+          ]: assert token in installer,token
+          assert 'rm -f /etc/dnsmasq.conf' not in installer
+          assert 'rm -rf /etc/dnsmasq.d' not in installer
 
-          updater=(root/'update/control-center-update').read_text()
-          for token in ['control-center-update-base-1.0.7','update-now','FORCE_UPDATE']:
-              assert token in updater,token
-          base_updater=(root/'update/control-center-update-base-1.0.7').read_text()
-          assert 'BUILD_FILE' in base_updater and 'pg_dump' in base_updater and 'app/release.json' in base_updater
+          market=(root/'market/control-center-market-apply').read_text()
+          for token in ['dhcp-recovery-legacy.json','control-center-market-apply-base-1.0.8','legacy_recovered']:
+              assert token in market,token
+          osup=(root/'update/control-center-os-update').read_text()
+          for token in ['control-center-os-update-base-1.0.8','apt-get -f install -y','policy-rc.d']:
+              assert token in osup,token
+          repair=(root/'scripts/repair-upgrade-1.0.6-to-1.0.8.sh').read_text()
+          for token in ['manual-repair-','dhcp-recovery-legacy.json','control-center-update','EXPECTED_BUILD=20260819.2']:
+              assert token in repair,token
 
           req=(root/'requirements.txt').read_text()
           assert re.search(r'^psycopg\[binary\]>=3\.2,<4\.0$',req,re.M)
@@ -117,6 +117,16 @@ jobs:
           python -m pip install -r requirements.txt
           sudo systemctl start postgresql
           sudo -u postgres pg_isready
+
+      - name: Validate main compatibility shim
+        run: |
+          PYTHONPATH=app python - <<'PY'
+          import main
+          assert main.APP_VERSION=='1.0.8'
+          assert main.APP_BUILD=='20260819.2'
+          assert main.app is not None
+          print(main.APP_VERSION,main.APP_BUILD)
+          PY
 
       - name: Validate real PostgreSQL migration and peer authentication
         run: |
@@ -142,11 +152,16 @@ jobs:
           database.upsert_job('ci-job','ci','queued',payload={'ok':True})
           database.sync_notifications([{'id':'ci-event','source':'ci','title':'CI','state':'ok','severity':'ok','message':'PostgreSQL works','timestamp':1}])
           database.mark_notifications(['ci-event'])
-          database.upsert_local_node(edition='Professional',version='1.0.8',build='20260819.1')
+          database.upsert_local_node(edition='Professional',version='1.0.8',build='20260819.2')
           assert database.cluster_nodes()
           PY
 
-      - name: Validate real DHCP install and remove lifecycle
+      - name: Install Market helper base for lifecycle tests
+        run: |
+          sudo install -d -m 0755 /usr/local/lib/control-center
+          sudo install -m 0755 market/control-center-market-apply-base-1.0.8 /usr/local/lib/control-center/control-center-market-apply-base-1.0.8
+
+      - name: Validate real fresh DHCP install and remove lifecycle
         run: |
           set -euo pipefail
           sudo rm -rf /var/lib/control-center /var/lib/control-center-system
@@ -177,6 +192,35 @@ jobs:
           sudo bash market/control-center-market-apply
           test ! -e /var/lib/control-center-system/modules/dhcp.json
           test ! -e /etc/dnsmasq.d/control-center-dhcp.conf
+
+      - name: Validate legacy 1.0.6 DHCP code-100 recovery path
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y dnsmasq >/dev/null
+          sudo systemctl disable --now dnsmasq.service >/dev/null 2>&1 || true
+          sudo rm -f /etc/dnsmasq.d/control-center-dhcp.conf /var/lib/control-center-system/modules/dhcp.json
+          sudo tee /var/lib/control-center-system/dhcp-recovery-legacy.json >/dev/null <<'JSON'
+          {"source":"ci","legacy_version":"1.0.6","reason":"simulated apt code 100","created_at":1}
+          JSON
+          sudo chown root:control-center /var/lib/control-center-system/dhcp-recovery-legacy.json
+          sudo chmod 0640 /var/lib/control-center-system/dhcp-recovery-legacy.json
+          sudo tee /var/lib/control-center/market-pending.json >/dev/null <<'JSON'
+          {"module":"dhcp","action":"install","request_id":"ci-legacy-recovery","requested_at":3}
+          JSON
+          sudo bash market/control-center-market-apply
+          sudo python3 - <<'PY'
+          import json,os
+          state=json.load(open('/var/lib/control-center-system/modules/dhcp.json'))
+          assert state['installed'] is True
+          assert state['package_owned'] is True
+          assert state['legacy_recovered'] is True
+          assert not os.path.exists('/var/lib/control-center-system/dhcp-recovery-legacy.json')
+          PY
+          sudo tee /var/lib/control-center/market-pending.json >/dev/null <<'JSON'
+          {"module":"dhcp","action":"remove","request_id":"ci-legacy-remove","requested_at":4}
+          JSON
+          sudo bash market/control-center-market-apply
+          ! dpkg-query -W -f='${Status}' dnsmasq 2>/dev/null | grep -q 'install ok installed'
 
       - name: Validate Professional public key
         run: openssl pkey -pubin -in license/vendor-public.pem -noout

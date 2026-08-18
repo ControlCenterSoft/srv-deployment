@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+STATE=/var/lib/control-center
+SYSTEM_STATE=/var/lib/control-center-system
+SETTINGS="$STATE/os-update-settings.json"
+STATUS="$SYSTEM_STATE/os-update-status.json"
+MANUAL="$STATE/os-update-now"
+LOCK=/run/control-center-os-update.lock
+APT_LOCK=/run/control-center-apt.lock
+mkdir -p "$STATE"
+install -d -o root -g control-center -m 0750 "$SYSTEM_STATE"
+exec 9>"$LOCK"; flock -n 9 || exit 0
+[[ -f "$SETTINGS" ]] || printf '%s\n' '{"automatic_updates":false,"interval_minutes":1440}' >"$SETTINGS"
+readarray -t CFG < <(python3 - "$SETTINGS" "$STATUS" <<'PY'
+import json,sys
+try:s=json.load(open(sys.argv[1]))
+except:s={}
+try:st=json.load(open(sys.argv[2]))
+except:st={}
+try:mins=int(s.get('interval_minutes',1440))
+except:mins=1440
+print('1' if s.get('automatic_updates',False) else '0')
+print(max(60,min(mins,10080)))
+print(int(st.get('last_run',0)))
+PY
+)
+NOW=$(date +%s); RUN=0
+[[ -f "$MANUAL" ]] && RUN=1
+if [[ "$RUN" == 0 && "${CFG[0]}" == 1 && $((NOW-CFG[2])) -ge $((CFG[1]*60)) ]]; then RUN=1; fi
+[[ "$RUN" == 1 ]] || exit 0
+rm -f "$MANUAL"
+exec 8>"$APT_LOCK"
+if ! flock -w 900 8; then
+  RESULT=error; MSG='Не удалось дождаться освобождения менеджера пакетов'
+else
+  RESULT=ok; MSG='Обновление ОС и пакетов выполнено'
+  export DEBIAN_FRONTEND=noninteractive
+  if ! apt-get update || ! apt-get -y upgrade --with-new-pkgs; then RESULT=error; MSG='Ошибка обновления ОС или пакетов'; fi
+fi
+REBOOT=false; [[ -f /var/run/reboot-required ]] && REBOOT=true
+python3 - "$STATUS" "$RESULT" "$MSG" "$REBOOT" <<'PY'
+import json,sys,time
+open(sys.argv[1],'w').write(json.dumps({'last_run':int(time.time()),'result':sys.argv[2],'message':sys.argv[3],'reboot_required':sys.argv[4].lower()=='true'},ensure_ascii=False,indent=2)+'\n')
+PY
+chown root:control-center "$STATUS"; chmod 0640 "$STATUS"
+[[ "$RESULT" == ok ]]
