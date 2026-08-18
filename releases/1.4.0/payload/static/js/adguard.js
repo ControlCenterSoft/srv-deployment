@@ -33,6 +33,15 @@
         message.setAttribute("aria-live", error ? "assertive" : "polite");
     }
 
+    function toast(value, kind = "info") {
+        window.ControlCenterUI?.toast?.(value, kind);
+    }
+
+    async function confirmAction(value, options = {}) {
+        if (window.ControlCenterUI?.confirm) return window.ControlCenterUI.confirm(value, options);
+        return window.confirm(value);
+    }
+
     async function post(url, body = null) {
         const headers = {"X-CSRF-Token": csrfToken};
         const options = {method: "POST", headers};
@@ -41,6 +50,10 @@
             options.body = JSON.stringify(body);
         }
         const response = await fetch(url, options);
+        if (response.status === 401) {
+            window.top.location.replace("/login");
+            throw new Error("Требуется вход в систему");
+        }
         if (!response.ok) {
             let detail = "";
             try {
@@ -54,17 +67,44 @@
 
     async function run(operation) {
         if (busyOperation) return;
+        if (operation === "update") {
+            const approved = await confirmAction(
+                "Обновить установленный клиент AdGuard VPN? Во время операции VPN-подключение может быть кратковременно недоступно.",
+                {title: "Обновление AdGuard VPN", confirmLabel: "Обновить"}
+            );
+            if (!approved) return;
+        }
+        if (operation === "disconnect") {
+            const approved = await confirmAction(
+                "Отключить AdGuard VPN? Сервисы, использующие этот VPN-маршрут, временно перейдут в состояние без VPN.",
+                {title: "Отключение AdGuard VPN", confirmLabel: "Отключить", danger: true}
+            );
+            if (!approved) return;
+        }
+
         setMessage("");
         busyOperation = operation;
+        actionsBox.setAttribute("aria-busy", "true");
         renderActions({installed: true, can_write: true});
         try {
             await post(`/api/v1/adguard/${operation}`);
-            setMessage("Операция поставлена в очередь. Состояние обновится автоматически.");
+            const labels = {
+                connect: "Подключение AdGuard VPN поставлено в очередь.",
+                disconnect: "Отключение AdGuard VPN поставлено в очередь.",
+                update: "Обновление AdGuard VPN поставлено в очередь.",
+                refresh: "Обновление состояния AdGuard VPN запущено.",
+            };
+            const notice = labels[operation] || "Операция поставлена в очередь.";
+            setMessage(`${notice} Состояние обновится автоматически.`);
+            toast(notice, operation === "disconnect" ? "warning" : "success");
             window.setTimeout(() => load().catch(() => {}), 1400);
         } catch (error) {
-            setMessage(error.message || "Операция не выполнена.", true);
+            const detail = error.message || "Операция не выполнена.";
+            setMessage(detail, true);
+            toast(detail, "error");
         } finally {
             busyOperation = "";
+            actionsBox.setAttribute("aria-busy", "false");
         }
     }
 
@@ -125,10 +165,10 @@
             renderActions(data);
 
             configPanel.hidden = !data.installed;
-            save.disabled = !data.can_write;
-            mode.disabled = !data.can_write;
-            socksHost.disabled = !data.can_write;
-            socksPort.disabled = !data.can_write;
+            save.disabled = !data.can_write || Boolean(busyOperation);
+            mode.disabled = !data.can_write || Boolean(busyOperation);
+            socksHost.disabled = !data.can_write || Boolean(busyOperation);
+            socksPort.disabled = !data.can_write || Boolean(busyOperation);
             if (!dirty) {
                 mode.value = "SOCKS";
                 socksHost.value = status.socks_host || "127.0.0.1";
@@ -147,26 +187,39 @@
     configForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         setMessage("");
+        const host = socksHost.value.trim();
+        const port = Number(socksPort.value);
+        if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+            setMessage("Проверьте SOCKS-адрес и порт.", true);
+            return;
+        }
         save.disabled = true;
         save.setAttribute("aria-busy", "true");
+        configPanel.setAttribute("aria-busy", "true");
         try {
             await post("/api/v1/adguard/config", {
                 mode: mode.value,
-                socks_host: socksHost.value.trim(),
-                socks_port: Number(socksPort.value),
+                socks_host: host,
+                socks_port: port,
             });
             dirty = false;
             setMessage("Настройки поставлены в очередь на применение.");
+            toast("Настройки AdGuard VPN поставлены в очередь на применение.", "success");
             window.setTimeout(() => load().catch(() => {}), 1400);
         } catch (error) {
-            setMessage(error.message || "Не удалось сохранить настройки.", true);
+            const detail = error.message || "Не удалось сохранить настройки.";
+            setMessage(detail, true);
+            toast(detail, "error");
         } finally {
             save.disabled = false;
             save.removeAttribute("aria-busy");
+            configPanel.setAttribute("aria-busy", "false");
         }
     });
 
     message.setAttribute("aria-live", "polite");
     load().catch((error) => setMessage(error.message || "Не удалось получить состояние.", true));
-    window.setInterval(() => load().catch(() => {}), 15000);
+    window.setInterval(() => {
+        if (!busyOperation && document.visibilityState === "visible") load().catch(() => {});
+    }, 15000);
 })();
