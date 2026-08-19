@@ -141,25 +141,22 @@ SH
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Control Center does not assign uidNumber/gidNumber attributes in AD. Samba's
-# native idmap.ldb on an AD DC is therefore the correct mapping mechanism and
-# is less error-prone for local SMB token conversion. The legacy core still
-# carries --use-rfc2307; strip it at the orchestration boundary so a freshly
-# provisioned DC does not enable idmap_ldb:use rfc2307 = yes.
+# Keep the core worker's documented --use-rfc2307 provisioning flag intact.
+# Samba AD-DC relies on idmap.ldb for local SID-to-Unix token conversion; on
+# the Ubuntu/Samba runtime used by 1.0.11, stripping the flag produced a fresh
+# DC that passed LDAP/DNS/Kerberos but failed authenticated SMB with
+# NT_STATUS_INVALID_SID. Do not add member-server idmap config here: the only
+# accepted mapping setting is the DC-local idmap_ldb RFC2307 switch generated
+# by samba-tool provision.
 if [[ "${1:-}" == domain && "${2:-}" == provision ]];then
-  filtered=()
-  for arg in "$@";do
-    [[ "$arg" == '--use-rfc2307' ]]&&continue
-    filtered+=("$arg")
-  done
-  /usr/bin/samba-tool "${filtered[@]}"
+  /usr/bin/samba-tool "$@"
   rc=$?
   if [[ $rc -eq 0 ]];then
-    if grep -Eqi '^\s*idmap_ldb:use[[:space:]]+rfc2307[[:space:]]*=[[:space:]]*yes\s*$' /etc/samba/smb.conf 2>/dev/null;then
-      echo 'CONTROL_CENTER_ACCEPT: unexpected RFC2307 idmap on AD DC' >&2
+    if ! grep -Eqi '^\s*idmap_ldb:use[[:space:]]+rfc2307[[:space:]]*=[[:space:]]*yes\s*$' /etc/samba/smb.conf 2>/dev/null;then
+      echo 'CONTROL_CENTER_ACCEPT: Samba AD DC RFC2307 idmap switch missing' >&2
       exit 1
     fi
-    echo 'CONTROL_CENTER_ACCEPT: Samba AD DC uses default idmap.ldb' >&2
+    echo 'CONTROL_CENTER_ACCEPT: Samba AD DC idmap.ldb RFC2307 switch enabled' >&2
   fi
   exit "$rc"
 fi
