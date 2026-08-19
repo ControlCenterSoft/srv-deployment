@@ -11,7 +11,9 @@ ADMIN_COOKIE=/tmp/cc-admin.cookies
 VIEWER_COOKIE=/tmp/cc-viewer.cookies
 DOMAIN_ADMIN_COOKIE=/tmp/cc-domain-admin.cookies
 DOMAIN_VIEWER_COOKIE=/tmp/cc-domain-viewer.cookies
-rm -f "$ADMIN_COOKIE" "$VIEWER_COOKIE" "$DOMAIN_ADMIN_COOKIE" "$DOMAIN_VIEWER_COOKIE"
+DOMAIN_PACKAGE_SNAPSHOT=/tmp/cc-domain-packages-before.tsv
+DOMAIN_TIME_SNAPSHOT=/tmp/cc-domain-time-services-before.tsv
+rm -f "$ADMIN_COOKIE" "$VIEWER_COOKIE" "$DOMAIN_ADMIN_COOKIE" "$DOMAIN_VIEWER_COOKIE" "$DOMAIN_PACKAGE_SNAPSHOT" "$DOMAIN_TIME_SNAPSHOT"
 
 log(){ printf '\n=== %s ===\n' "$*"; }
 json_field(){ python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
@@ -53,6 +55,33 @@ wait_market(){
     sleep 1
   done
   return 1
+}
+apt_mark_of(){
+  local pkg="$1" base="${1%%:*}"
+  if apt-mark showmanual 2>/dev/null | grep -Fxq "$pkg" || apt-mark showmanual 2>/dev/null | grep -Fxq "$base";then printf 'manual\n';else printf 'auto\n';fi
+}
+verify_package_snapshot(){
+  local snapshot="$1" pkg was version mark current
+  while IFS=$'\t' read -r pkg was version mark;do
+    [[ -n "$pkg" ]]||continue
+    if [[ "$was" == 1 ]];then
+      current="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null||true)"
+      [[ "$current" == "$version" ]]||{ echo "Package pre-state mismatch: $pkg current=$current expected=$version" >&2;return 1; }
+      [[ "$(apt_mark_of "$pkg")" == "$mark" ]]||{ echo "APT mark pre-state mismatch: $pkg" >&2;return 1; }
+    else
+      ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null|grep -qx 'install ok installed'||{ echo "Unexpected package after Domain removal: $pkg" >&2;return 1; }
+    fi
+  done <"$snapshot"
+}
+verify_service_snapshot(){
+  local snapshot="$1" svc active enabled now_active now_enabled
+  [[ -s "$snapshot" ]]||return 0
+  while IFS=$'\t' read -r svc active enabled;do
+    [[ -n "$svc" ]]||continue
+    now_active="$(systemctl is-active "$svc" 2>/dev/null||true)";now_enabled="$(systemctl is-enabled "$svc" 2>/dev/null||true)"
+    [[ "${now_active:-unknown}" == "$active" ]]||{ echo "Service active-state mismatch: $svc current=$now_active expected=$active" >&2;return 1; }
+    [[ "${now_enabled:-unknown}" == "$enabled" ]]||{ echo "Service enable-state mismatch: $svc current=$now_enabled expected=$enabled" >&2;return 1; }
+  done <"$snapshot"
 }
 
 log 'Version, DB and isolated auth daemon'
@@ -105,12 +134,14 @@ import json
 j=json.load(open('/var/lib/control-center-system/modules/storage.json'));assert j['installed'] and j['provider']=='samba_standalone' and j['explicit']
 PY
 
-log 'DHCP install, client list and IP reservation'
+log 'DHCP install, client list, documented pagination and IP reservation'
 api "$ADMIN_COOKIE" POST /api/market/dhcp '{"action":"install"}' >/dev/null
 wait_market dhcp running
 api "$ADMIN_COOKIE" POST /api/dhcp/config '{"interface":"ccad0","range_start":"10.77.11.100","range_end":"10.77.11.150","mask":24,"gateway":"10.77.11.1","dns":["1.1.1.1"],"lease_minutes":720,"extra_options":[]}' >/dev/null
 wait_json_state /var/lib/control-center-system/dhcp-status.json applied 'error|rollback|rejected' 120
 api "$ADMIN_COOKIE" GET /api/dhcp/clients >/dev/null
+curl -fsS "$BASE/static/app.js" | grep -Fq 'DHCP_CLIENTS_PAGE_SIZE_COMPLIANCE111 = 10'
+curl -fsS "$BASE/static/app.js" | grep -Fq 'dhcpClientsPager111'
 api "$ADMIN_COOKIE" POST /api/dhcp/reservations '{"action":"reserve","mac":"02:11:22:33:44:55","ip":"10.77.11.120","hostname":"ci-client"}' >/dev/null
 wait_json_state /var/lib/control-center-system/dhcp-reservations-status.json applied 'error|rollback|rejected' 120
 grep -Fq 'dhcp-host=02:11:22:33:44:55,10.77.11.120,ci-client' /etc/dnsmasq.d/control-center-dhcp-reservations.conf
@@ -160,15 +191,29 @@ sudo python3 - <<'PY'
 import json
 s=json.load(open('/var/lib/control-center-system/modules/samba.json'));d=json.load(open('/var/lib/control-center-system/modules/dns.json'));f=json.load(open('/var/lib/control-center-system/modules/storage.json'))
 assert s['managed'] and s['state']=='active';assert d['provider']=='samba_internal' and 'domain' in d['dependency_by'];assert f['provider']=='samba_ad_dc' and 'domain' in f['dependency_by']
+assert s['portal_auth']['admin_group']=='Control Center Admins'
 PY
 
-log 'AD health, DNS, Kerberos, SYSVOL, Storage and DHCP-DNS integration'
+# ExecStartPost commits the exact package/time-service pre-state only after the
+# orchestrator completes successfully. Keep an external CI copy for the removal
+# verification below.
+for _ in $(seq 1 60);do sudo test -s /var/lib/control-center-root/domain-package-prestate/packages-before.tsv&&break;sleep 1;done
+sudo test -s /var/lib/control-center-root/domain-package-prestate/packages-before.tsv
+sudo cp /var/lib/control-center-root/domain-package-prestate/packages-before.tsv "$DOMAIN_PACKAGE_SNAPSHOT"
+sudo test -s /var/lib/control-center-root/domain-package-prestate/time-services-before.tsv && sudo cp /var/lib/control-center-root/domain-package-prestate/time-services-before.tsv "$DOMAIN_TIME_SNAPSHOT" || true
+sudo chown "$USER:$USER" "$DOMAIN_PACKAGE_SNAPSHOT" "$DOMAIN_TIME_SNAPSHOT" 2>/dev/null||true
+
+log 'AD health, SID mapping, DNS, Kerberos, SYSVOL, Storage and DHCP-DNS integration'
 sudo samba-tool testparm >/dev/null
 sudo samba-tool ntacl sysvolcheck
 sudo samba-tool domain info 10.77.11.1
 sudo samba-tool drs showrepl --summary
 host -W 3 -t SRV _ldap._tcp.ci.example.test 10.77.11.1
 host -W 3 -t SRV _kerberos._udp.ci.example.test 10.77.11.1
+sudo samba-tool group listmembers 'Control Center Admins' | grep -Fxiq Administrator
+ADMINISTRATOR_SID="$(sudo wbinfo --name-to-sid 'CITEST\Administrator' | awk '{print $1}')"
+[[ "$ADMINISTRATOR_SID" =~ ^S-1-5-21-.*-500$ ]]
+[[ "$(sudo wbinfo --sid-to-uid "$ADMINISTRATOR_SID")" == 0 ]]
 H=$(api "$ADMIN_COOKIE" POST /api/samba/health '{}');python3 - "$H" <<'PY'
 import json,sys
 j=json.loads(sys.argv[1]);assert j['healthy'],j['checks'];assert j['checks']['dns_dependency']['ok'];assert j['checks']['storage_dependency']['ok'];assert j['checks']['portal_auth_daemon']['ok']
@@ -184,6 +229,7 @@ log 'Domain authentication and RBAC bootstrap roles'
 sudo samba-tool user create ccdomainadmin "$DOMAIN_PASS"
 sudo samba-tool user create ccdomainviewer "$DOMAIN_PASS"
 sudo samba-tool group addmembers 'Control Center Admins' ccdomainadmin
+sudo samba-tool group listmembers 'Control Center Admins' | grep -Fxiq ccdomainadmin
 for _ in $(seq 1 30);do sudo wbinfo --name-to-sid 'CITEST\ccdomainadmin' >/dev/null 2>&1&&break;sleep 1;done
 login domain ccdomainadmin "$DOMAIN_PASS" "$DOMAIN_ADMIN_COOKIE"
 api "$DOMAIN_ADMIN_COOKIE" GET /api/auth/session|python3 -c "import json,sys;j=json.load(sys.stdin);assert j['source']=='domain' and j['role']=='admin' and j['domain']=='CITEST'"
@@ -207,7 +253,7 @@ test ! -e /run/control-center-root/samba-approval.json
 ! sudo grep -R -F --binary-files=without-match "$DOMAIN_PASS" /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root /etc/control-center /etc/samba 2>/dev/null
 ! sudo -u control-center psql -d control_center -Atqc "select request::text||result::text||coalesce(error,'') from control_center.ad_dc_lifecycle_jobs"|grep -F "$DOMAIN_PASS"
 
-log 'Guarded Domain removal and exact pre-state cleanup audit'
+log 'Guarded Domain removal and exact package/configuration pre-state cleanup audit'
 REMOVE_APPROVAL=$(sudo control-center-samba-approve --remove);REMOVE_CODE=$(printf '%s\n' "$REMOVE_APPROVAL"|sed -n 's/^Control Center Domain removal approval code: //p');[[ "$REMOVE_CODE" =~ ^[0-9a-f]{8}$ ]]
 REMOVE_REQ=$(python3 - "$REMOVE_CODE" <<'PY'
 import json,sys
@@ -215,7 +261,7 @@ print(json.dumps({'approval_code':sys.argv[1],'confirmation':'УДАЛИТЬ Д�
 PY
 )
 api "$ADMIN_COOKIE" POST /api/domain/remove "$REMOVE_REQ" >/dev/null
-wait_json_state /var/lib/control-center-system/samba-status.json removed 'error|rollback|rejected' 300
+wait_json_state /var/lib/control-center-system/samba-status.json removed 'error|rollback|rejected' 420
 LATEST_DOMAIN_AUDIT=$(ls -1t /var/lib/control-center-system/cleanup-audits/domain-*.json|head -1)
 sudo python3 - "$LATEST_DOMAIN_AUDIT" <<'PY'
 import json,sys
@@ -226,6 +272,9 @@ import json
 assert json.load(open('/var/lib/control-center-system/modules/dns.json'))['provider']=='unbound'
 assert json.load(open('/var/lib/control-center-system/modules/storage.json'))['provider']=='samba_standalone'
 PY
+sudo test ! -e /var/lib/control-center-root/domain-package-prestate
+verify_package_snapshot "$DOMAIN_PACKAGE_SNAPSHOT"
+verify_service_snapshot "$DOMAIN_TIME_SNAPSHOT"
 systemctl is-active --quiet unbound.service
 systemctl is-active --quiet smbd.service
 test -f /srv/control-center/storage/public/runtime-preserve.txt
