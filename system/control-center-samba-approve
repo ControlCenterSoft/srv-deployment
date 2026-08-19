@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Запустите: sudo control-center-samba-approve' >&2; exit 1; }
+DIR=/run/control-center-root
+FILE="$DIR/samba-approval.json"
+install -d -o root -g root -m 0700 "$DIR"
+TOKEN="$(openssl rand -hex 4)"
+HASH="$(printf '%s' "$TOKEN" | sha256sum | awk '{print $1}')"
+NOW="$(date +%s)"
+EXPIRES="$((NOW+600))"
+python3 - "$FILE" "$HASH" "$NOW" "$EXPIRES" <<'PY'
+import json,sys,os
+p,h,issued,expires=sys.argv[1:]
+with open(p,'w',encoding='utf-8') as f:
+    json.dump({'sha256':h,'issued_at':int(issued),'expires_at':int(expires),'purpose':'samba-ad-dc-provision'},f,ensure_ascii=False,indent=2)
+    f.write('\n')
+os.chmod(p,0o600)
+PY
+chown root:root "$FILE"
+printf '\nControl Center Samba AD-DC approval code: %s\n' "$TOKEN"
+printf 'Действует 10 минут и используется один раз. Введите его в Web UI при создании домена.\n\n'
