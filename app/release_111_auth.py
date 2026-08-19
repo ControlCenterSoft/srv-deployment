@@ -185,6 +185,11 @@ def register(app, main):
         path = request.path
         if path.startswith('/static/') or path in {'/login', '/api/auth/login', '/api/health'}:
             return None
+        # The legacy installer verifies PostgreSQL through this read-only API
+        # before the 1.0.11 auth daemon/systemd units are installed. Keep that
+        # bootstrap probe local-only instead of weakening normal remote access.
+        if path == '/api/database/status' and request.method == 'GET' and request.remote_addr in {'127.0.0.1', '::1'}:
+            return None
         if path.startswith('/api/') or path == '/':
             if not session.get('principal'):
                 if path.startswith('/api/'):
