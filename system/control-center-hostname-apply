@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+STATE=/var/lib/control-center
+SYSTEM_STATE=/var/lib/control-center-system
+ROOT_STATE=/var/lib/control-center-root
+PENDING="$STATE/hostname-pending.json"
+STATUS="$SYSTEM_STATE/hostname-status.json"
+BACKUP_HOSTNAME="$ROOT_STATE/hostname.rollback"
+BACKUP_HOSTS="$ROOT_STATE/hosts.rollback"
+[[ -s "$PENDING" ]] || exit 0
+install -d -o root -g control-center -m 0750 "$SYSTEM_STATE"
+install -d -o root -g root -m 0700 "$ROOT_STATE"
+status(){
+  python3 - "$STATUS" "$1" "$2" "$3" <<'PY'
+import json,sys,time
+p,state,msg,hostname=sys.argv[1:]
+open(p,'w').write(json.dumps({'state':state,'message':msg,'hostname':hostname,'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n')
+PY
+  chown root:control-center "$STATUS"; chmod 0640 "$STATUS"
+}
+readarray -t REQ < <(python3 - "$PENDING" <<'PY'
+import json,re,sys
+j=json.load(open(sys.argv[1]))
+name=str(j.get('hostname') or '').strip().lower();old=str(j.get('previous_hostname') or '').strip()
+if not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',name): raise SystemExit(2)
+print(name);print(old)
+PY
+) || { rm -f "$PENDING"; status rejected 'Некорректное имя компьютера' "$(hostname)"; exit 1; }
+NEW="${REQ[0]}"; OLD="${REQ[1]:-$(hostname)}"
+rm -f "$PENDING"
+status applying "Переименование компьютера: $OLD → $NEW…" "$OLD"
+cp -a /etc/hostname "$BACKUP_HOSTNAME" 2>/dev/null || true
+cp -a /etc/hosts "$BACKUP_HOSTS" 2>/dev/null || true
+rollback(){
+  [[ -f "$BACKUP_HOSTNAME" ]] && cp -a "$BACKUP_HOSTNAME" /etc/hostname || true
+  [[ -f "$BACKUP_HOSTS" ]] && cp -a "$BACKUP_HOSTS" /etc/hosts || true
+  hostnamectl set-hostname "$OLD" >/dev/null 2>&1 || true
+}
+if ! hostnamectl set-hostname "$NEW"; then rollback;status rollback 'Не удалось изменить hostname; предыдущее имя восстановлено' "$OLD";exit 1;fi
+if ! python3 - /etc/hosts "$OLD" "$NEW" <<'PY'
+from pathlib import Path
+import re,sys
+p=Path(sys.argv[1]);old=sys.argv[2];new=sys.argv[3]
+text=p.read_text(errors='replace') if p.exists() else ''
+lines=text.splitlines();out=[];found=False
+old_short=old.split('.')[0]
+for line in lines:
+    if re.match(r'^\s*127\.0\.1\.1\s+',line):
+        out.append(f'127.0.1.1\t{new}');found=True;continue
+    if old_short:
+        parts=line.split()
+        if parts and not parts[0].startswith('#'):
+            parts=[new if token in {old,old_short} else token for token in parts]
+            line='\t'.join(parts)
+    out.append(line)
+if not found: out.append(f'127.0.1.1\t{new}')
+p.write_text('\n'.join(out).rstrip()+'\n')
+PY
+then rollback;status rollback 'Не удалось обновить /etc/hosts; предыдущее имя восстановлено' "$OLD";exit 1;fi
+if [[ "$(hostname)" != "$NEW" ]]; then rollback;status rollback 'Проверка нового hostname не пройдена; предыдущее имя восстановлено' "$OLD";exit 1;fi
+status applied "Имя компьютера изменено: $NEW" "$NEW"
