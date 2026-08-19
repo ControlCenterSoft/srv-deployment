@@ -195,4 +195,4 @@ jobs:
           ! grep -RIl --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' 'BEGIN PRIVATE KEY\|BEGIN RSA PRIVATE KEY' .
           for f in README.md docs/INSTALL.md docs/SAMBA-AD-DC.md docs/NETWORK.md docs/DHCP.md docs/AUTHENTICATION.md docs/NOTIFICATIONS.md docs/SECURITY.md docs/POSTGRESQL.md releases/1.0.11/README.md releases/1.0.11/manifest.json; do test -s "$f"; done
           grep -Fq 'Список пагинируется по 10 строк' docs/DHCP.md
-          grep -Fq 'случайный пароль показывается только в выводе установки' docs/AUTHENTICATION.md
+          grep -Fq 'Случайный пароль показывается только в выводе установки' docs/AUTHENTICATION.md
