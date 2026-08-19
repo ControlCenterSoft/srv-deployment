@@ -31,6 +31,7 @@ import json,sys
 j=json.loads(sys.argv[1]);assert set(j['config'])>={'wan','lan'}
 for role in ('wan','lan'):
     assert 'enabled' in j['config'][role]
+assert any(j['config'][role]['enabled'] for role in ('wan','lan'))
 PY
 
 WEB=$(curl "${CURL[@]}" "$BASE/api/settings/web")
@@ -70,10 +71,14 @@ import json,sys
 j=json.loads(sys.argv[1]);assert isinstance(j.get('items'),list);assert 'persistence' in j
 PY
 
-node --check "$ROOT/app/static/release-110.js" >/dev/null
+if command -v node >/dev/null 2>&1; then
+  node --check "$ROOT/app/static/release-110.js" >/dev/null
+fi
 bash -n /usr/local/sbin/control-center-web-apply
 bash -n /usr/local/sbin/control-center-hostname-apply
 bash -n /usr/local/sbin/control-center-network-apply
-sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" 2>/dev/null | grep -qx 003 || true
+if sudo -u control-center psql -d control_center -Atqc 'select 1' >/dev/null 2>&1; then
+  sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 003
+fi
 
 echo 'ACCEPTANCE 1.0.10: PASSED'
