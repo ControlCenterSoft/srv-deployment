@@ -44,11 +44,19 @@ if ! samba-tool testparm >/dev/null 2>&1;then cp -a "$ROOT/smb.conf.domain-post.
 systemctl restart samba-ad-dc.service
 systemctl is-active --quiet samba-ad-dc.service
 
-# Bootstrap administrative group for portal authorization until RBAC bindings
-# become authoritative. Authentication itself is handled by the isolated root
+# Bootstrap administrative group for portal authorization. This is mandatory:
+# a Domain is not considered active until the group exists and Administrator
+# membership can be proven. Authentication itself remains in the isolated root
 # auth daemon; the Web service user never receives winbindd_priv membership.
-samba-tool group add 'Control Center Admins' --description='Control Center portal administrators' >/dev/null 2>&1 || true
-samba-tool group addmembers 'Control Center Admins' Administrator >/dev/null 2>&1 || true
+if ! samba-tool group show 'Control Center Admins' >/dev/null 2>&1; then
+  samba-tool group add 'Control Center Admins' --description='Control Center portal administrators' >/dev/null
+fi
+if ! samba-tool group listmembers 'Control Center Admins' 2>/dev/null | grep -Fxiq 'Administrator'; then
+  samba-tool group addmembers 'Control Center Admins' Administrator >/dev/null
+fi
+samba-tool group listmembers 'Control Center Admins' | grep -Fxiq 'Administrator'
+wbinfo --name-to-sid "${DOMAIN}\\Administrator" >/dev/null
+wbinfo --name-to-sid "${DOMAIN}\\Control Center Admins" >/dev/null
 
 python3 - "$SAMBA" "$DNS" "$STORAGE" "$CTX" "$DOMAIN" "$IP" "$IFACE" "$FORWARDER" "$SHARE" "$DATA" "$DNS_EXPLICIT" "$DNS_OWNED" "$STORAGE_EXPLICIT" "$STORAGE_OWNED" <<'PY'
 import json,sys,time,os
