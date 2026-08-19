@@ -43,20 +43,16 @@ PY
 if ! samba-tool testparm >/dev/null 2>&1;then cp -a "$ROOT/smb.conf.domain-post.rollback" "$SMB";exit 3;fi
 systemctl restart samba-ad-dc.service
 systemctl is-active --quiet samba-ad-dc.service
-# Bootstrap group used only until full RBAC policy editing is activated.
+# Bootstrap group used until the RBAC editor becomes authoritative.
 samba-tool group add 'Control Center Admins' --description='Control Center portal administrators' >/dev/null 2>&1 || true
 samba-tool group addmembers 'Control Center Admins' Administrator >/dev/null 2>&1 || true
-if getent group winbindd_priv >/dev/null 2>&1;then
-  usermod -aG winbindd_priv control-center
-  [[ -d /var/lib/samba/winbindd_privileged ]]&&{ chgrp winbindd_priv /var/lib/samba/winbindd_privileged;chmod 0750 /var/lib/samba/winbindd_privileged; }||true
-fi
 
 python3 - "$SAMBA" "$DNS" "$STORAGE" "$CTX" "$DOMAIN" "$IP" "$IFACE" "$FORWARDER" "$SHARE" "$DATA" "$DNS_EXPLICIT" "$DNS_OWNED" "$STORAGE_EXPLICIT" "$STORAGE_OWNED" <<'PY'
 import json,sys,time,os
 sp,dp,fp,ctxp,domain,ip,iface,fwd,share,path,dexp,downed,fexp,fowned=sys.argv[1:]
 s=json.load(open(sp));ctx=json.load(open(ctxp));now=int(time.time())
 s['dependencies']={'dns':{'required':True,'explicit_before':dexp=='1','standalone_preserved':bool(ctx.get('dns_snapshot'))},'storage':{'required':True,'explicit_before':fexp=='1','standalone_preserved':bool(ctx.get('storage_snapshot'))},'install_context':ctxp}
-s['portal_auth']={'local':True,'domain':True,'admin_group':'Control Center Admins','rbac_mode':'bootstrap'}
+s['portal_auth']={'local':True,'domain':True,'admin_group':'Control Center Admins','rbac_mode':'bootstrap','auth_daemon':'control-center-authd'}
 open(sp,'w').write(json.dumps(s,ensure_ascii=False,indent=2)+'\n');os.chmod(sp,0o640)
 d={'installed':True,'provider':'samba_internal','explicit':dexp=='1','package_owned':downed=='1','dependency_by':['domain'],'interface':iface,'ipv4':ip,'forwarders':[fwd] if fwd else [],'installed_at':now,'standalone_preserved':bool(ctx.get('dns_snapshot'))}
 f={'installed':True,'provider':'samba_ad_dc','mode':'domain','explicit':fexp=='1','package_owned':fowned=='1','dependency_by':['domain'],'share_name':share,'path':path,'rbac_ready':True,'installed_at':now,'standalone_preserved':bool(ctx.get('storage_snapshot'))}
@@ -70,5 +66,6 @@ for p,msg in [(sys.argv[1],f'Samba Internal DNS работает на {sys.argv[
  open(p,'w').write(json.dumps({'state':'active','message':msg,'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n');os.chmod(p,0o640)
 PY
 chown root:control-center "$DNS_STATUS" "$STORAGE_STATUS"
-# Restart the portal so supplementary winbindd_priv membership takes effect.
-systemctl restart control-center.service >/dev/null 2>&1 || true
+# control-center-authd is root-isolated and reads the managed domain state on
+# every login attempt; the Web process never joins winbindd_priv.
+systemctl restart control-center-authd.service >/dev/null 2>&1 || true
