@@ -1,21 +1,60 @@
-# Сети Control Center 1.0.6
+# Сети Control Center 1.0.10
+
+## Сетевые роли
+
+Control Center поддерживает три рабочих схемы:
+
+```text
+WAN + LAN
+только WAN
+только LAN
+```
+
+В выпадающем списке каждой роли есть пункт **«Выключен»**. Обе роли одновременно выключить нельзя.
+
+Состояние выключенной роли сохраняется явно как:
+
+```json
+{"enabled": false, "interface": "", "method": "disabled"}
+```
+
+Это важно: после перезапуска Control Center не пытается автоматически назначить выключенную роль другому интерфейсу.
+
+## Маршрутизация
+
+- WAN Static требует gateway.
+- При включённом WAN поле gateway для LAN запрещено, чтобы не создавать второй default route.
+- LAN DHCP при включённом WAN получает `dhcp4-overrides.use-routes: false`.
+- Если WAN выключен и LAN является единственной сетью, LAN может использовать DHCP default route или Static gateway.
+
+Таким образом одноинтерфейсный сервер не вынужден искусственно иметь две роли.
+
+## Dashboard
+
+`/api/system` возвращает для WAN и LAN поле `enabled`.
+
+Web UI:
+
+- показывает графики WAN и LAN, если включены обе роли;
+- скрывает LAN-карточку, если LAN выключен;
+- скрывает WAN-карточку, если WAN выключен.
 
 ## Перечень интерфейсов
 
-В разделе **Сети** снова отображается полный перечень обнаруженных интерфейсов. Для каждого показываются:
+В разделе **Сети** отображаются:
 
-- назначенная роль WAN/LAN;
+- роль WAN/LAN или отсутствие роли;
 - имя интерфейса;
-- тип: ethernet / wifi / virtual;
+- ethernet / wifi / virtual;
 - link state;
-- текущие IPv4 адреса;
-- текущий default gateway;
-- DNS интерфейса, если доступен через `resolvectl`;
+- IPv4;
+- gateway;
+- DNS;
 - MAC;
 - MTU;
-- скорость интерфейса, если её сообщает kernel/sysfs.
+- скорость.
 
-Источники live-данных:
+Live-источники:
 
 ```text
 /sys/class/net
@@ -24,76 +63,68 @@ ip -j -4 route
 resolvectl dns
 ```
 
-## Загрузка уже настроенных WAN/LAN параметров
+Длинный перечень интерфейсов использует пагинацию.
 
-Control Center не должен показывать пустую форму после рестарта. В 1.0.6 GET `/api/network/config` формирует effective configuration из:
+## Effective configuration
 
-1. защищённого applied-state `/var/lib/control-center-system/network-config.json`;
-2. фактического `/etc/netplan/90-control-center.yaml`;
-3. live IPv4/gateway/DNS/link state интерфейсов.
-
-Если сохранённая роль отсутствует, WAN может быть определён по интерфейсу с default route. LAN при наличии Control Center Netplan выбирается из оставшихся настроенных интерфейсов.
-
-Netplan-файл Control Center имеет права:
+GET `/api/network/config` использует applied-state:
 
 ```text
-root:control-center 0640
+/var/lib/control-center-system/network-config.json
 ```
 
-Web service может его читать, но не изменять.
-
-## Назначение интерфейсов
-
-- `WAN` — внешний интерфейс;
-- `LAN` — локальный интерфейс.
-
-Один интерфейс нельзя назначить обеим ролям одновременно.
-
-## DHCP / Static
-
-При DHCP адрес получается автоматически. Для LAN DHCP-client default route не используется.
-
-При Static доступны:
-
-- IP;
-- маска CIDR или dotted netmask;
-- шлюз;
-- DNS.
-
-WAN Static требует шлюз. Для LAN шлюз необязателен.
+Если applied-state уже существует, `enabled=false` имеет приоритет над автоматическим обнаружением. Для старых установок без applied-state сохраняется legacy auto-detection WAN по default route.
 
 ## Проверка и применение
 
-Web API валидирует запрос и записывает:
+POST `/api/network/config` сначала валидирует запрос в Web API, затем записывает:
 
 ```text
 /var/lib/control-center/network-pending.json
 ```
 
-Root helper повторно проверяет все критичные поля, генерирует `/etc/netplan/90-control-center.yaml`, выполняет:
+Root helper повторно проверяет роли и генерирует только активные интерфейсы в:
+
+```text
+/etc/netplan/90-control-center.yaml
+```
+
+После этого выполняются:
 
 ```bash
 netplan generate
 netplan apply
 ```
 
-Успешно применённая конфигурация сохраняется в:
+При успехе applied-state сохраняется в:
 
 ```text
 /var/lib/control-center-system/network-config.json
 ```
 
-Rollback:
+Rollback Netplan:
 
 ```text
 /var/lib/control-center-root/90-control-center.yaml.rollback
 ```
 
+## Валидация Static
+
+Для активной роли проверяются:
+
+- существующий интерфейс;
+- уникальность интерфейса между WAN/LAN;
+- IPv4 и маска;
+- gateway;
+- DNS;
+- пересечение статических WAN/LAN подсетей.
+
+WAN Static требует gateway. LAN Static может иметь gateway только когда WAN выключен.
+
 ## Диагностика
 
 ```bash
 curl -fsS http://127.0.0.1:8080/api/network/config | python3 -m json.tool
-curl -fsS http://127.0.0.1:8080/api/networks | python3 -m json.tool
 sudo cat /var/lib/control-center-system/network-config.json
 sudo cat /var/lib/control-center-system/network-status.json
 sudo cat /etc/netplan/90-control-center.yaml
@@ -103,6 +134,4 @@ resolvectl status
 journalctl -u control-center-network-apply.service -n 100 --no-pager
 ```
 
-## Удалённое управление
-
-Изменение активного адреса или интерфейса может оборвать Web/SSH-сессию. При удалённой настройке сети рекомендуется иметь резервный административный канал.
+Изменение интерфейса или адреса может оборвать Web/SSH-сессию. Root helper сохраняет rollback Netplan, но внешний firewall/NAT и физический доступ находятся вне контроля приложения.

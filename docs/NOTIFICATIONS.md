@@ -1,53 +1,97 @@
-# Центр уведомлений — Control Center 1.0.8
+# Центр уведомлений — Control Center 1.0.10
 
-## Назначение
+## Правило интерфейса
 
-Колокольчик агрегирует состояния сети, сервисов, лицензии, обновлений Control Center/ОС и смены Web-порта. Read/unread хранится server-side в PostgreSQL `control_center.notification_events`.
+Operational alerts должны попадать в **колокольчик**, а не постоянно дублироваться длинными сообщениями внутри рабочих карточек.
 
-## Market lifecycle events 1.0.8
+В карточках остаются:
 
-Установка/удаление сервиса теперь записывается не только как последнее состояние, а как история отдельных событий в protected journal:
+- фактические значения/статусы;
+- краткий feedback сразу после нажатия кнопки;
+- ошибки валидации пользовательского ввода.
+
+Длительные состояния, предупреждения и результаты фоновых/root-операций идут в центр уведомлений.
+
+## Источники 1.0.10
+
+`/api/notifications` агрегирует:
+
+- Network apply / rollback / rejected;
+- Market lifecycle;
+- DHCP configuration/service;
+- лицензирование;
+- Control Center updates;
+- OS/package updates;
+- Web runtime: порт, HTTP/HTTPS, certificate apply/rollback;
+- PostgreSQL unavailable/degraded;
+- переименование компьютера;
+- Samba AD-DC readiness.
+
+Market history дополнительно сохраняется в:
 
 ```text
 /var/lib/control-center-system/market-events.jsonl
 ```
 
-Для DHCP сохраняются:
+## PostgreSQL unavailable
 
-- start — например `Установка началась: DHCP Server`;
-- success — `Установка успешно завершена: DHCP Server`;
-- failure — сообщение об ошибке + diagnostic detail root worker.
+Если PostgreSQL недоступен, уведомление `PostgreSQL unavailable` всё равно появляется через degraded aggregation.
 
-У каждого события есть server timestamp. `/api/notifications` импортирует журнал в PostgreSQL, поэтому быстро завершившаяся установка не теряет событие «началась» и история сохраняется после обновления страницы.
+В этот момент read/unread не может надёжно сохраняться server-side, однако сами operational alerts остаются видимыми. После восстановления PostgreSQL новые события снова синхронизируются в:
+
+```text
+control_center.notification_events
+```
+
+## Web runtime
+
+После применения 80/443/custom port/SSL root helper пишет:
+
+```text
+/var/lib/control-center-system/web-status.json
+```
+
+Состояния `applied`, `rollback`, `rejected`, `error` конвертируются в события колокольчика.
+
+При недоступной PostgreSQL Web runtime может успешно примениться; пользователь получает отдельное уведомление о degraded DB sync, а не откат порта.
+
+## Hostname
+
+Результат переименования хранится в:
+
+```text
+/var/lib/control-center-system/hostname-status.json
+```
+
+`applied` создаёт успешное событие, `rollback/rejected/error` — ошибку.
+
+## Samba AD-DC readiness
+
+После проверки readiness:
+
+- blockers → error;
+- только warnings → info;
+- readiness без blocker/warning → ok.
+
+Сам provisioning в 1.0.10 отключён, поэтому уведомление readiness не означает, что домен уже создан.
 
 ## Цвет колокольчика
 
-- **красный** — есть непрочитанное `severity=error`;
-- **зелёный** — есть непрочитанные события без ошибок;
-- **нейтральный** — всё прочитано либо событий нет.
-
-## Прочитанность
-
-```text
-control_center.notification_events.is_read
-```
-
-Read-state общий для текущей установки Control Center, пока не реализована встроенная пользовательская authentication/session модель.
+- **красный** — непрочитанный `severity=error`;
+- **зелёный** — непрочитанные события без ошибок;
+- **нейтральный** — всё прочитано или событий нет.
 
 ## API
 
-Получить события:
+```text
+GET  /api/notifications
+POST /api/notifications/read
+```
+
+Пример:
 
 ```bash
 curl -fsS http://127.0.0.1:PORT/api/notifications | python3 -m json.tool
-```
-
-Отметить выбранные:
-
-```bash
-curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d '{"ids":["EVENT_ID"]}' \
-  http://127.0.0.1:PORT/api/notifications/read
 ```
 
 Отметить все:
@@ -61,9 +105,10 @@ curl -fsS -X POST -H 'Content-Type: application/json' \
 ## Диагностика
 
 ```bash
-sudo tail -n 50 /var/lib/control-center-system/market-events.jsonl
+sudo tail -n 50 /var/lib/control-center-system/market-events.jsonl 2>/dev/null || true
+sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
+sudo cat /var/lib/control-center-system/hostname-status.json 2>/dev/null || true
+sudo cat /var/lib/control-center-system/samba-readiness.json 2>/dev/null || true
 sudo -u control-center psql -d control_center -c \
   'select source,title,state,severity,is_read,last_seen_at,message from control_center.notification_events order by last_seen_at desc limit 50;'
 ```
-
-Если PostgreSQL временно недоступен, API использует degraded aggregation; после восстановления БД Market events снова синхронизируются в PostgreSQL.

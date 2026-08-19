@@ -22,38 +22,33 @@ jobs:
           set -euo pipefail
           sudo bash install/install.sh
 
-      - name: Validate installed version and default HTTP runtime
+      - name: Validate installed 1.0.10 and migration 003
         run: |
           set -euo pipefail
-          test "$(tr -d '[:space:]' </opt/control-center/VERSION)" = "1.0.9"
-          test "$(tr -d '[:space:]' </opt/control-center/BUILD)" = "20260819.3"
+          test "$(tr -d '[:space:]' </opt/control-center/VERSION)" = "1.0.10"
+          test "$(tr -d '[:space:]' </opt/control-center/BUILD)" = "20260819.4"
           sudo grep -qx 'CONTROL_CENTER_PORT=8080' /etc/control-center/web.env
           sudo grep -qx 'CONTROL_CENTER_SSL=0' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_STANDARD_PORT=0' /etc/control-center/web.env
           curl -fsS http://127.0.0.1:8080/api/health | python3 -m json.tool
-          curl -fsS http://127.0.0.1:8080/api/system | python3 -m json.tool >/dev/null
-          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 002
+          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 003
           systemctl is-active --quiet control-center
+          systemctl is-active --quiet control-center-hostname-apply.path
+          systemctl is-enabled --quiet control-center-db-migrate.service
           systemctl cat control-center | grep -F 'AmbientCapabilities=CAP_NET_BIND_SERVICE'
+          curl -fsS http://127.0.0.1:8080/api/samba/readiness | python3 -c 'import json,sys;j=json.load(sys.stdin);assert j["details"]["provisioning_enabled"] is False'
 
-      - name: Switch live runtime to custom HTTPS 8443
+      - name: Switch live runtime to custom HTTPS 8443 through API
         run: |
           set -euo pipefail
           sudo systemctl stop control-center-web-apply.path
-          sudo tee /var/lib/control-center/web-pending.json >/dev/null <<'JSON'
-          {"port":8443,"previous_port":8080,"ssl_enabled":true,"previous_ssl_enabled":false,"standard_port":false,"previous_standard_port":false,"job_id":"ci-https-8443","requested_at":1}
-          JSON
-          if ! sudo bash -x /usr/local/sbin/control-center-web-apply; then
-            echo '=== web-status.json ==='
-            sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
-            echo '=== web.env ==='
-            sudo cat /etc/control-center/web.env 2>/dev/null || true
-            echo '=== control-center.service ==='
-            systemctl status control-center --no-pager -l || true
-            echo '=== control-center journal ==='
-            journalctl -u control-center -n 120 --no-pager || true
-            exit 1
-          fi
+          R=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"port":8443,"standard_port":false,"ssl_enabled":true}' \
+            http://127.0.0.1:8080/api/settings/web)
+          python3 - "$R" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==8443 and j['ssl_enabled'] is True
+          PY
+          sudo /usr/local/sbin/control-center-web-apply
           curl -kfsS https://127.0.0.1:8443/api/health | python3 -m json.tool
           sudo openssl x509 -in /etc/control-center/tls/server.crt -noout -subject -issuer -dates -ext subjectAltName
           test "$(sudo stat -c '%U:%G %a' /etc/control-center/tls/server.key)" = "root:control-center 640"
@@ -61,56 +56,129 @@ jobs:
           sudo grep -qx 'CONTROL_CENTER_SSL=1' /etc/control-center/web.env
           sudo grep -qx 'CONTROL_CENTER_STANDARD_PORT=0' /etc/control-center/web.env
 
-      - name: Switch live runtime to standard HTTP 80
+      - name: Switch live runtime to standard HTTP 80 through API
         run: |
           set -euo pipefail
-          sudo tee /var/lib/control-center/web-pending.json >/dev/null <<'JSON'
-          {"port":80,"previous_port":8443,"ssl_enabled":false,"previous_ssl_enabled":true,"standard_port":true,"previous_standard_port":false,"job_id":"ci-http-80","requested_at":2}
-          JSON
-          if ! sudo /usr/local/sbin/control-center-web-apply; then
-            sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
-            systemctl status control-center --no-pager -l || true
-            journalctl -u control-center -n 120 --no-pager || true
-            exit 1
-          fi
+          R=$(curl -kfsS -X POST -H 'Content-Type: application/json' \
+            -d '{"port":8443,"standard_port":true,"ssl_enabled":false}' \
+            https://127.0.0.1:8443/api/settings/web)
+          python3 - "$R" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==80 and j['standard_port'] is True
+          PY
+          sudo /usr/local/sbin/control-center-web-apply
           curl -fsS http://127.0.0.1:80/api/health | python3 -m json.tool
           sudo grep -qx 'CONTROL_CENTER_PORT=80' /etc/control-center/web.env
           sudo grep -qx 'CONTROL_CENTER_SSL=0' /etc/control-center/web.env
           sudo grep -qx 'CONTROL_CENTER_STANDARD_PORT=1' /etc/control-center/web.env
 
-      - name: Switch live runtime to standard HTTPS 443
+      - name: Switch live runtime to standard HTTPS 443 through API
         run: |
           set -euo pipefail
-          sudo tee /var/lib/control-center/web-pending.json >/dev/null <<'JSON'
-          {"port":443,"previous_port":80,"ssl_enabled":true,"previous_ssl_enabled":false,"standard_port":true,"previous_standard_port":true,"job_id":"ci-https-443","requested_at":3}
-          JSON
-          if ! sudo /usr/local/sbin/control-center-web-apply; then
-            sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
-            systemctl status control-center --no-pager -l || true
-            journalctl -u control-center -n 120 --no-pager || true
-            exit 1
-          fi
-          curl -kfsS https://127.0.0.1:443/api/health | python3 -m json.tool
-          WEB_JSON="$(curl -kfsS https://127.0.0.1:443/api/settings/web)"
-          python3 - "$WEB_JSON" <<'PY'
+          R=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"port":80,"standard_port":true,"ssl_enabled":true}' \
+            http://127.0.0.1:80/api/settings/web)
+          python3 - "$R" <<'PY'
           import json,sys
-          j=json.loads(sys.argv[1])
-          assert j['runtime_port']==443
-          assert j['runtime_ssl'] is True
-          assert j['runtime_standard_port'] is True
+          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==443 and j['ssl_enabled'] is True
           PY
-          sudo grep -qx 'CONTROL_CENTER_PORT=443' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_SSL=1' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_STANDARD_PORT=1' /etc/control-center/web.env
+          sudo /usr/local/sbin/control-center-web-apply
+          curl -kfsS https://127.0.0.1:443/api/health | python3 -m json.tool
+          WEB=$(curl -kfsS https://127.0.0.1:443/api/settings/web)
+          python3 - "$WEB" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['runtime_port']==443 and j['runtime_ssl'] is True and j['runtime_standard_port'] is True
+          PY
+
+      - name: Prove Web port change works while PostgreSQL is unavailable
+        run: |
+          set -euo pipefail
+          sudo systemctl stop postgresql.service
+          sudo systemctl mask postgresql.service
+          ! sudo -u postgres pg_isready >/dev/null 2>&1
+          R=$(curl -kfsS -X POST -H 'Content-Type: application/json' \
+            -d '{"port":8081,"standard_port":false,"ssl_enabled":false}' \
+            https://127.0.0.1:443/api/settings/web)
+          python3 - "$R" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==8081
+          PY
+          sudo /usr/local/sbin/control-center-web-apply
+          HEALTH=$(curl -fsS http://127.0.0.1:8081/api/health)
+          python3 - "$HEALTH" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['database']=='degraded' and j['version']=='1.0.10'
+          PY
+          sudo grep -qx 'CONTROL_CENTER_PORT=8081' /etc/control-center/web.env
+          sudo grep -qx 'CONTROL_CENTER_SSL=0' /etc/control-center/web.env
+          sudo grep -q 'PostgreSQL временно недоступен' /var/lib/control-center-system/web-status.json
+          N=$(curl -fsS http://127.0.0.1:8081/api/notifications)
+          python3 - "$N" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert any(x.get('source')=='database' and x.get('severity')=='error' for x in j['items'])
+          PY
+          sudo systemctl unmask postgresql.service
+          sudo systemctl start postgresql.service
+          for _ in $(seq 1 30); do sudo -u postgres pg_isready >/dev/null 2>&1 && break; sleep 1; done
+          sudo -u postgres pg_isready
+          WEB=$(curl -fsS http://127.0.0.1:8081/api/settings/web)
+          python3 - "$WEB" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['runtime_port']==8081 and j['database_synced'] is True and j['database_error'] is None
+          PY
+          sudo -u control-center psql -d control_center -Atqc "select value::text from control_center.settings where key='web.port'" | grep -qx 8081
+
+      - name: Validate live hostname rename and rollback-ready restore
+        run: |
+          set -euo pipefail
+          sudo systemctl stop control-center-hostname-apply.path
+          ORIGINAL=$(hostname)
+          echo "$ORIGINAL" >/tmp/original-hostname
+          R=$(curl -fsS -X POST -H 'Content-Type: application/json' -d '{"hostname":"cc-ci110"}' http://127.0.0.1:8081/api/settings/hostname)
+          python3 - "$R" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['status'] in ('pending','unchanged')
+          PY
+          if [[ "$(hostname)" != cc-ci110 ]]; then sudo /usr/local/sbin/control-center-hostname-apply; fi
+          test "$(hostname)" = cc-ci110
+          grep -Eq '^127\.0\.1\.1[[:space:]]+cc-ci110$' /etc/hosts
+          ORIGINAL=$(cat /tmp/original-hostname)
+          python3 - "$ORIGINAL" <<'PY'
+          import re,sys
+          assert re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',sys.argv[1]),sys.argv[1]
+          PY
+          R=$(curl -fsS -X POST -H 'Content-Type: application/json' --data "{\"hostname\":\"$ORIGINAL\"}" http://127.0.0.1:8081/api/settings/hostname)
+          sudo /usr/local/sbin/control-center-hostname-apply
+          test "$(hostname)" = "$ORIGINAL"
+          sudo cat /var/lib/control-center-system/hostname-status.json | grep -q 'applied'
+
+      - name: Validate Samba readiness and dry-run plan remain non-destructive
+        run: |
+          set -euo pipefail
+          R=$(curl -fsS http://127.0.0.1:8081/api/samba/readiness)
+          python3 - "$R" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['details']['installation_enabled'] is False and j['details']['provisioning_enabled'] is False
+          assert j['details']['next_release_target']=='1.0.11'
+          PY
+          P=$(curl -fsS -X POST http://127.0.0.1:8081/api/samba/plan)
+          python3 - "$P" <<'PY'
+          import json,sys
+          j=json.loads(sys.argv[1]);assert j['plan']['phase']=='dry-run-only';assert j['plan']['target_release']=='1.0.11';assert j['plan']['provisioning_enabled'] is False
+          PY
+          sudo -u control-center psql -d control_center -Atqc 'select count(*)>0 from control_center.ad_dc_readiness_runs' | grep -qx t
+          sudo -u control-center psql -d control_center -Atqc 'select count(*)>0 from control_center.ad_dc_change_plans' | grep -qx t
+          ! grep -R --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' -n 'samba-tool domain provision' /opt/control-center/app
 
       - name: Run full installed acceptance
         run: |
           set -euo pipefail
-          sudo bash scripts/acceptance-1.0.9.sh
+          sudo bash scripts/acceptance-1.0.10.sh
 
-      - name: Verify rollback-ready state and no dpkg damage
+      - name: Verify final health and package integrity
         run: |
           set -euo pipefail
           test -z "$(dpkg --audit 2>&1 || true)"
-          sudo -u control-center psql -d control_center -Atqc "select count(*)>=1 from control_center.ad_dc_preflight_runs" | grep -qx t
           systemctl is-active --quiet control-center
+          curl -fsS http://127.0.0.1:8081/api/health | python3 -m json.tool
+          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 003

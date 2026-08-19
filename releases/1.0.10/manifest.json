@@ -1,0 +1,40 @@
+{
+  "product": "Control Center",
+  "release": "1.0.10",
+  "build": "20260819.4",
+  "channel": "production",
+  "upgrade_from": ["1.0.9", "1.0.8", "clean install"],
+  "components": [
+    "samba-ad-dc-expanded-readiness",
+    "samba-ad-dc-dry-run-plan",
+    "postgresql-migration-003",
+    "hostname-management",
+    "web-runtime-db-independent",
+    "standard-http-80",
+    "standard-https-443",
+    "self-signed-tls",
+    "notification-audit",
+    "single-role-networking",
+    "conditional-wan-lan-dashboard"
+  ],
+  "database": {
+    "engine": "PostgreSQL",
+    "schema_migration": "003"
+  },
+  "samba_ad_dc": {
+    "installation_enabled": false,
+    "provisioning_enabled": false,
+    "target_production_release": "1.0.11",
+    "readiness_api": "/api/samba/readiness",
+    "plan_api": "/api/samba/plan"
+  },
+  "notes": [
+    "Web port and SSL changes no longer depend on PostgreSQL availability",
+    "Standard HTTP is port 80 and standard HTTPS is port 443",
+    "Computer hostname can be changed from Settings using a rollback-capable root helper",
+    "WAN or LAN may be disabled individually; both cannot be disabled together",
+    "Dashboard shows only enabled WAN/LAN traffic cards",
+    "Operational alerts are consolidated into the notification bell",
+    "Samba AD-DC remains non-destructive in 1.0.10; provisioning is intentionally disabled"
+  ]
+}

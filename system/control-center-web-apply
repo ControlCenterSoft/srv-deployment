@@ -33,7 +33,7 @@ def b(name,default=False):
 p=int(j.get('port')); old=int(j.get('previous_port',8080))
 ssl=b('ssl_enabled'); oldssl=b('previous_ssl_enabled'); standard=b('standard_port'); oldstandard=b('previous_standard_port')
 if not 1<=p<=65535 or not 1<=old<=65535: raise SystemExit(3)
-if standard and p not in (80,443): raise SystemExit(4)
+if standard and p != (443 if ssl else 80): raise SystemExit(4)
 if not standard and p<1024: raise SystemExit(5)
 print(p);print(old);print('1' if ssl else '0');print('1' if oldssl else '0');print('1' if standard else '0');print('1' if oldstandard else '0');print(str(j.get('job_id','')))
 PY
@@ -110,12 +110,16 @@ PY
 rollback(){
   if [[ -n "$OLD_ENV" ]]; then printf '%s\n' "$OLD_ENV" >"$ENV_FILE"; chmod 0600 "$ENV_FILE"; else write_env "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD"; fi
   if [[ -n "$OLD_CONFIG" ]]; then printf '%s\n' "$OLD_CONFIG" >"$CONFIG"; chown root:control-center "$CONFIG"; chmod 0640 "$CONFIG"; else rm -f "$CONFIG"; fi
-  set_db "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD" || true
+  set_db "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD" >/dev/null 2>&1 || true
   systemctl daemon-reload; systemctl restart "$UNIT" || true
 }
 
-write_env "$PORT" "$SSL" "$STANDARD";write_config "$PORT" "$SSL" "$STANDARD"
-if ! set_db "$PORT" "$SSL" "$STANDARD"; then rollback;status rollback 'PostgreSQL не принял Web-настройки; предыдущая конфигурация восстановлена' "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD";exit 1;fi
+write_env "$PORT" "$SSL" "$STANDARD"
+write_config "$PORT" "$SSL" "$STANDARD"
+DB_SYNC=1
+if ! set_db "$PORT" "$SSL" "$STANDARD" >/tmp/control-center-web-db-sync.log 2>&1; then
+  DB_SYNC=0
+fi
 systemctl daemon-reload
 if ! systemctl restart "$UNIT"; then rollback;status rollback 'Web service не перезапустился; предыдущая конфигурация восстановлена' "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD";exit 1;fi
 
@@ -124,8 +128,12 @@ if [[ "$SSL" == 1 ]]; then SCHEME=https; CURL_ARGS=(-kfsS --max-time 2); fi
 OK=0
 for _ in $(seq 1 20); do if curl "${CURL_ARGS[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then OK=1;break;fi;sleep 1;done
 if [[ "$OK" != 1 ]]; then rollback;status rollback 'Health-check нового Web runtime не пройден; предыдущая конфигурация восстановлена' "$OLD_PORT" "$OLD_SSL" "$OLD_STANDARD";exit 1;fi
-status applied "Web UI: $SCHEME / порт $PORT" "$PORT" "$SSL" "$STANDARD"
-if [[ -n "$JOB_ID" ]]; then
+if [[ "$DB_SYNC" == 1 ]]; then
+  status applied "Web UI: $SCHEME / порт $PORT" "$PORT" "$SSL" "$STANDARD"
+else
+  status applied "Web UI: $SCHEME / порт $PORT. PostgreSQL временно недоступен; runtime применён, синхронизация БД будет повторена позже." "$PORT" "$SSL" "$STANDARD"
+fi
+if [[ -n "$JOB_ID" && "$DB_SYNC" == 1 ]]; then
   runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" "$PY" - "$JOB_ID" "$PORT" "$SSL" <<'PY' 2>/dev/null || true
 import sys
 sys.path.insert(0,'/opt/control-center/app');import database
