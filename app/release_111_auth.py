@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import grp
+import json
 import os
-import pwd
 import secrets
-import subprocess
+import socket
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -15,6 +14,7 @@ from psycopg.types.json import Jsonb
 import database
 
 SAMBA_MODULE = Path('/var/lib/control-center-system/modules/samba.json')
+AUTH_SOCKET = '/run/control-center-auth/auth.sock'
 MAX_ATTEMPTS = 8
 WINDOW_SECONDS = 300
 _attempts = defaultdict(deque)
@@ -51,82 +51,37 @@ def _rate_clear(username):
     _attempts.pop(_rate_key(username), None)
 
 
-def _local_role(username):
-    try:
-        user = pwd.getpwnam(username)
-    except KeyError:
-        return None
-    if user.pw_uid < 1000:
-        # System accounts are not portal identities. root is intentionally excluded.
-        return None
-    groups = set()
-    for g in grp.getgrall():
-        if username in g.gr_mem or user.pw_gid == g.gr_gid:
-            groups.add(g.gr_name)
-    return 'admin' if groups.intersection({'sudo', 'wheel', 'control-center-admins'}) else 'viewer'
-
-
-def _pam_auth(username, password):
-    role = _local_role(username)
-    if role is None:
-        return None
-    try:
-        p = subprocess.run(
-            ['pamtester', 'control-center-web', username, 'authenticate', 'acct_mgmt'],
-            input=password + '\n',
-            text=True,
-            capture_output=True,
-            timeout=12,
-            check=False,
-        )
-    except Exception:
-        return None
-    return role if p.returncode == 0 else None
-
-
 def _domain_module(main):
     m = main._read_json(SAMBA_MODULE, {})
     return m if m.get('managed') and m.get('state') == 'active' else {}
 
 
-def _domain_auth(main, username, password):
-    module = _domain_module(main)
-    domain = str(module.get('netbios_domain') or '').strip().upper()
-    if not domain or not username or '\n' in username or '\r' in username:
-        return None
-    # Accept DOMAIN\\user, user@realm and plain user, but always bind to the
-    # locally managed domain to avoid accidental cross-domain authentication.
-    raw = username.strip()
-    if '\\' in raw:
-        supplied_domain, raw = raw.split('\\', 1)
-        if supplied_domain.upper() != domain:
-            return None
-    elif '@' in raw:
-        raw, supplied_realm = raw.rsplit('@', 1)
-        if supplied_realm.lower() != str(module.get('realm') or '').lower():
-            return None
-    if not raw or len(raw) > 128:
-        return None
-    base = ['ntlm_auth', f'--username={raw}', f'--domain={domain}']
+def _authd(mode, username, password):
+    payload = json.dumps({'mode': mode, 'username': username, 'password': password}, ensure_ascii=False, separators=(',', ':')).encode('utf-8') + b'\n'
     try:
-        p = subprocess.run(base, input=password + '\n', text=True, capture_output=True, timeout=15, check=False)
-    except Exception:
-        return None
-    if p.returncode != 0:
-        return None
-    # RBAC-ready bootstrap policy: only the dedicated domain group receives
-    # administrative writes. All other successfully authenticated domain users
-    # can enter the portal in viewer mode until RBAC replaces this mapping.
-    admin_group = f'{domain}\\Control Center Admins'
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(18)
+        s.connect(AUTH_SOCKET)
+        s.sendall(payload)
+        raw = b''
+        while b'\n' not in raw and len(raw) <= 8192:
+            part = s.recv(2048)
+            if not part:
+                break
+            raw += part
+        s.close()
+    except OSError as exc:
+        raise RuntimeError(f'Служба авторизации недоступна: {exc}') from exc
     try:
-        p2 = subprocess.run(
-            base + [f'--require-membership-of={admin_group}'],
-            input=password + '\n', text=True, capture_output=True, timeout=15, check=False,
-        )
-        role = 'admin' if p2.returncode == 0 else 'viewer'
-    except Exception:
-        role = 'viewer'
-    return {'principal': f'{domain}\\{raw}', 'username': raw, 'domain': domain, 'role': role}
+        result = json.loads(raw.split(b'\n', 1)[0].decode('utf-8'))
+    except Exception as exc:
+        raise RuntimeError('Служба авторизации вернула некорректный ответ') from exc
+    if not result.get('ok'):
+        return None
+    identity = result.get('identity') or {}
+    if identity.get('role') not in {'admin', 'viewer'} or not identity.get('principal'):
+        raise RuntimeError('Служба авторизации вернула некорректную роль')
+    return identity
 
 
 def register(app, main):
@@ -164,18 +119,17 @@ def register(app, main):
         password = str(body.get('password') or '')
         if mode not in {'local', 'domain'} or not username or not password or len(username) > 256 or len(password) > 512:
             return jsonify(ok=False, error='Укажите корректные данные входа'), 400
+        if mode == 'domain' and not _domain_module(main):
+            return jsonify(ok=False, error='Доменная авторизация недоступна: Домен не активирован'), 409
         if not _rate_allowed(username):
             _audit('login', 'rate-limited', {'mode': mode, 'username': username})
             return jsonify(ok=False, error='Слишком много попыток. Повторите через несколько минут.'), 429
-        identity = None
-        if mode == 'local':
-            role = _pam_auth(username, password)
-            if role:
-                identity = {'principal': username, 'username': username, 'domain': '', 'role': role}
-        else:
-            identity = _domain_auth(main, username, password)
-        # Make a best effort to remove the Python reference promptly; neither the
-        # password nor request body is persisted in audit/database/session.
+        try:
+            identity = _authd(mode, username, password)
+        except RuntimeError as exc:
+            password = ''
+            _audit('login', 'auth-service-unavailable', {'mode': mode, 'username': username})
+            return jsonify(ok=False, error=str(exc)), 503
         password = ''
         if not identity:
             _rate_fail(username)
@@ -185,13 +139,13 @@ def register(app, main):
         session.clear()
         session.permanent = True
         session['principal'] = identity['principal']
-        session['username'] = identity['username']
-        session['auth_source'] = mode
+        session['username'] = identity.get('username') or username
+        session['auth_source'] = identity.get('source') or mode
         session['role'] = identity['role']
         session['domain'] = identity.get('domain') or ''
         session['issued_at'] = int(time.time())
-        _audit('login', 'success', {'source': mode, 'principal': identity['principal'], 'role': identity['role']})
-        return jsonify(ok=True, next='/', principal=identity['principal'], role=identity['role'], source=mode)
+        _audit('login', 'success', {'source': session['auth_source'], 'principal': identity['principal'], 'role': identity['role']})
+        return jsonify(ok=True, next='/', principal=identity['principal'], role=identity['role'], source=session['auth_source'])
 
     @app.post('/api/auth/logout')
     def auth_logout_111():
