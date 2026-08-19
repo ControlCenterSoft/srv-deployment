@@ -147,12 +147,13 @@ if [[ $retry -eq 0 ]];then exec /usr/bin/samba-tool "$@";fi
 tmp="$(mktemp /tmp/control-center-samba-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
 rc=1
 for attempt in $(seq 1 45);do
-  if /usr/bin/samba-tool "$@" >"$tmp" 2>&1;then
+  /usr/bin/samba-tool "$@" >"$tmp" 2>&1
+  rc=$?
+  if [[ $rc -eq 0 ]];then
     cat "$tmp"
     echo "CONTROL_CENTER_ACCEPT: $label ready attempt=$attempt" >&2
     exit 0
   fi
-  rc=$?
   sleep 1
 done
 echo "CONTROL_CENTER_ACCEPT: $label FAILED after 45 attempts rc=$rc" >&2
@@ -165,12 +166,13 @@ set -uo pipefail
 tmp="$(mktemp /tmp/control-center-samba-dns-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
 rc=1
 for attempt in $(seq 1 30);do
-  if /usr/bin/host "$@" >"$tmp" 2>&1;then
+  /usr/bin/host "$@" >"$tmp" 2>&1
+  rc=$?
+  if [[ $rc -eq 0 ]];then
     cat "$tmp"
     echo "CONTROL_CENTER_ACCEPT: DNS query ready attempt=$attempt" >&2
     exit 0
   fi
-  rc=$?
   sleep 1
 done
 echo "CONTROL_CENTER_ACCEPT: DNS query FAILED after 30 attempts rc=$rc" >&2
