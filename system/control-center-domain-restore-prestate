@@ -9,6 +9,7 @@ STORAGE="$SYSTEM/modules/storage.json"
 CTX="$ROOT/domain-install-context.json"
 CTX_DIR="$ROOT/domain-install-context"
 STATUS="$SYSTEM/samba-status.json"
+PACKAGE_GUARD=/usr/local/sbin/control-center-samba-package-guard
 [[ -s "$CTX" ]] || { echo 'Domain install context is missing' >&2;exit 2; }
 BACKUP=""
 if [[ -s "$SAMBA" ]];then BACKUP="$(python3 - "$SAMBA" <<'PY'
@@ -25,6 +26,15 @@ PY
 ARCHIVE="$BACKUP/pre-provision.tar.gz";MANIFEST="$BACKUP/manifest.json"
 
 systemctl stop samba-ad-dc.service smbd.service nmbd.service winbind.service chrony.service >/dev/null 2>&1||true
+
+# On a completed Domain lifecycle the package guard has persisted the exact
+# transaction pre-state, including package versions and apt manual/auto marks.
+# Restore it before restoring configuration files so package maintainer scripts
+# cannot overwrite the final pre-Domain configuration snapshot.
+if [[ -x "$PACKAGE_GUARD" && -s "$ROOT/domain-package-prestate/packages-before.tsv" ]]; then
+  "$PACKAGE_GUARD" restore-persistent
+fi
+
 rm -rf /etc/samba /var/lib/samba /var/cache/samba
 rm -f /etc/krb5.conf /etc/resolv.conf /etc/chrony/conf.d/control-center-ad-dc.conf
 tar -C / -xzpf "$ARCHIVE" --acls --xattrs
@@ -52,24 +62,6 @@ PY
 if [[ "$UNBOUND_ACTIVE" == 1 && -s /etc/unbound/unbound.conf.d/control-center.conf ]];then systemctl enable --now unbound.service >/dev/null 2>&1||true;fi
 if getent group winbindd_priv >/dev/null 2>&1;then gpasswd -d control-center winbindd_priv >/dev/null 2>&1||true;fi
 
-# Remove only direct packages that were absent before Domain provisioning and are
-# not required by a restored standalone Storage service.
-STORAGE_RESTORED=0;[[ -s "$CTX_DIR/storage.json" ]]&&STORAGE_RESTORED=1
-readarray -t REMOVE < <(python3 - "$CTX" "$STORAGE_RESTORED" <<'PY'
-import json,sys
-j=json.load(open(sys.argv[1]));storage=sys.argv[2]=='1';pre=j.get('packages_preexisting') or {}
-for p,was in pre.items():
- if was:continue
- if storage and p in {'samba','samba-dsdb-modules','samba-vfs-modules','winbind','acl','attr','smbclient'}:continue
- if p=='unbound':continue
- print(p)
-PY
-)
-if [[ ${#REMOVE[@]} -gt 0 ]];then
-  exec 8>/run/control-center-apt.lock;flock -w 900 8||true
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get purge -y "${REMOVE[@]}" >/dev/null 2>&1||true
-fi
 rm -f "$SAMBA"
 # Remove the automatically-created empty storage tree; never delete user data.
 if [[ ! -s "$CTX_DIR/storage.json" && -d /srv/control-center/storage/public ]];then rmdir /srv/control-center/storage/public 2>/dev/null||true;rmdir /srv/control-center/storage 2>/dev/null||true;rmdir /srv/control-center 2>/dev/null||true;fi
