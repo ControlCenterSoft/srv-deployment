@@ -117,7 +117,8 @@ Type=oneshot
 EnvironmentFile=-/etc/control-center/database.env
 ExecStartPre=/usr/local/sbin/control-center-samba-package-guard snapshot
 ExecStart=/usr/local/sbin/control-center-samba-apply
-ExecStopPost=/usr/local/sbin/control-center-samba-package-guard restore $SERVICE_RESULT
+ExecStartPost=/usr/local/sbin/control-center-samba-package-guard commit
+ExecStopPost=/usr/local/sbin/control-center-samba-package-guard restore
 TimeoutStartSec=45min
 UNIT
 cat >/etc/systemd/system/control-center-samba-apply.path <<'UNIT'
