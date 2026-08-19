@@ -1,117 +1,106 @@
-# Безопасность Control Center 1.0.9
+# Безопасность Control Center 1.0.11
 
-## Разделение привилегий
+## Web process
 
-Web-процесс работает от системной УЗ `control-center` без root-доступа. Привилегированные изменения выполняются отдельными systemd workers: сеть, Market/DHCP, лицензирование, обновления и Web runtime.
+Web UI работает от непривилегированной системной УЗ `control-center`. Root operations выполняются отдельными systemd workers через проверяемые pending requests.
 
-Web UI создаёт pending requests в Web-writable state, а root helpers повторно валидируют критичные параметры перед применением.
+Для Web ports 80/443 службе выдаётся только `CAP_NET_BIND_SERVICE`; Flask/Gunicorn не запускаются от root.
 
-## State
+## Встроенная Web-аутентификация
 
-```text
-/var/lib/control-center          # Web-writable settings + pending requests
-/var/lib/control-center-system   # root:control-center applied state/status/modules
-/var/lib/control-center-root     # root:root 0700 rollback
-/var/lib/control-center-license  # root:control-center validated license
-PostgreSQL control_center        # application data/history/management state
+Полноценная встроенная Web-аутентификация административной панели пока не завершена. Поэтому Web UI должен быть доступен только из доверенной LAN/VPN/firewall и не должен публиковаться напрямую в Интернет.
+
+## Samba AD-DC: двойное подтверждение
+
+Domain provisioning — высокорисковая root-операция. В 1.0.11 одного Web POST недостаточно.
+
+Перед созданием домена требуется локально выполнить:
+
+```bash
+sudo control-center-samba-approve
 ```
 
-PostgreSQL не заменяет protected root state и фактические Linux-конфигурации.
+Команда генерирует случайный 8-hex one-time code. В `/run/control-center-root/samba-approval.json` сохраняется только SHA-256 кода.
+
+Свойства approval:
+
+- root-only;
+- TTL 600 секунд;
+- purpose-bound `samba-ad-dc-provision`;
+- одноразовый;
+- удаляется после проверки.
+
+## Administrator password
+
+Domain Administrator password:
+
+- проверяется на совпадение/длину/сложность в Web API;
+- повторно проверяется privileged worker;
+- не хранится в PostgreSQL;
+- не хранится в `/var/lib/control-center*`;
+- secret pending request существует только в `/run/control-center`;
+- `/run/control-center` доступен только пользователю `control-center` и root;
+- worker удаляет pending request сразу после чтения;
+- пароль не передаётся как `--adminpass` или другой argv parameter;
+- `smbclient` acceptance использует временный root-only credentials file в `/run/control-center-root`, который удаляется после проверки.
+
+Runtime directories создаются через systemd-tmpfiles:
+
+```text
+/run/control-center       control-center:control-center 0700
+/run/control-center-root  root:root                     0700
+```
+
+Они очищаются после reboot как tmpfs runtime state.
+
+## Privileged revalidation
+
+`control-center-samba-apply` не доверяет данным Web validation. Перед mutation он повторно проверяет:
+
+- job ID;
+- Realm/NetBIOS syntax;
+- сетевую роль;
+- interface name;
+- IPv4/prefix/network consistency;
+- DNS forwarder;
+- password policy;
+- WAN confirmation;
+- approval code;
+- фактическое наличие requested Static IPv4 на interface.
+
+## Backup boundary
+
+Samba rollback backups находятся вне Web-writable state:
+
+```text
+/var/lib/control-center-root/samba-backups
+```
+
+Пользователь `control-center` не имеет доступа к этому каталогу. Backup может содержать существующую Samba database и поэтому должен рассматриваться как секретный материал.
+
+## APT/service cutover
+
+Samba package installation защищена общим APT lock. Временный `policy-rc.d` запрещает автоматический старт Samba/Winbind/Chrony до управляемого cutover. Existing `policy-rc.d`, если он был, восстанавливается.
+
+## Active DC invariants
+
+После provisioning backend блокирует обычными настройками:
+
+- rename hostname активного DC;
+- disable/change interface DC;
+- change IPv4/prefix DC;
+- выдачу внешнего DNS через Control Center DHCP на DC interface.
+
+Это предотвращает случайное разрушение DNS/Kerberos identity домена.
+
+## Domain destruction
+
+1.0.11 не реализует автоматическое удаление/уничтожение AD domain. Uninstall Control Center не удаляет Samba domain database/SYSVOL. Если managed DC активен, uninstall с очисткой application data блокируется.
 
 ## PostgreSQL
 
-Локальная модель:
+PostgreSQL использует локальный Unix socket + peer authentication. В lifecycle tables сохраняются только публичные параметры domain plan/job и health results. Administrator password и one-time approval code не должны попадать в DB.
 
-```text
-database: control_center
-role: control-center
-transport: Unix socket /var/run/postgresql
-auth: peer
-```
+## Professional license
 
-Роль: `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION`. Пароль БД в приложении не хранится. Control Center не открывает внешний PostgreSQL listener автоматически.
-
-## Standard ports без root Web-process
-
-Для HTTP/HTTPS стандартных портов `80/443` Web service получает только capability:
-
-```text
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-```
-
-`User=control-center` и `NoNewPrivileges=true` сохраняются. Полные root-права Gunicorn не получает.
-
-## HTTPS 1.0.9
-
-При первом включении SSL root helper создаёт локальную пару:
-
-```text
-/etc/control-center/tls/server.crt
-/etc/control-center/tls/server.key
-```
-
-Private key имеет `root:control-center 0640`. Certificate содержит hostname/localhost/IP SAN и используется Gunicorn только для TLS termination Web UI.
-
-Self-signed сертификат **шифрует соединение, но не подтверждает доверие браузера автоматически**. Предупреждение браузера ожидаемо, пока сертификат не добавлен в доверенные либо не внедрён ACME/пользовательский сертификат.
-
-HTTPS **не заменяет authentication/authorization**.
-
-## Web runtime apply/rollback
-
-Root helper проверяет порт, при необходимости создаёт TLS material, обновляет root-owned env/protected config/PostgreSQL settings, перезапускает Web service и выполняет HTTP/HTTPS localhost health-check. При ошибке возвращается предыдущий runtime.
-
-Control Center не меняет внешний firewall, NAT или ACL автоматически.
-
-## Samba AD-DC preparation
-
-Migration `002` создаёт только operational schema/preflight history. Plaintext Administrator/domain secrets туда не записываются.
-
-1.0.9 не выполняет `samba-tool domain provision`, DNS cutover или изменение realm. Это намеренно оставлено отдельному релизу с backup/rollback и secret-handling design.
-
-Preflight проверяет prerequisites, но `ready=true` **не означает**, что домен уже создан или безопасно готов к production provisioning.
-
-## Database migrations
-
-`schema_migrations` хранит SHA-256 checksum каждого migration. Изменение уже применённого SQL под тем же номером приводит к checksum mismatch.
-
-## Audit и уведомления
-
-State-changing `/api/*` запросы записываются в PostgreSQL audit. Read/unread уведомлений также server-side. До появления встроенной Web-аутентификации это не полноценный user-attribution audit trail.
-
-## Production Web runtime
-
-Gunicorn через `wsgi:app` с CSP `script-src 'self'`, nosniff, frame denial, Referrer/Permissions/COOP headers, no-store для API/HTML, same-origin guard и 64 KiB request limit.
-
-## Systemd hardening
-
-```text
-User=control-center
-Group=control-center
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-ReadWritePaths=/var/lib/control-center
-InaccessiblePaths=/var/lib/control-center-root
-```
-
-## Известное ограничение
-
-Встроенная Web-аутентификация пока отсутствует. Даже при HTTPS административный интерфейс должен быть доступен только из доверенной LAN/VPN/firewall либо через reverse proxy с аутентификацией.
-
-## Проверка
-
-```bash
-sudo bash scripts/acceptance-1.0.9.sh
-systemctl cat control-center
-sudo -u control-center psql -d control_center -c 'select current_user,current_database();'
-sudo cat /etc/control-center/web.env
-```
+Professional license проверяется RSA/SHA-256. Client/server Control Center содержит только vendor public key. Vendor private signing key не должен храниться в GitHub, installer или пользовательском сервере.
