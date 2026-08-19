@@ -2,6 +2,23 @@
 
 Авторитетное production-состояние определяется `../deployment.json`; подробности каждого релиза — каталогом `../releases/<version>/`.
 
+## 1.0.11 — 19.08.2026
+
+- активирован production lifecycle Samba AD-DC для нового первичного контроллера домена;
+- Samba Internal DNS, Kerberos, LDAP, SYSVOL/NETLOGON и signed NTP через chrony;
+- PostgreSQL migration `004`: lifecycle jobs и AD health history;
+- обязательный Static IPv4 выбранной LAN/WAN роли, WAN требует дополнительного подтверждения;
+- одноразовое локальное root-подтверждение `control-center-samba-approve`, TTL 10 минут;
+- Administrator password не сохраняется в PostgreSQL/persistent state и передаётся worker только через `/run`;
+- privileged worker повторно проверяет Realm/NetBIOS/interface/IP/network/forwarder/password/approval;
+- root-only pre-provision backup Samba/Kerberos/resolver/chrony/DHCP и service states;
+- automatic rollback при неуспешном provisioning/acceptance;
+- acceptance: Samba config, SYSVOL ACL, domain info, DRS, DNS A/SRV, Kerberos и SMB;
+- Control Center DHCP на AD interface автоматически выдаёт AD-DC IP как единственный DNS;
+- после provisioning заблокированы hostname rename и изменение/отключение interface/IP активного DC;
+- отдельный Samba AD-DC UI, Market status, health API и lifecycle notifications;
+- автоматическое уничтожение AD domain намеренно не реализовано.
+
 ## 1.0.10 — 19.08.2026
 
 - Samba AD-DC readiness расширен до production preparation: migration `003`, package/disk/port/config checks и dry-run change plan;
