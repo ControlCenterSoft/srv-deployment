@@ -140,6 +140,30 @@ SH
   cat >"$KRB_SHIM/samba-tool" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
+
+# Control Center does not assign uidNumber/gidNumber attributes in AD. Samba's
+# native idmap.ldb on an AD DC is therefore the correct mapping mechanism and
+# is less error-prone for local SMB token conversion. The legacy core still
+# carries --use-rfc2307; strip it at the orchestration boundary so a freshly
+# provisioned DC does not enable idmap_ldb:use rfc2307 = yes.
+if [[ "${1:-}" == domain && "${2:-}" == provision ]];then
+  filtered=()
+  for arg in "$@";do
+    [[ "$arg" == '--use-rfc2307' ]]&&continue
+    filtered+=("$arg")
+  done
+  /usr/bin/samba-tool "${filtered[@]}"
+  rc=$?
+  if [[ $rc -eq 0 ]];then
+    if grep -Eqi '^\s*idmap_ldb:use[[:space:]]+rfc2307[[:space:]]*=[[:space:]]*yes\s*$' /etc/samba/smb.conf 2>/dev/null;then
+      echo 'CONTROL_CENTER_ACCEPT: unexpected RFC2307 idmap on AD DC' >&2
+      exit 1
+    fi
+    echo 'CONTROL_CENTER_ACCEPT: Samba AD DC uses default idmap.ldb' >&2
+  fi
+  exit "$rc"
+fi
+
 retry=0
 label=''
 if [[ "${1:-}" == domain && "${2:-}" == info ]];then retry=1;label='LDAP domain-info';fi
