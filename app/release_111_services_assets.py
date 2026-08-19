@@ -10,7 +10,7 @@ def register(app, main):
             return None
         if request.path == '/static/app.js':
             try:
-                names = ['app.js', 'release-108.js', 'release-110.js', 'release-110-fix.js', 'release-111.js', 'release-111-services.js', 'release-111-ui-fix.js']
+                names = ['app.js', 'release-108.js', 'release-110.js', 'release-110-fix.js', 'release-111.js', 'release-111-services.js', 'release-111-ui-fix.js', 'release-111-compliance.js']
                 return Response('\n\n'.join((static_dir / x).read_text() for x in names), mimetype='application/javascript')
             except Exception:
                 return None
