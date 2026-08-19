@@ -29,13 +29,13 @@ PY
   [[ "$ACTIVE" == 1 ]]&&systemctl start unbound.service >/dev/null 2>&1||true
 }
 "$PRE"
-if ! "$CORE";then
-  rc=$?
-  # The core worker performs its own rollback once the pre-provision archive
-  # exists. If it failed before backup creation, only the preserved standalone
-  # DNS service needs to be restarted.
+set +e
+"$CORE"
+rc=$?
+set -e
+if [[ $rc -ne 0 ]];then
   BACKUP="$(python3 - "$STATUS" <<'PY'
-import json,sys,os
+import json,sys
 try:j=json.load(open(sys.argv[1]))
 except Exception:j={}
 print(j.get('backup_path') or '')
@@ -44,8 +44,11 @@ PY
   if [[ -n "$BACKUP" && -s "$BACKUP/pre-provision.tar.gz" ]];then "$RESTORE" rollback >/dev/null 2>&1||true;else restart_preserved_dns;fi
   exit "$rc"
 fi
-if ! "$POST";then
-  rc=$?
+set +e
+"$POST"
+rc=$?
+set -e
+if [[ $rc -ne 0 ]];then
   DETAIL='Домен был создан ядром provisioning, но обязательные DNS/Storage/Auth post-checks не завершились. Выполняется полный rollback.'
   write_status rollback 'Domain post-provision failed; restoring pre-state' "$DETAIL"
   "$RESTORE" rollback || true
