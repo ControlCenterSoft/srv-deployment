@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from flask import jsonify, request
+from psycopg.types.json import Jsonb
 
+import database
 import release_111
 
 DNS_MODULE = Path('/var/lib/control-center-system/modules/dns.json')
@@ -31,24 +34,29 @@ def _managed_dns(main):
 
 def register(app, main):
     original_readiness = release_111._readiness
+    original_health = release_111._quick_health
 
     def readiness_dependencies_111(main_arg, body=None, persist=True):
         body = dict(body or {})
         storage = _managed_storage(main_arg)
         dns = _managed_dns(main_arg)
         if storage:
-            # The existing smb.conf is not an external takeover: it belongs to
-            # Control Center Storage and is deliberately transitioned to the DC
-            # role. The root pre-stage snapshots it and rollback restores it.
             body['replace_existing'] = True
         payload = original_readiness(main_arg, body, persist=False)
         checks = dict(payload.get('checks') or {})
+
         if storage:
             checks['existing_samba'] = {
                 'ok': True,
                 'severity': 'info',
                 'value': '/etc/samba/smb.conf',
                 'message': 'Control Center Сетевое хранилище будет переведено в доменный SMB; исходное состояние сохранится для rollback/удаления Домена.',
+            }
+            checks['smb_445'] = {
+                'ok': True,
+                'severity': 'info',
+                'value': checks.get('smb_445', {}).get('value') or [],
+                'message': 'Порт 445 занят управляемым standalone SMB и будет освобождён в контролируемом cutover.',
             }
             checks['storage_dependency'] = {
                 'ok': True,
@@ -60,9 +68,10 @@ def register(app, main):
             checks['storage_dependency'] = {
                 'ok': True,
                 'severity': 'info',
-                'value': 'auto-install',
+                'value': 'auto-domain-smb',
                 'message': 'Сетевое хранилище будет автоматически активировано как обязательная часть Домена.',
             }
+
         if dns:
             checks['dns_53'] = {
                 'ok': True,
@@ -74,15 +83,27 @@ def register(app, main):
                 'ok': True,
                 'severity': 'info',
                 'value': {'provider': dns.get('provider'), 'forwarders': dns.get('forwarders') or []},
-                'message': 'DNS уже установлен; его standalone-состояние будет сохранено и восстановлено после удаления Домена.',
+                'message': 'DNS уже установлен; standalone-состояние будет сохранено и восстановлено после удаления Домена.',
             }
         else:
             checks['dns_dependency'] = {
                 'ok': True,
                 'severity': 'info',
-                'value': 'auto-install',
+                'value': 'auto-samba-internal',
                 'message': 'DNS будет автоматически активирован как Samba Internal DNS при создании Домена.',
             }
+
+        external_ad = False
+        if Path('/etc/samba/smb.conf').exists() and not storage:
+            rc, out, _ = main_arg._run(['testparm', '-s', '--parameter-name=server role'], 5)
+            external_ad = rc == 0 and 'active directory domain controller' in (out or '').lower()
+        checks['external_ad_takeover'] = {
+            'ok': not external_ad,
+            'severity': 'blocker',
+            'value': 'detected' if external_ad else 'none',
+            'message': 'Внешний Samba AD-DC не обнаружен' if not external_ad else 'Обнаружен внешний Samba AD-DC. Автоматический takeover запрещён; требуется отдельный import/migration lifecycle.',
+        }
+
         busy = []
         if DNS_PENDING.exists() or _active(main_arg, 'control-center-dns-apply.service'):
             busy.append('DNS')
@@ -94,6 +115,7 @@ def register(app, main):
             'value': busy,
             'message': 'Dependency workers свободны' if not busy else 'Дождитесь завершения операций: ' + ', '.join(busy),
         }
+
         blockers = [k for k, v in checks.items() if v.get('severity') == 'blocker' and not v.get('ok')]
         warnings = [k for k, v in checks.items() if v.get('severity') == 'warning' and not v.get('ok')]
         payload['checks'] = checks
@@ -107,6 +129,7 @@ def register(app, main):
             'domain_requires_dns': True,
             'domain_requires_storage': True,
             'restore_prestate_on_domain_remove': True,
+            'external_ad_takeover_supported': False,
         }
         payload['details'] = details
         if persist:
@@ -114,18 +137,80 @@ def register(app, main):
                 main_arg._write_json(release_111.SAMBA_READINESS, payload)
             except Exception:
                 pass
+            try:
+                with database.connect() as conn:
+                    conn.execute(
+                        "INSERT INTO control_center.ad_dc_readiness_runs(hostname,fqdn,ready,blockers,warnings,checks,details) VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                        (payload['hostname'], payload['fqdn'], payload['ready'], Jsonb(blockers), Jsonb(warnings), Jsonb(checks), Jsonb(details)),
+                    )
+            except Exception:
+                payload['persistence'] = 'system-json'
         return payload
 
     release_111._readiness = readiness_dependencies_111
+
+    def health_dependencies_111(main_arg, persist=True):
+        payload = original_health(main_arg, persist=False)
+        module = main_arg._read_json(release_111.SAMBA_MODULE, {})
+        if not module.get('managed') or module.get('state') != 'active':
+            return payload
+        checks = dict(payload.get('checks') or {})
+        dns = main_arg._read_json(DNS_MODULE, {})
+        storage = main_arg._read_json(STORAGE_MODULE, {})
+        checks['dns_dependency'] = {
+            'ok': bool(dns.get('installed') and dns.get('provider') == 'samba_internal' and 'domain' in (dns.get('dependency_by') or [])),
+            'value': dns,
+            'message': 'Samba Internal DNS dependency',
+        }
+        share_path = Path(str(storage.get('path') or '/srv/control-center/storage/public'))
+        marker = False
+        try:
+            marker = '# BEGIN CONTROL CENTER STORAGE' in Path('/etc/samba/smb.conf').read_text(errors='replace')
+        except Exception:
+            pass
+        checks['storage_dependency'] = {
+            'ok': bool(storage.get('installed') and storage.get('provider') == 'samba_ad_dc' and 'domain' in (storage.get('dependency_by') or []) and share_path.is_dir() and marker),
+            'value': {'module': storage, 'path_exists': share_path.is_dir(), 'config_marker': marker},
+            'message': 'Domain SMB storage dependency',
+        }
+        rc, out, err = main_arg._run(['systemctl', 'is-active', 'control-center-authd.service'], 4)
+        checks['portal_auth_daemon'] = {'ok': rc == 0 and out.strip() == 'active', 'value': out.strip() or err.strip(), 'message': 'Local/domain portal auth daemon'}
+        rc, out, err = main_arg._run(['samba-tool', 'group', 'show', 'Control Center Admins'], 8)
+        checks['portal_domain_admin_group'] = {'ok': rc == 0, 'value': out[-1200:] if out else err[-1200:], 'message': 'Domain bootstrap admin group'}
+        healthy = all(bool(v.get('ok')) for v in checks.values())
+        payload['checks'] = checks
+        payload['healthy'] = healthy
+        payload['state'] = 'healthy' if healthy else 'degraded'
+        payload['checked_at'] = int(time.time())
+        if persist:
+            try:
+                module['health_state'] = payload['state']
+                module['last_health_at'] = payload['checked_at']
+                main_arg._write_json(release_111.SAMBA_MODULE, module)
+            except Exception:
+                pass
+            try:
+                profile = 'primary-' + str(module.get('netbios_domain') or '').lower()
+                with database.connect() as conn:
+                    conn.execute(
+                        "INSERT INTO control_center.ad_dc_health_runs(profile_id,healthy,checks,details) VALUES(%s,%s,%s,%s)",
+                        (profile, healthy, Jsonb(checks), Jsonb(module)),
+                    )
+                    conn.execute(
+                        "UPDATE control_center.ad_dc_profiles SET health_state=%s,last_health_at=now(),updated_at=now() WHERE profile_id=%s",
+                        (payload['state'], profile),
+                    )
+            except Exception:
+                pass
+        return payload
+
+    release_111._quick_health = health_dependencies_111
 
     def dependency_request_guard_111():
         path = request.path
         if path == '/api/samba/provision' and request.method == 'POST':
             body = request.get_json(silent=True)
             if isinstance(body, dict) and _managed_storage(main):
-                # request.get_json() is cached by Flask; mutating this dict makes
-                # the existing provision route/root pending request explicitly
-                # acknowledge replacement of Control Center's own smb.conf.
                 body['replace_existing'] = True
             if DNS_PENDING.exists() or STORAGE_PENDING.exists() or _active(main, 'control-center-dns-apply.service') or _active(main, 'control-center-storage-apply.service'):
                 return jsonify(ok=False, error='Дождитесь завершения операций DNS/Сетевого хранилища перед созданием Домена.'), 409
