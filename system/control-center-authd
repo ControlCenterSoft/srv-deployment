@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import grp
+import json
+import os
+import pwd
+import re
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+SOCKET = Path('/run/control-center-auth/auth.sock')
+SAMBA_MODULE = Path('/var/lib/control-center-system/modules/samba.json')
+MAX_REQUEST = 4096
+
+
+def local_role(username: str):
+    try:
+        user = pwd.getpwnam(username)
+    except KeyError:
+        return None
+    if user.pw_uid < 1000 or username == 'root':
+        return None
+    groups = set()
+    for g in grp.getgrall():
+        if username in g.gr_mem or user.pw_gid == g.gr_gid:
+            groups.add(g.gr_name)
+    return 'admin' if 'control-center-admins' in groups else 'viewer'
+
+
+def pam_auth(username: str, password: str):
+    role = local_role(username)
+    if role is None:
+        return None
+    p = subprocess.run(
+        ['pamtester', 'control-center-web', username, 'authenticate', 'acct_mgmt'],
+        input=password + '\n', text=True, capture_output=True, timeout=12, check=False,
+        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'},
+    )
+    if p.returncode != 0:
+        return None
+    return {'principal': username, 'username': username, 'domain': '', 'role': role, 'source': 'local'}
+
+
+def domain_state():
+    try:
+        m = json.loads(SAMBA_MODULE.read_text())
+    except Exception:
+        return {}
+    return m if m.get('managed') and m.get('state') == 'active' else {}
+
+
+def domain_auth(username: str, password: str):
+    m = domain_state()
+    domain = str(m.get('netbios_domain') or '').strip().upper()
+    realm = str(m.get('realm') or '').strip().lower()
+    if not domain or not realm:
+        return None
+    raw = username.strip()
+    if '\\' in raw:
+        supplied, raw = raw.split('\\', 1)
+        if supplied.upper() != domain:
+            return None
+    elif '@' in raw:
+        raw, supplied = raw.rsplit('@', 1)
+        if supplied.lower() != realm:
+            return None
+    if not re.fullmatch(r'[^\\/@\x00-\x1f]{1,128}', raw):
+        return None
+    base = ['ntlm_auth', f'--username={raw}', f'--domain={domain}']
+    p = subprocess.run(
+        base, input=password + '\n', text=True, capture_output=True, timeout=15, check=False,
+        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'},
+    )
+    if p.returncode != 0:
+        return None
+    # Bootstrap mapping until the RBAC editor becomes authoritative.
+    admin_group = f'{domain}\\Control Center Admins'
+    p2 = subprocess.run(
+        base + [f'--require-membership-of={admin_group}'],
+        input=password + '\n', text=True, capture_output=True, timeout=15, check=False,
+        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'},
+    )
+    role = 'admin' if p2.returncode == 0 else 'viewer'
+    return {'principal': f'{domain}\\{raw}', 'username': raw, 'domain': domain, 'role': role, 'source': 'domain'}
+
+
+def handle(data):
+    if not isinstance(data, dict):
+        return {'ok': False}
+    mode = str(data.get('mode') or '').lower()
+    username = str(data.get('username') or '').strip()
+    password = str(data.get('password') or '')
+    if mode not in {'local', 'domain'} or not username or not password:
+        return {'ok': False}
+    if len(username) > 256 or len(password) > 512 or any(ord(c) < 32 and c not in '\t' for c in username + password):
+        return {'ok': False}
+    try:
+        identity = pam_auth(username, password) if mode == 'local' else domain_auth(username, password)
+    except Exception:
+        identity = None
+    password = ''
+    return {'ok': bool(identity), 'identity': identity or {}}
+
+
+def main():
+    SOCKET.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(SOCKET.parent, 0o750)
+    try:
+        import shutil
+        shutil.chown(SOCKET.parent, user='root', group='control-center')
+    except Exception:
+        pass
+    try:
+        SOCKET.unlink()
+    except FileNotFoundError:
+        pass
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(SOCKET))
+    os.chmod(SOCKET, 0o660)
+    try:
+        import shutil
+        shutil.chown(SOCKET, user='root', group='control-center')
+    except Exception:
+        pass
+    sock.listen(16)
+    while True:
+        conn, _ = sock.accept()
+        with conn:
+            conn.settimeout(8)
+            raw = b''
+            while b'\n' not in raw and len(raw) <= MAX_REQUEST:
+                part = conn.recv(1024)
+                if not part:
+                    break
+                raw += part
+            if len(raw) > MAX_REQUEST:
+                response = {'ok': False}
+            else:
+                try:
+                    response = handle(json.loads(raw.split(b'\n', 1)[0].decode('utf-8')))
+                except Exception:
+                    response = {'ok': False}
+            conn.sendall((json.dumps(response, ensure_ascii=False, separators=(',', ':')) + '\n').encode('utf-8'))
+
+
+if __name__ == '__main__':
+    main()
