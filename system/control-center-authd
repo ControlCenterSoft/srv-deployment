@@ -6,14 +6,20 @@ import json
 import os
 import pwd
 import re
+import shutil
 import socket
+import struct
 import subprocess
-import sys
 from pathlib import Path
 
 SOCKET = Path('/run/control-center-auth/auth.sock')
 SAMBA_MODULE = Path('/var/lib/control-center-system/modules/samba.json')
 MAX_REQUEST = 4096
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'}
+
+
+def control_center_uid() -> int:
+    return pwd.getpwnam('control-center').pw_uid
 
 
 def local_role(username: str):
@@ -36,8 +42,12 @@ def pam_auth(username: str, password: str):
         return None
     p = subprocess.run(
         ['pamtester', 'control-center-web', username, 'authenticate', 'acct_mgmt'],
-        input=password + '\n', text=True, capture_output=True, timeout=12, check=False,
-        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'},
+        input=password + '\n',
+        text=True,
+        capture_output=True,
+        timeout=12,
+        check=False,
+        env=ENV,
     )
     if p.returncode != 0:
         return None
@@ -50,6 +60,34 @@ def domain_state():
     except Exception:
         return {}
     return m if m.get('managed') and m.get('state') == 'active' else {}
+
+
+def _domain_admin(domain: str, username: str) -> bool:
+    target = f'{domain}\\Control Center Admins'
+    sid = subprocess.run(
+        ['wbinfo', '--name-to-sid', target],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+        env=ENV,
+    )
+    if sid.returncode != 0 or not sid.stdout.strip():
+        return False
+    target_sid = sid.stdout.split()[0].strip()
+    if not re.fullmatch(r'S-1-(?:\d+-)+\d+', target_sid):
+        return False
+    memberships = subprocess.run(
+        ['wbinfo', '--user-groups', f'{domain}\\{username}'],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+        env=ENV,
+    )
+    if memberships.returncode != 0:
+        return False
+    return target_sid in {line.strip().split()[0] for line in memberships.stdout.splitlines() if line.strip()}
 
 
 def domain_auth(username: str, password: str):
@@ -71,19 +109,17 @@ def domain_auth(username: str, password: str):
         return None
     base = ['ntlm_auth', f'--username={raw}', f'--domain={domain}']
     p = subprocess.run(
-        base, input=password + '\n', text=True, capture_output=True, timeout=15, check=False,
-        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'},
+        base,
+        input=password + '\n',
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+        env=ENV,
     )
     if p.returncode != 0:
         return None
-    # Bootstrap mapping until the RBAC editor becomes authoritative.
-    admin_group = f'{domain}\\Control Center Admins'
-    p2 = subprocess.run(
-        base + [f'--require-membership-of={admin_group}'],
-        input=password + '\n', text=True, capture_output=True, timeout=15, check=False,
-        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'},
-    )
-    role = 'admin' if p2.returncode == 0 else 'viewer'
+    role = 'admin' if _domain_admin(domain, raw) else 'viewer'
     return {'principal': f'{domain}\\{raw}', 'username': raw, 'domain': domain, 'role': role, 'source': 'domain'}
 
 
@@ -105,14 +141,19 @@ def handle(data):
     return {'ok': bool(identity), 'identity': identity or {}}
 
 
+def peer_allowed(conn: socket.socket) -> bool:
+    try:
+        raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+        _pid, uid, _gid = struct.unpack('3i', raw)
+        return uid == control_center_uid()
+    except Exception:
+        return False
+
+
 def main():
     SOCKET.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(SOCKET.parent, 0o750)
-    try:
-        import shutil
-        shutil.chown(SOCKET.parent, user='root', group='control-center')
-    except Exception:
-        pass
+    shutil.chown(SOCKET.parent, user='root', group='control-center')
     try:
         SOCKET.unlink()
     except FileNotFoundError:
@@ -120,16 +161,15 @@ def main():
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(str(SOCKET))
     os.chmod(SOCKET, 0o660)
-    try:
-        import shutil
-        shutil.chown(SOCKET, user='root', group='control-center')
-    except Exception:
-        pass
+    shutil.chown(SOCKET, user='root', group='control-center')
     sock.listen(16)
     while True:
         conn, _ = sock.accept()
         with conn:
             conn.settimeout(8)
+            if not peer_allowed(conn):
+                conn.sendall(b'{"ok":false}\n')
+                continue
             raw = b''
             while b'\n' not in raw and len(raw) <= MAX_REQUEST:
                 part = conn.recv(1024)
