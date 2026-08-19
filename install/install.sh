@@ -3,7 +3,7 @@ set -Eeuo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Запустите от root: sudo bash install/install.sh'; exit 1; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE="$ROOT_DIR/install/install-base-1.0.8.sh"
-TMP="$(mktemp /tmp/control-center-install-1.0.10.XXXXXX)"
+TMP="$(mktemp /tmp/control-center-install-1.0.11.XXXXXX)"
 OLD_WEB_ENV="$(cat /etc/control-center/web.env 2>/dev/null || true)"
 trap 'rm -f "$TMP"' EXIT
 [[ -f "$BASE" ]] || { echo 'Отсутствует install/install-base-1.0.8.sh' >&2; exit 1; }
@@ -13,13 +13,12 @@ from pathlib import Path
 import sys
 src,dst=map(Path,sys.argv[1:]);text=src.read_text()
 old_root='ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"'
-if old_root not in text:
-    raise SystemExit('Base 1.0.8 ROOT_DIR marker not found')
+if old_root not in text: raise SystemExit('Base 1.0.8 ROOT_DIR marker not found')
 text=text.replace(old_root,'ROOT_DIR="${CONTROL_CENTER_RELEASE_ROOT:?}"',1)
-text=text.replace('Control Center 1.0.8 build 20260819.2','Control Center 1.0.10 build 20260819.4')
-text=text.replace("'VERSION=1.0.7','VERSION=1.0.8'","'VERSION=1.0.7','VERSION=1.0.10'")
-text=text.replace("'BUILD=20260818.2','BUILD=20260819.2'","'BUILD=20260818.2','BUILD=20260819.4'")
-text=text.replace('control-center-install-1.0.8.','control-center-install-1.0.10.')
+text=text.replace('Control Center 1.0.8 build 20260819.2','Control Center 1.0.11 build 20260819.5')
+text=text.replace("'VERSION=1.0.7','VERSION=1.0.8'","'VERSION=1.0.7','VERSION=1.0.11'")
+text=text.replace("'BUILD=20260818.2','BUILD=20260819.2'","'BUILD=20260818.2','BUILD=20260819.5'")
+text=text.replace('control-center-install-1.0.8.','control-center-install-1.0.11.')
 dst.write_text(text)
 PY
 chmod 0755 "$TMP"
@@ -28,7 +27,19 @@ CONTROL_CENTER_RELEASE_ROOT="$ROOT_DIR" bash "$TMP" "$@"
 install -m 0755 "$ROOT_DIR/system/control-center-web-run" /usr/local/sbin/control-center-web-run
 install -m 0755 "$ROOT_DIR/system/control-center-web-apply" /usr/local/sbin/control-center-web-apply
 install -m 0755 "$ROOT_DIR/system/control-center-hostname-apply" /usr/local/sbin/control-center-hostname-apply
+install -m 0755 "$ROOT_DIR/system/control-center-samba-apply" /usr/local/sbin/control-center-samba-apply
+install -m 0755 "$ROOT_DIR/system/control-center-samba-approve" /usr/local/sbin/control-center-samba-approve
 install -m 0755 "$ROOT_DIR/network/control-center-network-apply" /usr/local/sbin/control-center-network-apply
+install -m 0755 "$ROOT_DIR/market/control-center-dhcp-apply" /usr/local/sbin/control-center-dhcp-apply
+
+# Samba secrets are intentionally held only under /run (tmpfs on Ubuntu).
+cat >/etc/tmpfiles.d/control-center.conf <<'TMPFILES'
+d /run/control-center 0700 control-center control-center -
+d /run/control-center-root 0700 root root -
+TMPFILES
+chmod 0644 /etc/tmpfiles.d/control-center.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/control-center.conf
+rm -f /run/control-center/samba-provision.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* 2>/dev/null || true
 
 OLD_PORT="$(printf '%s\n' "$OLD_WEB_ENV" | sed -n 's/^CONTROL_CENTER_PORT=//p' | head -1)"
 PORT="${OLD_PORT:-$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env 2>/dev/null | head -1)}"; PORT="${PORT:-8080}"
@@ -72,9 +83,9 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/var/lib/control-center
+ReadWritePaths=/var/lib/control-center /run/control-center
 ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
-InaccessiblePaths=/var/lib/control-center-root
+InaccessiblePaths=/var/lib/control-center-root /run/control-center-root
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -92,6 +103,26 @@ Description=Control Center hostname request watcher
 [Path]
 PathExists=/var/lib/control-center/hostname-pending.json
 Unit=control-center-hostname-apply.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-samba-apply.service <<'UNIT'
+[Unit]
+Description=Control Center Samba AD-DC provisioning worker
+After=network-online.target postgresql.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/control-center/database.env
+ExecStart=/usr/local/sbin/control-center-samba-apply
+TimeoutStartSec=45min
+UNIT
+cat >/etc/systemd/system/control-center-samba-apply.path <<'UNIT'
+[Unit]
+Description=Control Center Samba AD-DC provisioning request watcher
+[Path]
+PathExists=/run/control-center/samba-provision.json
+Unit=control-center-samba-apply.service
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -114,9 +145,8 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now control-center-hostname-apply.path
+systemctl enable --now control-center-samba-apply.path
 systemctl enable control-center-db-migrate.service
-# Apply migration 003 immediately when PostgreSQL is healthy. If it is down,
-# Restart=on-failure keeps retrying until the database becomes available.
 systemctl restart control-center-db-migrate.service || true
 systemctl restart control-center
 SCHEME=http; CURL=(-fsS --max-time 3)
@@ -124,6 +154,10 @@ if [[ "$SSL" == 1 || "$SSL" == true ]]; then SCHEME=https; CURL=(-kfsS --max-tim
 for _ in $(seq 1 20); do if curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi; sleep 1; done
 curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null
 
-echo 'Control Center 1.0.10 build 20260819.4 установлен.'
+# Root worker must be syntactically valid before declaring installer success.
+bash -n /usr/local/sbin/control-center-samba-apply
+bash -n /usr/local/sbin/control-center-samba-approve
+
+echo 'Control Center 1.0.11 build 20260819.5 установлен.'
 echo "Web UI: $SCHEME://SERVER:$PORT"
-echo 'Samba AD-DC: expanded readiness + dry-run plan; installation/provisioning remain disabled until the next release.'
+echo 'Samba AD-DC production lifecycle активирован. Перед созданием домена выполните: sudo control-center-samba-approve'
