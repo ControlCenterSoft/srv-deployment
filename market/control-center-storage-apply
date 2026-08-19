@@ -111,8 +111,8 @@ PY
   if id control-center-storage >/dev/null 2>&1;then chown -R root:root /srv/control-center/storage 2>/dev/null||true;userdel control-center-storage >/dev/null 2>&1||true;fi
   if [[ "$OWNED" == 1 ]];then exec 8>"$APT_LOCK";flock -w 900 8;export DEBIAN_FRONTEND=noninteractive;apt-get purge -y samba samba-dsdb-modules samba-vfs-modules winbind||true;apt-get autoremove -y||true;fi
   rm -f "$MODULE" "$PENDING"
-  TS=$(date +%s);AUDIT="$AUDITS/storage-$TS.json"
-  python3 - "$AUDIT" "$SMB" "$OWNED" "$DATA" <<'PY'
+  TS=$(date +%s);AUDIT="$AUDITS/storage-$TS.json";RC=0
+  python3 - "$AUDIT" "$SMB" "$OWNED" "$DATA" <<'PY' || RC=$?
 import json,subprocess,sys,time,os
 p,smb,owned,data=sys.argv[1:]
 def rc(a):return subprocess.run(a,text=True,capture_output=True).returncode
@@ -121,7 +121,7 @@ if owned=='1':checks['owned_samba_package_removed']=rc(['dpkg-query','-W','samba
 clean=all(checks.values());json.dump({'service':'storage','action':'remove','clean':clean,'checks':checks,'timestamp':int(time.time()),'preserved_user_data':data if os.path.exists(data) else None},open(p,'w'),ensure_ascii=False,indent=2);open(p,'a').write('\n');os.chmod(p,0o640)
 raise SystemExit(0 if clean else 2)
 PY
-  RC=$?;chown root:control-center "$AUDIT";if [[ $RC -ne 0 ]];then status error 'Хранилище удалено, cleanup-audit обнаружил остаточные service artifacts' "$AUDIT";exit 1;fi
+  chown root:control-center "$AUDIT";if [[ $RC -ne 0 ]];then status error 'Хранилище удалено, cleanup-audit обнаружил остаточные service artifacts' "$AUDIT";exit 1;fi
   status removed 'Сетевое хранилище удалено. Пользовательские данные сохранены.' "$AUDIT";exit 0
 else rm -f "$PENDING";status error 'Неизвестное действие Storage';exit 1;fi
 
