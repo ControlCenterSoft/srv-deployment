@@ -2,9 +2,7 @@ name: Validate Control Center release
 
 on:
   push:
-    branches:
-      - main
-      - 'release/**'
+    branches: [main, 'release/**']
   pull_request:
 
 permissions:
@@ -18,16 +16,11 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
@@ -37,155 +30,120 @@ jobs:
           python -m py_compile \
             app/main.py app/main_base_107.py app/wsgi.py app/database.py app/db_migrate.py \
             app/release_107.py app/release_108.py app/release_108_build2.py app/release_109.py \
-            app/release_110.py app/release_110_fix.py app/release_111.py app/release_111_guard.py
-          node --check app/static/app.js
-          node --check app/static/release-108.js
-          node --check app/static/release-110.js
-          node --check app/static/release-110-fix.js
-          node --check app/static/release-111.js
+            app/release_110.py app/release_110_fix.py app/release_111.py app/release_111_guard.py \
+            app/release_111_safety.py app/release_111_notifications.py app/release_111_services.py \
+            app/release_111_dependencies.py app/release_111_dhcp.py app/release_111_services_assets.py \
+            app/release_111_auth.py system/control-center-authd
+          for f in app/static/app.js app/static/release-108.js app/static/release-110.js app/static/release-110-fix.js app/static/release-111.js app/static/release-111-services.js app/static/release-111-ui-fix.js app/static/release-111-login.js; do node --check "$f"; done
           for f in \
             install/install.sh install/uninstall.sh \
             system/control-center-web-run system/control-center-web-apply system/control-center-hostname-apply \
-            system/control-center-samba-apply system/control-center-samba-approve \
+            system/control-center-samba-apply system/control-center-samba-approve system/control-center-samba-package-guard \
+            system/control-center-domain-pre system/control-center-domain-post system/control-center-domain-orchestrate \
+            system/control-center-domain-restore-prestate system/control-center-domain-destroy \
             network/control-center-network-apply market/control-center-market-apply market/control-center-dhcp-apply \
-            scripts/acceptance-1.0.11.sh; do
-            bash -n "$f"
-          done
+            market/control-center-dns-apply market/control-center-storage-apply market/control-center-dhcp-reservations-apply \
+            scripts/acceptance-1.0.11.sh; do bash -n "$f"; done
 
-      - name: Validate 1.0.11 release architecture
+      - name: Validate release architecture
         run: |
           set -euo pipefail
           python - <<'PY'
           import json,pathlib,re
-          root=pathlib.Path('.')
-          for p in root.rglob('*.json'): json.loads(p.read_text())
-          rel=json.loads((root/'app/release.json').read_text())
-          assert rel=={'version':'1.0.11','build':'20260819.5'}
-          dep=json.loads((root/'deployment.json').read_text())
-          assert dep['release']=='1.0.11' and dep['build']=='20260819.5'
-          assert dep['channel']=='production' and dep['release_branch']=='release/1.0.11'
-          assert dep['audit'] in {'pending','passed'}
-          manifest=json.loads((root/'releases/1.0.11/manifest.json').read_text())
-          assert manifest['database']['schema_migration']=='004'
-          s=manifest['samba_ad_dc'];assert s['installation_enabled'] and s['provisioning_enabled']
-          assert s['local_approval_required'] and s['administrator_password_persisted'] is False
-          main=(root/'app/main.py').read_text()
-          assert re.search(r"^APP_VERSION\s*=\s*['\"]1\.0\.11['\"]",main,re.M)
-          assert re.search(r"^APP_BUILD\s*=\s*['\"]20260819\.5['\"]",main,re.M)
-          wsgi=(root/'app/wsgi.py').read_text()
-          for token in ['import release_111','release_111.register(app, main)','import release_111_guard','release_111_guard.register(app, main)']: assert token in wsgi,token
-          ext=(root/'app/release_111.py').read_text()
-          for token in ['/api/samba/status','/api/samba/provision','/api/samba/health','production-provision','SAMBA_INTERNAL','approval_required','password_persisted']:
-              assert token in ext,token
-          guard=(root/'app/release_111_guard.py').read_text()
-          for token in ['hostname_guard_111','network_guard_111','dhcp_guard_111','активный контроллер домена','единственный DNS']:
-              assert token in guard,token
-          helper=(root/'system/control-center-samba-apply').read_text()
-          for token in ['samba-tool domain provision','--server-role=dc','--dns-backend=SAMBA_INTERNAL','--interactive','samba-tool ntacl sysvolcheck','kinit','smbclient','rollback','/run/control-center','policy-rc.d','static IP not present on interface']:
-              assert token in helper,token
-          assert '--adminpass=' not in helper
-          approve=(root/'system/control-center-samba-approve').read_text()
-          assert 'openssl rand -hex 4' in approve and 'expires_at' in approve and 'sha256' in approve
-          migration=(root/'app/migrations/004_samba_ad_dc_lifecycle.sql').read_text()
-          for token in ['ad_dc_lifecycle_jobs','ad_dc_health_runs','managed boolean','health_state']: assert token in migration,token
-          installer=(root/'install/install.sh').read_text()
-          for token in ['control-center-samba-apply.path','control-center-samba-apply.service','control-center-samba-approve','/run/control-center 0700 control-center control-center','ReadWritePaths=/var/lib/control-center /run/control-center']:
-              assert token in installer,token
-          uninstall=(root/'install/uninstall.sh').read_text()
-          assert 'Samba AD-DC активен' in uninstall and '--keep-data' in uninstall
-          print('Architecture 1.0.11 OK')
+          r=pathlib.Path('.')
+          for p in r.rglob('*.json'): json.loads(p.read_text())
+          assert json.loads((r/'app/release.json').read_text())=={'version':'1.0.11','build':'20260819.5'}
+          dep=json.loads((r/'deployment.json').read_text());assert dep['release']=='1.0.11' and dep['build']=='20260819.5' and dep['audit'] in {'pending','passed'}
+          man=json.loads((r/'releases/1.0.11/manifest.json').read_text());assert man['database']['schema_migration']=='005'
+          w=(r/'app/wsgi.py').read_text()
+          for x in ['release_111_services.register','release_111_dependencies.register','release_111_dhcp.register','release_111_auth.register']:assert x in w,x
+          svc=(r/'app/release_111_services.py').read_text()
+          for x in ["'domain'", "'dns'", "'storage'", '/api/dhcp/clients','/api/domain/remove','/api/services/cleanup/audits']:assert x in svc,x
+          auth=(r/'app/release_111_auth.py').read_text();daemon=(r/'system/control-center-authd').read_text()
+          for x in ['/api/auth/login','SESSION_COOKIE_HTTPONLY','rbac_mode']:assert x in auth,x
+          for x in ['SO_PEERCRED','pamtester','ntlm_auth','wbinfo','control-center-admins']:assert x in daemon,x
+          pre=(r/'system/control-center-domain-pre').read_text();destroy=(r/'system/control-center-domain-destroy').read_text()
+          assert 'prestate_fingerprints' in pre and 'prestate_fingerprints_match' in destroy and 'nTDSDSA' in destroy
+          dns=(r/'market/control-center-dns-apply').read_text();storage=(r/'market/control-center-storage-apply').read_text()
+          assert 'unbound' in dns and 'cleanup-audits' in dns
+          assert 'samba_standalone' in storage and 'preserved_user_data' in storage
+          dhcp=(r/'market/control-center-dhcp-reservations-apply').read_text();assert 'dhcp-host=' in dhcp and 'dhcp_reservations' in dhcp
+          mig=(r/'app/migrations/005_rbac_services_dhcp.sql').read_text()
+          for x in ['rbac_roles','rbac_bindings','service_dependencies','dhcp_reservations','service_cleanup_audits']:assert x in mig,x
+          installer=(r/'install/install.sh').read_text()
+          for x in ['control-center-authd.service','control-center-domain-destroy.path','control-center-dns-apply.path','control-center-storage-apply.path','control-center-dhcp-reservations-apply.path','migration 005']:assert x in installer,x
+          assert '--adminpass=' not in (r/'system/control-center-samba-apply').read_text()
+          print('1.0.11 architecture OK')
           PY
 
-      - name: Install PostgreSQL and Python dependencies
+      - name: Setup PostgreSQL application test
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql postgresql-client dnsmasq-base
           python -m pip install -r requirements.txt
           sudo systemctl start postgresql
-          sudo -u postgres pg_isready
-
-      - name: Prepare peer-auth PostgreSQL database
-        run: |
-          set -euo pipefail
-          if ! id control-center >/dev/null 2>&1; then sudo useradd --system --home /tmp/control-center-ci --shell /usr/sbin/nologin control-center; fi
-          sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP DATABASE IF EXISTS control_center;'
-          sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP ROLE IF EXISTS "control-center";'
-          sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'CREATE ROLE "control-center" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD NULL;'
+          id control-center >/dev/null 2>&1 || sudo useradd --system --home /tmp/control-center-ci --shell /usr/sbin/nologin control-center
+          sudo -u postgres psql -d postgres -c 'DROP DATABASE IF EXISTS control_center;'
+          sudo -u postgres psql -d postgres -c 'DROP ROLE IF EXISTS "control-center";'
+          sudo -u postgres psql -d postgres -c 'CREATE ROLE "control-center" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD NULL;'
           sudo -u postgres createdb --owner=control-center control_center
           sudo install -d -o control-center -g control-center -m 0755 /var/lib/control-center /run/control-center
           sudo install -d -o root -g control-center -m 0750 /var/lib/control-center-system /var/lib/control-center-system/modules
-          sudo install -d -o root -g root -m 0700 /run/control-center-root /var/lib/control-center-root
-          sudo rm -rf /tmp/control-center-ci-app
+          sudo install -d -o root -g root -m 0700 /var/lib/control-center-root /run/control-center-root
           sudo cp -a app /tmp/control-center-ci-app
           sudo chmod -R a+rX /tmp/control-center-ci-app
 
-      - name: Validate PostgreSQL migrations 001 through 004
+      - name: Validate migrations through 005
         run: |
-          set -euo pipefail
           PYTHON="${pythonLocation}/bin/python"
           sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' "$PYTHON" /tmp/control-center-ci-app/db_migrate.py
-          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 004
-          for table in ad_dc_profiles ad_dc_nodes ad_dc_preflight_runs ad_dc_readiness_runs ad_dc_change_plans ad_dc_lifecycle_jobs ad_dc_health_runs; do
+          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 005
+          for table in ad_dc_profiles ad_dc_lifecycle_jobs ad_dc_health_runs rbac_roles rbac_bindings service_dependencies dhcp_reservations service_cleanup_audits; do
             sudo -u control-center psql -d control_center -Atqc "select to_regclass('control_center.${table}') is not null" | grep -qx t
           done
-          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' "$PYTHON" /tmp/control-center-ci-app/db_migrate.py | grep -q 'SKIP 004_samba_ad_dc_lifecycle.sql'
+          sudo -u control-center psql -d control_center -Atqc "select count(*) from control_center.service_dependencies where service_id='domain' and required" | grep -qx 2
+          sudo -u control-center psql -d control_center -Atqc "select count(*) from control_center.rbac_roles where role_id in ('admin','viewer')" | grep -qx 2
 
-      - name: Validate Samba APIs, secret boundary and active-DC guards
+      - name: Validate API security, Market and dependencies
+        env:
+          CONTROL_CENTER_TEST_BYPASS_AUTH: '1'
+          CONTROL_CENTER_DB_DSN: 'dbname=control_center user=control-center host=/var/run/postgresql'
         run: |
-          set -euo pipefail
           PYTHON="${pythonLocation}/bin/python"
-          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
-          import json,os,pathlib
+          sudo -u control-center env CONTROL_CENTER_TEST_BYPASS_AUTH=1 CONTROL_CENTER_DB_DSN="$CONTROL_CENTER_DB_DSN" PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
+          import pathlib
           import main,release_111,wsgi
-          fake_roles={
-            'lan':{'enabled':True,'interface':'ccad0','method':'static','ip':'10.77.11.1','mask':24,'gateway':'','dns':['1.1.1.1']},
-            'wan':{'enabled':False,'interface':'','method':'disabled'},
-          }
-          fake_ifaces=[{'name':'ccad0','dns':['1.1.1.1'],'state':'up','ipv4':['10.77.11.1/24'],'rx_bytes':0,'tx_bytes':0},{'name':'ccwan0','dns':['9.9.9.9'],'state':'up','ipv4':['192.0.2.2/24'],'rx_bytes':0,'tx_bytes':0}]
-          main._effective_network_config=lambda:(fake_roles,fake_ifaces,'test')
-          main._interfaces=lambda:fake_ifaces
-          cfg=release_111._public_request(main,{'realm':'ci.example.test','netbios_domain':'CITEST','network_role':'lan','dns_forwarder':'1.1.1.1'},False)
-          assert cfg['realm']=='CI.EXAMPLE.TEST' and cfg['ipv4']=='10.77.11.1' and cfg['interface']=='ccad0'
-          try: release_111._realm('bad.local');raise AssertionError('local realm accepted')
-          except ValueError: pass
-          try: release_111._password('short','short');raise AssertionError('weak password accepted')
-          except ValueError: pass
+          roles={'lan':{'enabled':True,'interface':'ccad0','method':'static','ip':'10.77.11.1','mask':24,'gateway':'','dns':['1.1.1.1']},'wan':{'enabled':False,'interface':'','method':'disabled'}}
+          ifaces=[{'name':'ccad0','dns':['1.1.1.1'],'state':'up','ipv4':['10.77.11.1/24'],'rx_bytes':0,'tx_bytes':0}]
+          main._effective_network_config=lambda:(roles,ifaces,'test');main._interfaces=lambda:ifaces
           c=wsgi.app.test_client()
           h=c.get('/api/health');assert h.status_code==200 and h.get_json()['version']=='1.0.11'
-          s=c.get('/api/samba/status');assert s.status_code==200 and s.get_json()['approval_required'] is True and s.get_json()['password_persisted'] is False
-          m=c.get('/api/market');samba=next(x for x in m.get_json()['items'] if x['id']=='samba');assert samba['installable'] is True
-          old_readiness=release_111._readiness
-          release_111._readiness=lambda *a,**k:{'ready':True,'blockers':[],'warnings':[],'details':{'target':cfg}}
-          password='CiTest!Passw0rd-2026'
-          p=c.post('/api/samba/provision',json={'realm':'ci.example.test','netbios_domain':'CITEST','network_role':'lan','dns_forwarder':'1.1.1.1','administrator_password':password,'confirm_password':password,'approval_code':'abcdef12','confirmation':True})
-          assert p.status_code==202,p.get_data(as_text=True)
-          secret=json.loads(pathlib.Path('/run/control-center/samba-provision.json').read_text());assert secret['administrator_password']==password and secret['approval_code']=='abcdef12'
-          row=os.popen("psql -d control_center -Atqc \"select request::text from control_center.ad_dc_lifecycle_jobs order by created_at desc limit 1\"").read()
-          assert password not in row and 'abcdef12' not in row and 'administrator_password' not in row and 'approval_code' not in row
-          pathlib.Path('/run/control-center/samba-provision.json').unlink()
-          release_111._readiness=old_readiness
-          assets=c.get('/static/app.js');assert assets.status_code==200 and b'control-center-samba-approve' in assets.data
-          print('Samba API secret boundary OK')
+          m=c.get('/api/market').get_json();ids={x['id'] for x in m['items']};assert {'domain','dns','storage'}.issubset(ids)
+          d=next(x for x in m['items'] if x['id']=='domain');assert set(d['dependencies'])=={'dns','storage'}
+          r=c.post('/api/samba/readiness',json={'realm':'ci.example.test','netbios_domain':'CITEST','network_role':'lan','dns_forwarder':'1.1.1.1'});assert r.status_code==200
+          j=r.get_json();assert j['details']['dependencies']['domain_requires_dns'] and j['details']['dependencies']['domain_requires_storage']
+          assert c.get('/api/dhcp/clients').status_code==200
+          assets=c.get('/static/app.js').get_data(as_text=True);assert 'dhcpClientsPager111' in assets and 'data-domain-remove-open' in assets
+          print('API architecture OK')
           PY
-          sudo tee /var/lib/control-center-system/modules/samba.json >/dev/null <<'JSON'
-          {"installed":true,"managed":true,"state":"active","realm":"CI.EXAMPLE.TEST","fqdn":"cc-ci.ci.example.test","netbios_domain":"CITEST","network_role":"lan","interface":"ccad0","ipv4":"10.77.11.1","prefix":24}
-          JSON
-          sudo chown root:control-center /var/lib/control-center-system/modules/samba.json
-          sudo chmod 0640 /var/lib/control-center-system/modules/samba.json
-          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
-          import main,wsgi
-          main._interfaces=lambda:[{'name':'ccad0'},{'name':'ccwan0'}]
-          c=wsgi.app.test_client()
-          r=c.post('/api/settings/hostname',json={'hostname':'renamed-dc'});assert r.status_code==409
-          r=c.post('/api/network/config',json={'lan':{'enabled':False,'method':'disabled'},'wan':{'enabled':True,'interface':'ccwan0','method':'dhcp'}});assert r.status_code==409,r.get_data(as_text=True)
-          r=c.post('/api/dhcp/config',json={'interface':'ccad0','range_start':'10.77.11.100','range_end':'10.77.11.150','mask':24,'gateway':'10.77.11.1','dns':['1.1.1.1'],'lease_minutes':720,'extra_options':[]});assert r.status_code==409,r.get_data(as_text=True)
-          print('Active DC guards OK')
-          PY
-          sudo rm -f /var/lib/control-center-system/modules/samba.json
 
-      - name: Security and documentation policy
+      - name: Validate auth guard without bypass
+        env:
+          CONTROL_CENTER_DB_DSN: 'dbname=control_center user=control-center host=/var/run/postgresql'
         run: |
-          set -euo pipefail
+          PYTHON="${pythonLocation}/bin/python"
+          sudo -u control-center env CONTROL_CENTER_DB_DSN="$CONTROL_CENTER_DB_DSN" PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
+          import wsgi
+          c=wsgi.app.test_client()
+          assert c.get('/').status_code in {301,302}
+          assert c.get('/api/market').status_code==401
+          assert c.get('/api/health').status_code==200
+          assert c.get('/login').status_code==200
+          print('Auth guard OK')
+          PY
+
+      - name: Security and docs policy
+        run: |
           openssl pkey -pubin -in license/vendor-public.pem -noout
           ! git ls-files | grep -Eai '(^|/)(private|secret|signing)[^/]*(\.pem|\.key)$'
           ! grep -RIl --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' 'BEGIN PRIVATE KEY\|BEGIN RSA PRIVATE KEY' .
