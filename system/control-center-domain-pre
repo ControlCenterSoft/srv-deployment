@@ -14,10 +14,6 @@ rm -f "$CTX_DIR/dns.json" "$CTX_DIR/storage.json"
 [[ -s "$DNS" ]] && cp -a "$DNS" "$CTX_DIR/dns.json"
 [[ -s "$STORAGE" ]] && cp -a "$STORAGE" "$CTX_DIR/storage.json"
 
-# A Control Center standalone Storage instance is an owned dependency and may be
-# converted automatically to the domain share. This is not an external Samba
-# takeover, therefore privileged provisioning marks it as an approved managed
-# transition without asking the user to confirm replacement of their own config.
 if [[ -s "$STORAGE" && -s "$SMB" && -s "$PENDING" ]] && grep -q '^# Managed by Control Center Storage' "$SMB"; then
   python3 - "$PENDING" <<'PY'
 import json,os,sys,tempfile
@@ -28,9 +24,6 @@ os.replace(tmp,p);os.chmod(p,0o600)
 PY
 fi
 
-# Never automatically replace a pre-existing AD controller that is not already
-# managed by this Control Center. It must be migrated/imported by a dedicated
-# future lifecycle rather than overwritten by a first-domain wizard.
 if [[ -s "$SMB" && ! -s "$STORAGE" ]]; then
   ROLE="$(testparm -s --parameter-name='server role' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
   if grep -q 'active directory domain controller' <<<"$ROLE"; then
@@ -52,31 +45,37 @@ def installed(name):
 def tree_hash(path):
  h=hashlib.sha256();root=os.path.abspath(path)
  if not os.path.lexists(root):return None
- if os.path.islink(root):
-  h.update(b'L\0'+os.readlink(root).encode());return h.hexdigest()
+ if os.path.islink(root):h.update(b'L\0'+os.readlink(root).encode());return h.hexdigest()
  if os.path.isfile(root):
   h.update(b'F\0')
   with open(root,'rb') as f:
    for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
   return h.hexdigest()
  for base,dirs,files in os.walk(root,topdown=True,followlinks=False):
-  dirs.sort();files.sort()
-  rel=os.path.relpath(base,root).encode();h.update(b'D\0'+rel+b'\0')
+  dirs.sort();files.sort();h.update(b'D\0'+os.path.relpath(base,root).encode()+b'\0')
   for name in files:
-   fp=os.path.join(base,name);rp=os.path.relpath(fp,root).encode();h.update(b'P\0'+rp+b'\0')
+   fp=os.path.join(base,name);h.update(b'P\0'+os.path.relpath(fp,root).encode()+b'\0')
    if os.path.islink(fp):h.update(b'L\0'+os.readlink(fp).encode());continue
    try:
     with open(fp,'rb') as f:
      for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
    except OSError:h.update(b'!unreadable')
  return h.hexdigest()
-data={'created_at':int(time.time()),'unbound_active':unbound=='1','smbd_active':smbd=='1','dns_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/dns.json'),'storage_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/storage.json'),'packages_preexisting':{x:installed(x) for x in packages},'prestate_fingerprints':{x:tree_hash(x) for x in paths}}
+data={
+ 'created_at':int(time.time()),
+ 'unbound_active':unbound=='1','smbd_active':smbd=='1',
+ 'dns_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/dns.json'),
+ 'storage_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/storage.json'),
+ 'packages_preexisting':{x:installed(x) for x in packages},
+ 'prestate_fingerprints':{x:tree_hash(x) for x in paths},
+ 'prestate_artifacts':{
+   'sam_ldb':os.path.exists('/var/lib/samba/private/sam.ldb'),
+   'sysvol':os.path.exists('/var/lib/samba/sysvol'),
+   'netlogon':os.path.exists('/var/lib/samba/sysvol') and any('scripts' in root for root,dirs,files in os.walk('/var/lib/samba/sysvol')),
+ }
+}
 with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n')
 os.chmod(p,0o600)
 PY
 chown root:root "$CTX"
-
-# Standalone Unbound owns port 53. Preserve its config/module but stop it while
-# Samba Internal DNS takes ownership. It is restored on rollback/domain removal
-# only when it existed before the domain transition.
 if [[ "$UNBOUND_ACTIVE" == 1 ]];then systemctl stop unbound.service;fi
