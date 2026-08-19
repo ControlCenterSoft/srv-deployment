@@ -5,8 +5,13 @@ MODE="${1:-}"
 ROOT_RUN=/run/control-center-root
 SNAPSHOT="$ROOT_RUN/samba-packages-before.tsv"
 SERVICE_SNAPSHOT="$ROOT_RUN/samba-time-services-before.tsv"
+ROLLBACK_DEBS="$ROOT_RUN/samba-package-debs"
+PERSISTENT_ROOT=/var/lib/control-center-root/domain-package-prestate
+PERSISTENT_SNAPSHOT="$PERSISTENT_ROOT/packages-before.tsv"
+PERSISTENT_SERVICE_SNAPSHOT="$PERSISTENT_ROOT/time-services-before.tsv"
+PERSISTENT_DEBS="$PERSISTENT_ROOT/debs"
 APT_LOCK=/run/control-center-apt.lock
-PACKAGES=(
+DIRECT_PACKAGES=(
   samba samba-dsdb-modules samba-vfs-modules winbind krb5-user dnsutils acl attr smbclient chrony systemd-timesyncd
 )
 TIME_SERVICES=(chrony.service systemd-timesyncd.service)
@@ -19,16 +24,114 @@ service_value(){
   systemctl "$1" "$2" 2>/dev/null | head -1 || true
 }
 
+package_mark(){
+  if apt-mark showmanual 2>/dev/null | grep -Fxq "$1"; then printf 'manual\n'; else printf 'auto\n'; fi
+}
+
+capture_deb(){
+  local pkg="$1" version="$2" dir="$3"
+  install -d -o root -g root -m 0700 "$dir"
+  if compgen -G "$dir/${pkg//:/_}_*.deb" >/dev/null; then return 0; fi
+  (
+    cd "$dir"
+    apt-get download "$pkg=$version" >/dev/null
+  )
+  find "$dir" -maxdepth 1 -type f -name '*.deb' -exec chmod 0600 {} +
+}
+
+restore_from(){
+  local snapshot="$1" service_snapshot="$2" deb_dir="$3" cleanup_root="${4:-}"
+  [[ -s "$snapshot" ]] || { [[ -n "$cleanup_root" ]] && rm -rf "$cleanup_root"; return 0; }
+
+  exec 8>"$APT_LOCK"
+  flock -w 900 8 || { echo 'Samba package rollback: APT lock timeout' >&2; exit 75; }
+  export DEBIAN_FRONTEND=noninteractive
+
+  local remove=() debs=() missing_deb=0
+  while IFS=$'\t' read -r pkg was_installed version mark; do
+    [[ -n "$pkg" ]] || continue
+    if [[ "$was_installed" == 0 ]]; then
+      installed "$pkg" && remove+=("$pkg")
+    else
+      current="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
+      if [[ "$current" != "$version" ]]; then
+        match="$(find "$deb_dir" -maxdepth 1 -type f -name '*.deb' -print0 2>/dev/null | xargs -0 -r dpkg-deb -f 2>/dev/null | awk -v p="$pkg" -v v="$version" 'BEGIN{RS="\n\n"} $0~("Package: "p"\n") && $0~("Version: "v"\n") {print; exit}' || true)"
+        file=""
+        while IFS= read -r cand; do
+          [[ -n "$cand" ]] || continue
+          cpkg="$(dpkg-deb -f "$cand" Package 2>/dev/null || true)"; cver="$(dpkg-deb -f "$cand" Version 2>/dev/null || true)"
+          if [[ "$cpkg" == "$pkg" && "$cver" == "$version" ]]; then file="$cand"; break; fi
+        done < <(find "$deb_dir" -maxdepth 1 -type f -name '*.deb' -print 2>/dev/null || true)
+        if [[ -z "$file" ]]; then echo "Missing cached rollback package: $pkg=$version" >&2; missing_deb=1; else debs+=("$file"); fi
+      fi
+    fi
+  done <"$snapshot"
+  [[ "$missing_deb" == 0 ]] || exit 1
+
+  if (( ${#debs[@]} )); then
+    apt-get install -y --allow-downgrades "${debs[@]}"
+  fi
+  if (( ${#remove[@]} )); then
+    apt-get purge -y "${remove[@]}"
+  fi
+  apt-get -f install -y
+
+  while IFS=$'\t' read -r pkg was_installed version mark; do
+    [[ -n "$pkg" ]] || continue
+    if [[ "$was_installed" == 1 ]]; then
+      installed "$pkg" || { echo "Package rollback incomplete; missing $pkg" >&2; exit 1; }
+      current="$(dpkg-query -W -f='${Version}' "$pkg")"
+      [[ "$current" == "$version" ]] || { echo "Package rollback version mismatch: $pkg current=$current expected=$version" >&2; exit 1; }
+      if [[ "$mark" == manual ]]; then apt-mark manual "$pkg" >/dev/null; else apt-mark auto "$pkg" >/dev/null; fi
+    else
+      ! installed "$pkg" || { echo "Package rollback incomplete; unexpected $pkg remains installed" >&2; exit 1; }
+    fi
+  done <"$snapshot"
+
+  if [[ -s "$service_snapshot" ]]; then
+    while IFS=$'\t' read -r svc active enabled; do
+      case "$enabled" in
+        enabled) systemctl enable "$svc" >/dev/null 2>&1 || true ;;
+        disabled) systemctl disable "$svc" >/dev/null 2>&1 || true ;;
+        masked) systemctl mask "$svc" >/dev/null 2>&1 || true ;;
+      esac
+      case "$active" in
+        active) systemctl start "$svc" >/dev/null 2>&1 || true ;;
+        inactive|failed|unknown) systemctl stop "$svc" >/dev/null 2>&1 || true ;;
+      esac
+    done <"$service_snapshot"
+  fi
+
+  [[ -n "$cleanup_root" ]] && rm -rf "$cleanup_root"
+}
+
 case "$MODE" in
   snapshot)
     install -d -o root -g root -m 0700 "$ROOT_RUN"
+    rm -rf "$ROLLBACK_DEBS"
+    install -d -o root -g root -m 0700 "$ROLLBACK_DEBS"
+
+    # Freeze the exact transaction plan before Domain provisioning. If an
+    # already-installed package would be upgraded, its exact .deb is cached;
+    # provisioning is rejected if exact rollback bytes cannot be obtained.
+    exec 8>"$APT_LOCK"
+    flock -w 900 8 || { echo 'Samba package snapshot: APT lock timeout' >&2; exit 75; }
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    PLAN="$(mktemp "$ROOT_RUN/.samba-apt-plan.XXXXXX")"
+    apt-get -s install -y "${DIRECT_PACKAGES[@]}" >"$PLAN"
+    mapfile -t TOUCHED < <({ printf '%s\n' "${DIRECT_PACKAGES[@]}"; sed -n 's/^Inst \([^ ]*\).*/\1/p' "$PLAN"; } | awk 'NF&&!seen[$0]++')
+    rm -f "$PLAN"
+
     TMP="$(mktemp "$ROOT_RUN/.samba-packages.XXXXXX")"
-    for pkg in "${PACKAGES[@]}"; do
+    for pkg in "${TOUCHED[@]}"; do
       if installed "$pkg"; then
-        version="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
-        printf '%s\t1\t%s\n' "$pkg" "$version" >>"$TMP"
+        version="$(dpkg-query -W -f='${Version}' "$pkg")"
+        mark="$(package_mark "$pkg")"
+        printf '%s\t1\t%s\t%s\n' "$pkg" "$version" "$mark" >>"$TMP"
+        capture_deb "$pkg" "$version" "$ROLLBACK_DEBS"
       else
-        printf '%s\t0\t-\n' "$pkg" >>"$TMP"
+        printf '%s\t0\t-\t-\n' "$pkg" >>"$TMP"
       fi
     done
     chmod 0600 "$TMP"
@@ -45,71 +148,33 @@ case "$MODE" in
     ;;
 
   commit)
-    # ExecStartPost reaches this point only after the provisioning worker exits
-    # successfully. Removing snapshots commits both package and time-service state.
-    rm -f "$SNAPSHOT" "$SERVICE_SNAPSHOT"
+    # Successful provisioning keeps the exact pre-Domain package state in the
+    # root-only persistent recovery area. Domain removal consumes it later.
+    [[ -s "$SNAPSHOT" ]] || { echo 'Samba package snapshot missing at commit' >&2; exit 1; }
+    rm -rf "$PERSISTENT_ROOT"
+    install -d -o root -g root -m 0700 "$PERSISTENT_ROOT"
+    mv "$SNAPSHOT" "$PERSISTENT_SNAPSHOT"
+    [[ -s "$SERVICE_SNAPSHOT" ]] && mv "$SERVICE_SNAPSHOT" "$PERSISTENT_SERVICE_SNAPSHOT"
+    mv "$ROLLBACK_DEBS" "$PERSISTENT_DEBS"
+    chmod -R go-rwx "$PERSISTENT_ROOT"
     ;;
 
   restore)
-    # ExecStopPost always calls restore. On success the preceding commit removed
-    # snapshots, so this is a no-op. A failure/timeout before commit reconciles
-    # only packages that the Samba operation was explicitly allowed to change.
-    [[ -s "$SNAPSHOT" ]] || { rm -f "$SERVICE_SNAPSHOT"; exit 0; }
-
-    exec 8>"$APT_LOCK"
-    flock -w 900 8 || { echo 'Samba package rollback: APT lock timeout' >&2; exit 75; }
-    export DEBIAN_FRONTEND=noninteractive
-
-    remove=()
-    restore=()
-    while IFS=$'\t' read -r pkg was_installed version; do
-      [[ -n "$pkg" ]] || continue
-      if [[ "$was_installed" == 0 ]] && installed "$pkg"; then
-        remove+=("$pkg")
-      elif [[ "$was_installed" == 1 ]] && ! installed "$pkg"; then
-        restore+=("$pkg")
-      fi
-    done <"$SNAPSHOT"
-
-    # Do not autoremove: dependencies may be shared with unrelated software.
-    if (( ${#remove[@]} )); then
-      apt-get remove -y "${remove[@]}" || true
-    fi
-    if (( ${#restore[@]} )); then
-      apt-get update || true
-      apt-get install -y "${restore[@]}" || true
-    fi
-
-    # Re-apply the original active/enabled state after package reconciliation.
-    if [[ -s "$SERVICE_SNAPSHOT" ]]; then
-      while IFS=$'\t' read -r svc active enabled; do
-        case "$enabled" in
-          enabled) systemctl enable "$svc" >/dev/null 2>&1 || true ;;
-          disabled) systemctl disable "$svc" >/dev/null 2>&1 || true ;;
-          masked) systemctl mask "$svc" >/dev/null 2>&1 || true ;;
-        esac
-        case "$active" in
-          active) systemctl start "$svc" >/dev/null 2>&1 || true ;;
-          inactive|failed|unknown) systemctl stop "$svc" >/dev/null 2>&1 || true ;;
-        esac
-      done <"$SERVICE_SNAPSHOT"
-    fi
-
-    missing=()
-    while IFS=$'\t' read -r pkg was_installed version; do
-      if [[ "$was_installed" == 1 ]] && ! installed "$pkg"; then missing+=("$pkg"); fi
-    done <"$SNAPSHOT"
+    restore_from "$SNAPSHOT" "$SERVICE_SNAPSHOT" "$ROLLBACK_DEBS" ""
     rm -f "$SNAPSHOT" "$SERVICE_SNAPSHOT"
-    if (( ${#missing[@]} )); then
-      printf 'Samba package rollback incomplete; missing:' >&2
-      printf ' %s' "${missing[@]}" >&2
-      printf '\n' >&2
-      exit 1
-    fi
+    rm -rf "$ROLLBACK_DEBS"
+    ;;
+
+  restore-persistent)
+    restore_from "$PERSISTENT_SNAPSHOT" "$PERSISTENT_SERVICE_SNAPSHOT" "$PERSISTENT_DEBS" "$PERSISTENT_ROOT"
+    ;;
+
+  discard-persistent)
+    rm -rf "$PERSISTENT_ROOT"
     ;;
 
   *)
-    echo 'Usage: control-center-samba-package-guard snapshot|commit|restore' >&2
+    echo 'Usage: control-center-samba-package-guard snapshot|commit|restore|restore-persistent|discard-persistent' >&2
     exit 2
     ;;
 esac
