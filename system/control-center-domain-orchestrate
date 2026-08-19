@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SYSTEM=/var/lib/control-center-system
+ROOT=/var/lib/control-center-root
+CTX="$ROOT/domain-install-context.json"
+STATUS="$SYSTEM/samba-status.json"
+PRE=/usr/local/sbin/control-center-domain-pre
+CORE=/usr/local/sbin/control-center-samba-apply-core
+POST=/usr/local/sbin/control-center-domain-post
+RESTORE=/usr/local/sbin/control-center-domain-restore-prestate
+write_status(){ python3 - "$STATUS" "$1" "$2" "${3:-}" <<'PY'
+import json,sys,time,os,tempfile
+p,state,msg,detail=sys.argv[1:]
+try:old=json.load(open(p))
+except Exception:old={}
+old.update({'state':state,'message':msg,'detail':detail,'timestamp':int(time.time())})
+fd,tmp=tempfile.mkstemp(prefix='.samba-status.',dir=os.path.dirname(p))
+with os.fdopen(fd,'w') as f:json.dump(old,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+os.replace(tmp,p)
+PY
+chown root:control-center "$STATUS";chmod 0640 "$STATUS"; }
+restart_preserved_dns(){
+  [[ -s "$CTX" ]]||return 0
+  ACTIVE="$(python3 - "$CTX" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print('1' if j.get('unbound_active') else '0')
+PY
+)"
+  [[ "$ACTIVE" == 1 ]]&&systemctl start unbound.service >/dev/null 2>&1||true
+}
+"$PRE"
+if ! "$CORE";then
+  rc=$?
+  # The core worker performs its own rollback once the pre-provision archive
+  # exists. If it failed before backup creation, only the preserved standalone
+  # DNS service needs to be restarted.
+  BACKUP="$(python3 - "$STATUS" <<'PY'
+import json,sys,os
+try:j=json.load(open(sys.argv[1]))
+except Exception:j={}
+print(j.get('backup_path') or '')
+PY
+)"
+  if [[ -n "$BACKUP" && -s "$BACKUP/pre-provision.tar.gz" ]];then "$RESTORE" rollback >/dev/null 2>&1||true;else restart_preserved_dns;fi
+  exit "$rc"
+fi
+if ! "$POST";then
+  rc=$?
+  DETAIL='Домен был создан ядром provisioning, но обязательные DNS/Storage/Auth post-checks не завершились. Выполняется полный rollback.'
+  write_status rollback 'Domain post-provision failed; restoring pre-state' "$DETAIL"
+  "$RESTORE" rollback || true
+  write_status rollback 'Создание Домена отменено. Предыдущее состояние восстановлено.' "$DETAIL"
+  exit "$rc"
+fi
+exit 0
