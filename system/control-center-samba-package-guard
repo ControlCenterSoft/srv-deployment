@@ -4,13 +4,19 @@ set -Eeuo pipefail
 MODE="${1:-}"
 ROOT_RUN=/run/control-center-root
 SNAPSHOT="$ROOT_RUN/samba-packages-before.tsv"
+SERVICE_SNAPSHOT="$ROOT_RUN/samba-time-services-before.tsv"
 APT_LOCK=/run/control-center-apt.lock
 PACKAGES=(
   samba samba-dsdb-modules samba-vfs-modules winbind krb5-user dnsutils acl attr smbclient chrony systemd-timesyncd
 )
+TIME_SERVICES=(chrony.service systemd-timesyncd.service)
 
 installed(){
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -qx 'install ok installed'
+}
+
+service_value(){
+  systemctl "$1" "$2" 2>/dev/null | head -1 || true
 }
 
 case "$MODE" in
@@ -27,19 +33,28 @@ case "$MODE" in
     done
     chmod 0600 "$TMP"
     mv "$TMP" "$SNAPSHOT"
+
+    TMP="$(mktemp "$ROOT_RUN/.samba-time-services.XXXXXX")"
+    for svc in "${TIME_SERVICES[@]}"; do
+      active="$(service_value is-active "$svc")"
+      enabled="$(service_value is-enabled "$svc")"
+      printf '%s\t%s\t%s\n' "$svc" "${active:-unknown}" "${enabled:-unknown}" >>"$TMP"
+    done
+    chmod 0600 "$TMP"
+    mv "$TMP" "$SERVICE_SNAPSHOT"
     ;;
 
   commit)
     # ExecStartPost reaches this point only after the provisioning worker exits
-    # successfully. Removing the snapshot commits the package transaction.
-    rm -f "$SNAPSHOT"
+    # successfully. Removing snapshots commits both package and time-service state.
+    rm -f "$SNAPSHOT" "$SERVICE_SNAPSHOT"
     ;;
 
   restore)
     # ExecStopPost always calls restore. On success the preceding commit removed
-    # the snapshot, so this is a no-op. Any failure/timeout before commit leaves
-    # the snapshot present and therefore triggers package reconciliation.
-    [[ -s "$SNAPSHOT" ]] || exit 0
+    # snapshots, so this is a no-op. A failure/timeout before commit reconciles
+    # only packages that the Samba operation was explicitly allowed to change.
+    [[ -s "$SNAPSHOT" ]] || { rm -f "$SERVICE_SNAPSHOT"; exit 0; }
 
     exec 8>"$APT_LOCK"
     flock -w 900 8 || { echo 'Samba package rollback: APT lock timeout' >&2; exit 75; }
@@ -65,11 +80,26 @@ case "$MODE" in
       apt-get install -y "${restore[@]}" || true
     fi
 
+    # Re-apply the original active/enabled state after package reconciliation.
+    if [[ -s "$SERVICE_SNAPSHOT" ]]; then
+      while IFS=$'\t' read -r svc active enabled; do
+        case "$enabled" in
+          enabled) systemctl enable "$svc" >/dev/null 2>&1 || true ;;
+          disabled) systemctl disable "$svc" >/dev/null 2>&1 || true ;;
+          masked) systemctl mask "$svc" >/dev/null 2>&1 || true ;;
+        esac
+        case "$active" in
+          active) systemctl start "$svc" >/dev/null 2>&1 || true ;;
+          inactive|failed|unknown) systemctl stop "$svc" >/dev/null 2>&1 || true ;;
+        esac
+      done <"$SERVICE_SNAPSHOT"
+    fi
+
     missing=()
     while IFS=$'\t' read -r pkg was_installed version; do
       if [[ "$was_installed" == 1 ]] && ! installed "$pkg"; then missing+=("$pkg"); fi
     done <"$SNAPSHOT"
-    rm -f "$SNAPSHOT"
+    rm -f "$SNAPSHOT" "$SERVICE_SNAPSHOT"
     if (( ${#missing[@]} )); then
       printf 'Samba package rollback incomplete; missing:' >&2
       printf ' %s' "${missing[@]}" >&2
