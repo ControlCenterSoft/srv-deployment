@@ -270,7 +270,63 @@ PY
 getent hosts "$FQDN" | grep -Fq "$AD_IP"
 
 status provisioning "Provisioning домена $REALM…" "DC $FQDN / $AD_IP"
-printf '%s\n%s\n' "$ADMINPASS" "$ADMINPASS" | samba-tool domain provision --realm="$REALM" --domain="$DOMAIN" --server-role=dc --dns-backend=SAMBA_INTERNAL --host-ip="$AD_IP" --use-rfc2307 --interactive --option="dns forwarder = $FORWARDER" --option="interfaces=lo $IFACE" --option="bind interfaces only=yes"
+# Samba 4.19 exposes --adminpass only for non-interactive provisioning, which
+# would place the secret in argv. Drive the documented interactive flow through
+# a pseudo-TTY instead. The password arrives on inherited fd 3, never argv/env;
+# prompt output is additionally redacted if a terminal unexpectedly echoes it.
+python3 - "$REALM" "$DOMAIN" "$FORWARDER" "$AD_IP" "$IFACE" 3<<<"$ADMINPASS" <<'PY'
+import errno,os,pty,select,signal,sys,time
+realm,domain,forwarder,ip,iface=sys.argv[1:]
+password=os.read(3,512).decode('utf-8').rstrip('\r\n')
+if not password:raise SystemExit('empty administrator password fd')
+argv=[
+ 'samba-tool','domain','provision',f'--realm={realm}',f'--domain={domain}',
+ '--server-role=dc','--dns-backend=SAMBA_INTERNAL',f'--host-ip={ip}',
+ '--use-rfc2307','--interactive',f'--option=dns forwarder = {forwarder}',
+ f'--option=interfaces=lo {iface}','--option=bind interfaces only=yes'
+]
+pid,fd=pty.fork()
+if pid==0:
+ os.execvp(argv[0],argv)
+prompts=[
+ ('realm',b'Realm [',realm),('domain',b'Domain [',domain),
+ ('role',b'Server Role (', 'dc'),('backend',b'DNS backend (','SAMBA_INTERNAL'),
+ ('forwarder',b'DNS forwarder IP address',forwarder),
+ ('password',b'Administrator password:',password),('retype',b'Retype password:',password),
+]
+sent=set();buf=b'';secret=password.encode();deadline=time.time()+240
+try:
+ while True:
+  if time.time()>deadline:
+   os.kill(pid,signal.SIGKILL);raise SystemExit('samba-tool interactive provision timeout')
+  ready,_,_=select.select([fd],[],[],0.5)
+  if ready:
+   try:chunk=os.read(fd,4096)
+   except OSError as exc:
+    if exc.errno==errno.EIO:break
+    raise
+   if not chunk:break
+   os.write(1,chunk.replace(secret,b'***'))
+   buf=(buf+chunk)[-8192:]
+   for key,marker,answer in prompts:
+    if key not in sent and marker in buf:
+     os.write(fd,answer.encode('utf-8')+b'\n');sent.add(key);break
+  done,status=os.waitpid(pid,os.WNOHANG)
+  if done==pid:break
+finally:
+ password='';secret=b''
+try:
+ if 'status' not in locals() or not status:
+  _,status=os.waitpid(pid,0)
+except ChildProcessError:
+ pass
+rc=os.waitstatus_to_exitcode(status)
+if rc!=0:raise SystemExit(rc)
+required={'realm','domain','role','backend','forwarder','password','retype'}
+if not required.issubset(sent):raise SystemExit('samba-tool prompt sequence incomplete: '+','.join(sorted(required-sent)))
+PY
+# Assert the selected forwarder made it into the generated DC configuration.
+samba-tool testparm --parameter-name='dns forwarder' 2>/dev/null | grep -Fxq "$FORWARDER"
 test -s /etc/samba/smb.conf; test -s /var/lib/samba/private/krb5.conf; install -o root -g root -m 0644 /var/lib/samba/private/krb5.conf /etc/krb5.conf
 rm -f /etc/resolv.conf; cat >/etc/resolv.conf <<EOF
 # Managed by Control Center Samba AD-DC.
