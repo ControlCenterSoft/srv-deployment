@@ -1,59 +1,123 @@
 # Control Center 1.0.11
 
-Control Center — web-панель управления Linux-сервером. Текущий release candidate: **1.0.11**, build **20260819.5**.
+Control Center — web-панель управления Linux-сервером. Release candidate: **1.0.11**, build **20260819.5**.
 
 ## Главное в 1.0.11
 
-- активирован production lifecycle **Samba AD-DC** для создания нового первичного контроллера домена;
-- Samba Internal DNS, Kerberos, LDAP, SYSVOL/NETLOGON и signed NTP через chrony;
-- обязательный Static IPv4 на выбранной LAN/WAN роли;
-- LAN предпочтителен, AD-DC на WAN требует отдельного подтверждения;
-- одноразовое локальное подтверждение `sudo control-center-samba-approve` перед provisioning;
-- пароль Domain Administrator не сохраняется в PostgreSQL или persistent state и не передаётся в argv процесса;
-- root-only backup до изменений Samba/DNS/Kerberos и автоматический rollback при ошибке;
-- acceptance после создания: Samba config/SYSVOL, domain info, replication, DNS A/SRV, Kerberos и SMB;
-- интеграция с Control Center DHCP: доменным клиентам выдаётся только DNS контроллера;
-- после создания домена блокируются переименование DC и изменение/отключение его интерфейса/IP;
-- PostgreSQL migration `004` хранит lifecycle jobs и health history;
-- отдельный раздел **Samba AD-DC** и статусы в Маркете/колокольчике.
+### Маркет и зависимости
 
-## Создание домена
+В Маркете активированы:
 
-Сначала настройте серверу постоянный IPv4 в **Сети**. Затем откройте **Samba AD-DC**, укажите DNS Realm, NetBIOS domain, сетевую роль, DNS forwarder и пароль Administrator.
+- **Домен** — Samba Active Directory Domain Controller;
+- **DNS** — standalone Unbound либо Samba Internal DNS внутри Домена;
+- **Сетевое хранилище** — standalone Samba либо доменный SMB-ресурс;
+- существующий DHCP дополнен клиентами и IP-бронированиями.
 
-Непосредственно перед созданием домена выполните на сервере:
+Зависимости Домена строгие:
+
+```text
+Домен → DNS      (обязательно)
+Домен → Storage  (обязательно)
+```
+
+DNS и Сетевое хранилище можно устанавливать отдельно. Если их нет, мастер Домена активирует их автоматически. Если они уже работают standalone, их состояние сохраняется и они переводятся в доменный режим; после удаления Домена прежнее standalone-состояние восстанавливается.
+
+Пункты DNS / Сетевое хранилище / Домен появляются в меню только после установки соответствующей службы и скрываются после штатного удаления.
+
+## Авторизация Control Center
+
+Портал 1.0.11 требует авторизацию:
+
+- **Локальная** — Linux/PAM;
+- **Доменная** — после активации Домена.
+
+Root через Web запрещён. Локальная bootstrap-группа администраторов: `control-center-admins`. Если при чистой установке не найден локальный администратор с паролем, installer создаёт отдельного `controladmin` без SSH-shell и показывает случайный пароль один раз.
+
+Проверка паролей выполняется отдельным root-процессом `control-center-authd` через Unix socket. Web-процесс `control-center` не получает доступ к `/etc/shadow` или привилегированному Winbind socket.
+
+Текущий authorization bootstrap:
+
+- `admin` — чтение и изменения;
+- `viewer` — чтение;
+- доменная группа `Control Center Admins` → `admin`.
+
+PostgreSQL migration `005` уже содержит `rbac_roles` и `rbac_bindings` для следующего полноценного RBAC lifecycle.
+
+## Первоначальная настройка Домена
+
+Мастер проводит по шагам:
+
+1. readiness и выбор Static LAN/WAN;
+2. DNS Realm и NetBIOS domain;
+3. DNS forwarder и обязательные зависимости DNS/Storage;
+4. пароль Domain Administrator и локальный one-time approval;
+5. итоговая проверка и создание.
+
+Перед созданием:
 
 ```bash
 sudo control-center-samba-approve
 ```
 
-Полученный одноразовый код действует 10 минут. После ввода кода и подтверждения Web UI передаёт операцию root worker. Секретный запрос находится только под `/run/control-center` и удаляется worker сразу после чтения.
+Код действует 10 минут и используется один раз. Administrator password находится только в `/run` до чтения root worker, не сохраняется в PostgreSQL/persistent state и не передаётся через `--adminpass`.
 
-## Backup и rollback
+Создаются Samba Internal DNS, Kerberos, LDAP, SYSVOL/NETLOGON, signed NTP/chrony и доменное SMB-хранилище.
 
-До первого изменения создаётся backup:
+## Защита активного контроллера
 
-```text
-/var/lib/control-center-root/samba-backups/<job-id>/
+После активации Домена обычными настройками запрещено:
+
+- переименовывать DC;
+- выключать его WAN/LAN роль;
+- переводить интерфейс на DHCP;
+- менять interface/IP/prefix;
+- удалять DNS;
+- удалять Сетевое хранилище;
+- выдавать доменным DHCP-клиентам внешний DNS вместо AD DNS.
+
+Автоматический takeover внешнего, ранее не управляемого Samba AD-DC запрещён.
+
+## DNS
+
+Standalone DNS использует Unbound и Static IPv4. В доменном режиме provider автоматически меняется на Samba Internal DNS. Внешнее разрешение выполняется через DNS forwarder.
+
+Удалить DNS при активном Домене нельзя.
+
+## Сетевое хранилище
+
+Standalone Storage использует Samba и сохраняет пользовательские данные в `/srv/control-center/storage/public`. При создании Домена ресурс переводится в доменный SMB с доступом Domain Users/Domain Admins.
+
+Удаление самой службы не удаляет пользовательские файлы.
+
+## DHCP
+
+Раздел DHCP показывает leases + reservations, состояние ONLINE/OFFLINE, MAC, hostname, текущий и забронированный IP. Можно:
+
+- забронировать текущий IP;
+- изменить забронированный IP;
+- снять бронь.
+
+Backend проверяет подсеть, gateway/network/broadcast, дубли, активную аренду другого MAC и IP контроллера домена. Изменение вступает в силу после DHCP renew клиента.
+
+## Удаление Домена и cleanup-audit
+
+Удаление Домена — отдельная защищённая операция. Требуется:
+
+```bash
+sudo control-center-samba-approve --remove
 ```
 
-Сохраняются Samba state/config, Kerberos, resolver, hosts, chrony, Control Center DHCP и исходные состояния systemd services. Ошибка provisioning вызывает восстановление backup и публикацию события `rollback`.
+и подтверждение в UI. Автоматическое удаление разрешается только если локально доказано, что DC единственный.
 
-## Сеть и DNS
+Перед destruction создаётся root-only recovery bundle. После удаления Control Center:
 
-AD-DC требует активную роль со Static IPv4. После успешного provisioning локальный resolver сервера использует Samba DNS, а внешние запросы передаются указанному DNS forwarder.
+- восстанавливает состояние до Domain provisioning;
+- возвращает standalone DNS/Storage, если они существовали;
+- сравнивает детерминированные pre-state fingerprints;
+- проверяет удаление generated `sam.ldb` и SYSVOL;
+- сохраняет cleanup-audit и recovery backup.
 
-Если DHCP Control Center работает на том же интерфейсе, он автоматически начинает выдавать IP AD-DC как единственный DNS. Попытка раздать доменным клиентам внешний DNS напрямую блокируется.
-
-## Защита активного DC
-
-Когда Samba AD-DC активен, Control Center не позволяет обычными настройками:
-
-- переименовать компьютер;
-- выключить его сетевую роль;
-- сменить interface/IP/prefix контроллера.
-
-Эти действия требуют отдельного будущего lifecycle миграции AD.
+DNS и Storage также выполняют cleanup-audit при собственном удалении.
 
 ## Установка
 
@@ -63,9 +127,9 @@ cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Для чистой установки Web UI стартует на `http://SERVER_IP:8080`.
+Чистая установка стартует на `http://SERVER_IP:8080`, если ранее не настроены другой порт/HTTPS.
 
-## Acceptance
+## Проверка
 
 ```bash
 sudo bash scripts/acceptance-1.0.11.sh
@@ -74,16 +138,16 @@ sudo bash scripts/acceptance-1.0.11.sh
 Ожидаемо:
 
 ```text
-VERSION 1.0.11
-BUILD   20260819.5
-PostgreSQL migration 004
+1.0.11
+20260819.5
+PostgreSQL migration 005
 ACCEPTANCE 1.0.11: PASSED
 ```
 
-## Удаление
+Для disposable integration runner используется `scripts/runtime-acceptance-1.0.11.sh`: он выполняет полный цикл standalone DNS/Storage → Domain → domain auth/DHCP → Domain removal → восстановление → DNS/Storage removal.
 
-Control Center 1.0.11 не содержит автоматического уничтожения домена. Если управляемый AD-DC активен, uninstall с очисткой application data блокируется. Для удаления самой панели с сохранением данных используется `--keep-data`; `/etc/samba`, `/var/lib/samba`, SYSVOL и AD database не удаляются.
+## Uninstall панели
 
-## Безопасность
+Полный uninstall с удалением application state блокируется, пока установлены управляемые Domain/DNS/Storage. Сначала службы нужно удалить штатно через Маркет, чтобы выполнились cleanup-audits.
 
-Встроенная Web-аутентификация административной панели пока не реализована. Поэтому высокорисковый AD provisioning дополнительно требует локальный root-generated one-time code. Web UI необходимо ограничивать доверенной LAN/VPN/firewall и не публиковать напрямую в Интернет.
+`--keep-data` позволяет удалить сам портал/runtime, сохранив роли и метаданные.
