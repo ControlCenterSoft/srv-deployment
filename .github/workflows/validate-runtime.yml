@@ -2,9 +2,7 @@ name: Validate Control Center runtime
 
 on:
   push:
-    branches:
-      - main
-      - 'release/**'
+    branches: [main, 'release/**']
   pull_request:
 
 permissions:
@@ -17,233 +15,41 @@ concurrency:
 jobs:
   runtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Prepare real local portal identities
+        run: |
+          set -euo pipefail
+          sudo useradd -m -s /bin/bash ccciadmin
+          sudo usermod -aG sudo ccciadmin
+          echo 'ccciadmin:CcLocal!Passw0rd-2026' | sudo chpasswd
+          sudo useradd -m -s /bin/bash ccviewer
+          echo 'ccviewer:CcViewer!Passw0rd-2026' | sudo chpasswd
 
       - name: Install release exactly as shipped
         run: |
           set -euo pipefail
           sudo bash install/install.sh
 
-      - name: Validate installed 1.0.11 and migration 004
+      - name: Run full Domain DNS Storage Auth DHCP lifecycle
+        env:
+          CC_TEST_ADMIN_USER: ccciadmin
+          CC_TEST_ADMIN_PASSWORD: CcLocal!Passw0rd-2026
+          CC_TEST_VIEWER_USER: ccviewer
+          CC_TEST_VIEWER_PASSWORD: CcViewer!Passw0rd-2026
+          CC_TEST_DOMAIN_PASSWORD: DomTest!Passw0rd-2026
         run: |
           set -euo pipefail
-          test "$(tr -d '[:space:]' </opt/control-center/VERSION)" = '1.0.11'
-          test "$(tr -d '[:space:]' </opt/control-center/BUILD)" = '20260819.5'
-          curl -fsS http://127.0.0.1:8080/api/health | python3 -c 'import json,sys;j=json.load(sys.stdin);assert j["version"]=="1.0.11" and j["build"]=="20260819.5"'
-          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 004
-          systemctl is-active --quiet control-center
-          systemctl is-active --quiet control-center-samba-apply.path
-          test "$(stat -c '%U:%G %a' /run/control-center)" = 'control-center:control-center 700'
-          test "$(stat -c '%U:%G %a' /run/control-center-root)" = 'root:root 700'
+          sudo -E bash scripts/runtime-acceptance-1.0.11.sh
 
-      - name: Prepare isolated static LAN and time synchronization
+      - name: Final diagnostics on failure
+        if: failure()
         run: |
-          set -euo pipefail
-          sudo ip link add ccad0 type dummy
-          sudo ip addr add 10.77.11.1/24 dev ccad0
-          sudo ip link set ccad0 up
-          ip -4 addr show dev ccad0 | grep -F '10.77.11.1/24'
-          sudo tee /var/lib/control-center-system/network-config.json >/dev/null <<'JSON'
-          {
-            "wan":{"enabled":false,"interface":"","method":"disabled"},
-            "lan":{"enabled":true,"interface":"ccad0","method":"static","ip":"10.77.11.1","mask":24,"gateway":"","dns":["1.1.1.1"]}
-          }
-          JSON
-          sudo chown root:control-center /var/lib/control-center-system/network-config.json
-          sudo chmod 0640 /var/lib/control-center-system/network-config.json
-          curl -fsS http://127.0.0.1:8080/api/network/config | python3 -c 'import json,sys;j=json.load(sys.stdin);assert j["config"]["lan"]["interface"]=="ccad0" and j["config"]["lan"]["ip"]=="10.77.11.1"'
-          sudo timedatectl set-ntp true >/dev/null 2>&1 || true
-          for _ in $(seq 1 30); do [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)" == yes ]] && break; sleep 1; done
-          if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)" != yes ]]; then
-            sudo apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y chrony
-            sudo systemctl enable --now chrony.service
-            sudo chronyc -a makestep >/dev/null 2>&1 || true
-            for _ in $(seq 1 40); do [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)" == yes ]] && break; sleep 1; done
-          fi
-          timedatectl show -p NTPSynchronized --value | grep -qx yes
-
-      - name: Install and configure Control Center DHCP on AD interface
-        run: |
-          set -euo pipefail
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' -d '{"action":"install"}' http://127.0.0.1:8080/api/market/dhcp)
-          python3 - "$R" <<'PY'
-          import json,sys
-          assert json.loads(sys.argv[1])['status']=='pending'
-          PY
-          CODE=''
-          for _ in $(seq 1 120); do
-            M=$(curl -fsS http://127.0.0.1:8080/api/market)
-            CODE=$(python3 - "$M" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);print(next(x for x in j['items'] if x['id']=='dhcp')['status']['code'])
-          PY
-          )
-            [[ "$CODE" == running ]] && break
-            [[ "$CODE" == error ]] && { echo "$M"; sudo cat /var/lib/control-center-system/market-last.log || true; exit 1; }
-            sleep 2
-          done
-          [[ "$CODE" == running ]]
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' \
-            -d '{"interface":"ccad0","range_start":"10.77.11.100","range_end":"10.77.11.150","mask":24,"gateway":"10.77.11.1","dns":["1.1.1.1"],"lease_minutes":720,"extra_options":[]}' \
-            http://127.0.0.1:8080/api/dhcp/config)
-          python3 - "$R" <<'PY'
-          import json,sys
-          assert json.loads(sys.argv[1])['status']=='pending'
-          PY
-          STATE=''
-          for _ in $(seq 1 60); do
-            S=$(sudo cat /var/lib/control-center-system/dhcp-status.json 2>/dev/null || echo '{}')
-            STATE=$(python3 - "$S" <<'PY'
-          import json,sys
-          try: print(json.loads(sys.argv[1]).get('state',''))
-          except Exception: print('')
-          PY
-          )
-            [[ "$STATE" == applied ]] && break
-            [[ "$STATE" == rollback || "$STATE" == rejected ]] && { echo "$S"; exit 1; }
-            sleep 1
-          done
-          [[ "$STATE" == applied ]]
-          systemctl is-active --quiet control-center-dhcp-server.service
-          sudo dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
-
-      - name: Verify Samba readiness and production plan
-        run: |
-          set -euo pipefail
-          BODY='{"realm":"ci.example.test","netbios_domain":"CITEST","network_role":"lan","dns_forwarder":"1.1.1.1"}'
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$BODY" http://127.0.0.1:8080/api/samba/readiness)
-          echo "$R" | python3 -m json.tool
-          python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['ready'] is True,(j['blockers'],j['checks']);assert j['details']['provisioning_enabled'] is True
-          PY
-          P=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$BODY" http://127.0.0.1:8080/api/samba/plan)
-          python3 - "$P" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['ready'] is True;assert j['plan']['phase']=='production-provision';assert j['plan']['approval_required'] is True;assert j['plan']['password_persisted'] is False
-          PY
-
-      - name: Provision a real disposable Samba AD-DC through Control Center
-        run: |
-          set -euo pipefail
-          APPROVAL_OUT=$(sudo control-center-samba-approve)
-          echo "$APPROVAL_OUT"
-          CODE=$(printf '%s\n' "$APPROVAL_OUT" | sed -n 's/^Control Center Samba AD-DC approval code: //p')
-          [[ "$CODE" =~ ^[0-9a-f]{8}$ ]]
-          PASSWORD='CiTest!Passw0rd-2026'
-          BODY=$(python3 - "$CODE" "$PASSWORD" <<'PY'
-          import json,sys
-          code,password=sys.argv[1:]
-          print(json.dumps({'realm':'ci.example.test','netbios_domain':'CITEST','network_role':'lan','dns_forwarder':'1.1.1.1','administrator_password':password,'confirm_password':password,'approval_code':code,'confirmation':True}))
-          PY
-          )
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$BODY" http://127.0.0.1:8080/api/samba/provision)
-          echo "$R" | python3 -m json.tool
-          JOB=$(python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['status']=='pending';print(j['job_id'])
-          PY
-          )
-          STATE=''
-          for _ in $(seq 1 300); do
-            S=$(curl -fsS http://127.0.0.1:8080/api/samba/status || echo '{}')
-            STATE=$(python3 - "$S" <<'PY'
-          import json,sys
-          try: print((json.loads(sys.argv[1]).get('status') or {}).get('state',''))
-          except Exception: print('')
-          PY
-          )
-            [[ "$STATE" == active ]] && break
-            if [[ "$STATE" == error || "$STATE" == rollback || "$STATE" == failed || "$STATE" == rejected ]]; then
-              echo "$S" | python3 -m json.tool || true
-              sudo cat /var/lib/control-center-system/samba-last.log || true
-              sudo journalctl -u control-center-samba-apply.service -n 250 --no-pager || true
-              exit 1
-            fi
-            sleep 2
-          done
-          [[ "$STATE" == active ]] || { sudo cat /var/lib/control-center-system/samba-last.log || true; exit 1; }
-          test ! -e /run/control-center/samba-provision.json
-          test ! -e /run/control-center-root/samba-approval.json
-          test -z "$(find /run/control-center-root -maxdepth 1 -name 'samba-auth-*' -print -quit)"
-          systemctl is-active --quiet samba-ad-dc.service
-          systemctl is-active --quiet chrony.service
-
-      - name: Validate AD DNS, Kerberos, SMB, SYSVOL and API health
-        run: |
-          set -euo pipefail
-          sudo samba-tool testparm >/dev/null
-          sudo samba-tool ntacl sysvolcheck
-          sudo samba-tool domain info 10.77.11.1
-          sudo samba-tool drs showrepl --summary
-          host -W 3 -t A "$(hostname -s).ci.example.test" 10.77.11.1
-          host -W 3 -t SRV _ldap._tcp.ci.example.test 10.77.11.1
-          host -W 3 -t SRV _kerberos._udp.ci.example.test 10.77.11.1
-          HEALTH=$(curl -fsS -X POST http://127.0.0.1:8080/api/samba/health)
-          echo "$HEALTH" | python3 -m json.tool
-          python3 - "$HEALTH" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['healthy'] is True,(j['state'],j['checks'])
-          PY
-          M=$(curl -fsS http://127.0.0.1:8080/api/market)
-          python3 - "$M" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);s=next(x for x in j['items'] if x['id']=='samba');assert s['state']=='installed' and s['status']['code']=='running'
-          PY
-          N=$(curl -fsS http://127.0.0.1:8080/api/notifications)
-          python3 - "$N" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert any(x.get('source') in {'samba','market-samba'} for x in j['items'])
-          PY
-
-      - name: Verify DHCP AD-DNS integration and active-DC safety guards
-        run: |
-          set -euo pipefail
-          sudo cat /var/lib/control-center-system/dhcp-config.json
-          sudo python3 - <<'PY'
-          import json
-          j=json.load(open('/var/lib/control-center-system/dhcp-config.json'));assert j['interface']=='ccad0' and j['dns']==['10.77.11.1']
-          PY
-          set +e
-          CODE=$(curl -sS -o /tmp/hostname-guard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"hostname":"renamed-dc"}' http://127.0.0.1:8080/api/settings/hostname)
-          set -e
-          [[ "$CODE" == 409 ]]; cat /tmp/hostname-guard.json
-          PRIMARY_IF=$(ip route show default | awk '{print $5;exit}')
-          set +e
-          CODE=$(curl -sS -o /tmp/network-guard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data "{\"lan\":{\"enabled\":false,\"method\":\"disabled\"},\"wan\":{\"enabled\":true,\"interface\":\"$PRIMARY_IF\",\"method\":\"dhcp\"}}" http://127.0.0.1:8080/api/network/config)
-          set -e
-          [[ "$CODE" == 409 ]]; cat /tmp/network-guard.json
-          set +e
-          CODE=$(curl -sS -o /tmp/dhcp-guard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"interface":"ccad0","range_start":"10.77.11.100","range_end":"10.77.11.150","mask":24,"gateway":"10.77.11.1","dns":["1.1.1.1"],"lease_minutes":720,"extra_options":[]}' http://127.0.0.1:8080/api/dhcp/config)
-          set -e
-          [[ "$CODE" == 409 ]]; cat /tmp/dhcp-guard.json
-
-      - name: Prove Domain Administrator secret was not persisted
-        run: |
-          set -euo pipefail
-          PASSWORD='CiTest!Passw0rd-2026'
-          test ! -e /run/control-center/samba-provision.json
-          test ! -e /run/control-center-root/samba-approval.json
-          ! ps auxww | grep -F "$PASSWORD" | grep -v grep
-          ! sudo grep -R -F --binary-files=without-match "$PASSWORD" /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root /etc/control-center /etc/samba 2>/dev/null
-          ! sudo journalctl -u control-center-samba-apply.service --no-pager | grep -F "$PASSWORD"
-          ! sudo -u control-center psql -d control_center -Atqc "select request::text||result::text||coalesce(error,'') from control_center.ad_dc_lifecycle_jobs" | grep -F "$PASSWORD"
-          ! sudo -u control-center psql -d control_center -Atqc "select request::text from control_center.ad_dc_lifecycle_jobs" | grep -F 'approval_code'
-          ! sudo -u control-center psql -d control_center -Atqc "select request::text from control_center.ad_dc_lifecycle_jobs" | grep -F 'administrator_password'
-
-      - name: Run full installed acceptance
-        run: |
-          set -euo pipefail
-          sudo bash scripts/acceptance-1.0.11.sh
-
-      - name: Verify package integrity
-        run: |
-          set -euo pipefail
-          test -z "$(dpkg --audit 2>&1 || true)"
-          systemctl is-active --quiet control-center
-          systemctl is-active --quiet samba-ad-dc.service
-          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 004
+          sudo systemctl status control-center control-center-authd control-center-samba-apply.service control-center-domain-destroy.service control-center-dns-apply.service control-center-storage-apply.service control-center-dhcp-server.service --no-pager || true
+          sudo journalctl -u control-center -u control-center-authd -u control-center-samba-apply.service -u control-center-domain-destroy.service -u control-center-dns-apply.service -u control-center-storage-apply.service -n 500 --no-pager || true
+          sudo cat /var/lib/control-center-system/samba-status.json 2>/dev/null || true
+          sudo cat /var/lib/control-center-system/samba-last.log 2>/dev/null || true
+          sudo find /var/lib/control-center-system/cleanup-audits -maxdepth 1 -type f -print -exec cat {} \; 2>/dev/null || true
+          dpkg --audit || true
