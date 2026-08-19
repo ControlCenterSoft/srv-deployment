@@ -6,42 +6,104 @@
   "upgrade_from": ["1.0.10", "1.0.9", "clean install"],
   "database": {
     "engine": "PostgreSQL",
-    "schema_migration": "004"
+    "schema_migration": "005"
+  },
+  "authentication": {
+    "local": true,
+    "domain": true,
+    "isolated_root_auth_daemon": true,
+    "root_portal_login": false,
+    "rbac_mode": "bootstrap",
+    "roles": ["admin", "viewer"]
+  },
+  "services": {
+    "domain": {
+      "provider": "Samba AD-DC",
+      "installation_enabled": true,
+      "initial_setup_wizard": true,
+      "requires": ["dns", "storage"],
+      "local_approval_required": true,
+      "approval_ttl_seconds": 600,
+      "administrator_password_persisted": false,
+      "guarded_removal_enabled": true,
+      "removal_requires_single_dc": true,
+      "cleanup_fingerprint_audit": true
+    },
+    "dns": {
+      "standalone_provider": "Unbound",
+      "domain_provider": "Samba Internal DNS",
+      "standalone_install": true,
+      "auto_install_with_domain": true,
+      "removal_blocked_while_domain_active": true,
+      "cleanup_audit": true
+    },
+    "storage": {
+      "name": "Сетевое хранилище",
+      "standalone_provider": "Samba standalone",
+      "domain_provider": "Samba AD-DC SMB",
+      "standalone_install": true,
+      "auto_install_with_domain": true,
+      "removal_blocked_while_domain_active": true,
+      "user_data_preserved_on_service_remove": true,
+      "cleanup_audit": true
+    },
+    "dhcp": {
+      "client_inventory": true,
+      "ip_reservations": true,
+      "reservation_edit": true,
+      "reservation_pagination": true,
+      "domain_dns_guard": true
+    }
   },
   "samba_ad_dc": {
-    "installation_enabled": true,
-    "provisioning_enabled": true,
     "dns_backend": "SAMBA_INTERNAL",
-    "local_approval_required": true,
-    "approval_ttl_seconds": 600,
-    "administrator_password_persisted": false,
-    "automatic_domain_removal_enabled": false
+    "kerberos": true,
+    "ldap": true,
+    "sysvol_netlogon": true,
+    "signed_ntp": true,
+    "backup_rollback": true,
+    "active_dc_hostname_guard": true,
+    "active_dc_network_guard": true,
+    "external_ad_takeover": false
   },
   "components": [
+    "domain-market-service",
+    "domain-initial-setup-wizard",
     "samba-ad-dc-production-provisioning",
+    "dns-market-service",
+    "standalone-unbound-dns",
     "samba-internal-dns",
+    "network-storage-market-service",
+    "standalone-samba-storage",
+    "domain-smb-storage",
+    "local-domain-portal-authentication",
+    "isolated-auth-daemon",
+    "rbac-bootstrap-schema",
     "kerberos",
     "ldap",
     "sysvol-netlogon",
     "signed-ntp-chrony",
-    "samba-readiness",
-    "samba-health",
-    "samba-backup-rollback",
-    "one-time-local-approval",
+    "domain-backup-rollback",
+    "domain-destroy-recovery",
+    "cleanup-fingerprint-audit",
+    "dhcp-client-inventory",
+    "dhcp-ip-reservations",
     "dhcp-ad-dns-integration",
     "active-dc-network-guards",
     "active-dc-hostname-guard",
-    "postgresql-migration-004"
+    "postgresql-migration-005"
   ],
   "notes": [
-    "Samba AD-DC provisioning is enabled for a new primary domain controller",
-    "The selected domain interface must use a static IPv4 address",
-    "Provisioning requires a one-time local approval code generated with sudo control-center-samba-approve",
-    "The Domain Administrator password is passed through /run and is not stored in PostgreSQL or persistent Control Center state",
-    "A root-only backup is created before package, resolver, Kerberos or Samba changes",
-    "Failed provisioning triggers rollback of Samba, resolver, service and Control Center DHCP state",
-    "When Control Center DHCP serves the AD interface, clients are forced to use the AD-DC IP as their only DNS server",
-    "Renaming an active DC or changing/disabling its interface/IP is blocked",
-    "Automatic domain destruction/removal is intentionally not implemented in 1.0.11"
+    "Domain requires DNS and Network Storage. Missing dependencies are activated automatically during Domain provisioning.",
+    "DNS and Network Storage may be installed independently without Domain.",
+    "Standalone DNS and Storage state is preserved when transitioning into Domain mode and restored after guarded Domain removal.",
+    "Domain provisioning and Domain removal require separate purpose-bound one-time local approval codes.",
+    "Domain Administrator password is passed through /run and is not stored in PostgreSQL or persistent Control Center state.",
+    "Portal authentication supports local PAM identities and, after Domain activation, domain identities through an isolated root authentication daemon.",
+    "Active Domain controller hostname, role, interface, IPv4 and prefix are protected from ordinary settings changes.",
+    "DNS and Storage cannot be removed while Domain is active.",
+    "Domain removal is permitted only when the local topology proves that this is the single domain controller; a root-only recovery bundle is created first.",
+    "Cleanup audits verify service artifacts after Domain, DNS and Storage removal; Domain cleanup compares deterministic pre-state fingerprints and verifies generated AD database/SYSVOL removal.",
+    "DHCP exposes clients and supports validated MAC-to-IP reservations with conflict protection."
   ]
 }
