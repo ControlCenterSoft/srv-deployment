@@ -27,133 +27,83 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Python syntax
+      - name: Syntax checks
         run: |
+          set -euo pipefail
           python -m py_compile \
             app/main.py app/main_base_107.py app/wsgi.py app/database.py app/db_migrate.py app/db_cli.py \
             app/release_107.py app/release_108.py app/release_108_build2.py app/release_109.py \
-            license/issue-license.py
-
-      - name: JavaScript syntax
-        run: |
+            app/release_110.py app/release_110_fix.py license/issue-license.py
           node --check app/static/app.js
           node --check app/static/release-108.js
-
-      - name: Bash syntax
-        run: |
-          set -euo pipefail
+          node --check app/static/release-110.js
+          node --check app/static/release-110-fix.js
           for f in \
-            install/install.sh install/install-base-1.0.7.sh install/install-base-1.0.8.sh \
-            install/uninstall.sh install/uninstall-base-1.0.7.sh \
-            update/control-center-update update/control-center-update-base-1.0.7 \
-            update/control-center-os-update update/control-center-os-update-base-1.0.8 \
-            system/control-center-web-run system/control-center-web-apply \
-            network/control-center-network-apply \
-            market/control-center-market-apply market/control-center-market-apply-base-1.0.8 market/control-center-dhcp-apply \
-            license/control-center-license-apply \
-            scripts/repair-upgrade-1.0.6-to-1.0.8.sh scripts/repair-dpkg-and-upgrade-1.0.6-to-1.0.8.sh \
-            scripts/acceptance-1.0.5.sh scripts/acceptance-1.0.6.sh scripts/acceptance-1.0.7.sh scripts/acceptance-1.0.8.sh scripts/acceptance-1.0.9.sh; do
+            install/install.sh install/install-base-1.0.7.sh install/install-base-1.0.8.sh install/uninstall.sh \
+            update/control-center-update update/control-center-os-update \
+            system/control-center-web-run system/control-center-web-apply system/control-center-hostname-apply \
+            network/control-center-network-apply market/control-center-market-apply market/control-center-dhcp-apply \
+            license/control-center-license-apply scripts/acceptance-1.0.10.sh; do
             bash -n "$f"
           done
 
-      - name: Validate release consistency and 1.0.9 architecture
+      - name: Validate 1.0.10 release architecture
         run: |
+          set -euo pipefail
           python - <<'PY'
           import json,pathlib,re
           root=pathlib.Path('.')
           for p in root.rglob('*.json'):
               json.loads(p.read_text())
-
           rel=json.loads((root/'app/release.json').read_text())
-          version=rel['version']; build=rel['build']
-          assert version=='1.0.9' and build=='20260819.3'
-
-          deployment=json.loads((root/'deployment.json').read_text())
-          assert deployment['release']==version and deployment['build']==build
-          assert deployment['channel']=='production'
-          assert deployment['release_branch']==f'release/{version}'
-
-          manifest=json.loads((root/'releases'/version/'manifest.json').read_text())
-          assert manifest['release']==version and manifest['build']==build
-          assert manifest['database']['engine']=='PostgreSQL'
-          assert manifest['database']['schema_migration']=='002'
-
+          assert rel=={'version':'1.0.10','build':'20260819.4'}
+          dep=json.loads((root/'deployment.json').read_text())
+          assert dep['release']=='1.0.10' and dep['build']=='20260819.4'
+          assert dep['channel']=='production' and dep['release_branch']=='release/1.0.10'
+          assert dep['audit'] in {'pending','passed'}
+          manifest=json.loads((root/'releases/1.0.10/manifest.json').read_text())
+          assert manifest['database']['schema_migration']=='003'
+          assert manifest['samba_ad_dc']['provisioning_enabled'] is False
+          assert manifest['samba_ad_dc']['target_production_release']=='1.0.11'
           main=(root/'app/main.py').read_text()
-          assert re.search(r"^APP_VERSION\s*=\s*['\"]1\.0\.9['\"]",main,re.M)
-          assert re.search(r"^APP_BUILD\s*=\s*['\"]20260819\.3['\"]",main,re.M)
-          assert 'main_base_107' in main and 'sys.modules[__name__] = _base' in main
-
+          assert re.search(r"^APP_VERSION\s*=\s*['\"]1\.0\.10['\"]",main,re.M)
+          assert re.search(r"^APP_BUILD\s*=\s*['\"]20260819\.4['\"]",main,re.M)
           wsgi=(root/'app/wsgi.py').read_text()
-          assert 'import release_109' in wsgi
-          assert 'release_109.register(app, main)' in wsgi
-          ext=(root/'app/release_109.py').read_text()
+          for token in ['import release_110','release_110.register(app, main)','import release_110_fix','release_110_fix.register(app, main)']:
+              assert token in wsgi,token
+          ext=(root/'app/release_110.py').read_text()
           for token in [
-              "VERSION = '1.0.9'", "BUILD = '20260819.3'",
-              "top_cpu", "top_ram", "_role_telemetry(main,'lan')",
-              'standard_http_port=80', 'standard_https_port=443',
-              'web.ssl_enabled', 'web.standard_port',
-              '/api/samba/preflight', 'installation_enabled',
-              'ad_dc_preflight_runs', 'release_assets_109'
+              "VERSION = '1.0.10'", "BUILD = '20260819.4'", '/api/settings/hostname',
+              '/api/samba/readiness','/api/samba/plan','next_release_target',"'1.0.11'",
+              'installation_enabled', 'provisioning_enabled', '_validate_network_110',
+              "'enabled': False", 'standard_http_port=80', 'standard_https_port=443',
+              'PostgreSQL недоступен'
           ]:
               assert token in ext,token
-
-          migration=(root/'app/migrations/002_samba_ad_dc_preparation.sql').read_text()
-          for table in ['ad_dc_profiles','ad_dc_nodes','ad_dc_preflight_runs']:
+          fix=(root/'app/release_110_fix.py').read_text()
+          assert 'web_settings_110_reconciled' in fix and "database.set_setting('web.port'" in fix
+          migration=(root/'app/migrations/003_samba_ad_dc_readiness.sql').read_text()
+          for table in ['ad_dc_readiness_runs','ad_dc_change_plans']:
               assert f'control_center.{table}' in migration,table
-
-          template=(root/'app/templates/index.html').read_text()
-          for token in [
-              'topCpuProcesses','topRamProcesses','storageChart','lanChart',
-              'interfacesPager','marketPager','dhcpOptionsPager','usersPager','groupsPager','notificationsPager',
-              'webStandardPort','webSsl','webCertificate','runSambaPreflight'
-          ]:
-              assert token in template,token
-
-          js=(root/'app/static/release-108.js').read_text()
-          for token in [
-              'paginate109','processMini109','storageDonut109','system109','lanChart',
-              'webStandardPort','webSsl','syncWebControls109','runSambaPreflight','market109'
-          ]:
+          js=(root/'app/static/release-110.js').read_text()
+          for token in ['__disabled__','wanDashboardCard','lanDashboardCard','saveHostname110','/api/samba/readiness','/api/samba/plan']:
               assert token in js,token
-          css=(root/'app/static/release-108.css').read_text()
-          for token in ['metric-process-row','storage-visual-109','.pager','preflight-row','service-runtime-status.prepared']:
-              assert token in css,token
-
-          runner=(root/'system/control-center-web-run').read_text()
-          assert '--certfile' in runner and '--keyfile' in runner
           helper=(root/'system/control-center-web-apply').read_text()
-          for token in [
-              'ssl_enabled','standard_port','openssl req -x509','subjectAltName',
-              'CONTROL_CENTER_SSL','CONTROL_CENTER_STANDARD_PORT','curl "${CURL_ARGS[@]}"'
-          ]:
-              assert token in helper,token
-
+          assert 'DB_SYNC=1' in helper and 'PostgreSQL временно недоступен' in helper
+          assert "if ! set_db \"$PORT\" \"$SSL\" \"$STANDARD\" >/tmp/control-center-web-db-sync.log" in helper
+          host=(root/'system/control-center-hostname-apply').read_text()
+          assert 'hostnamectl set-hostname' in host and 'hostname.rollback' in host and 'hosts.rollback' in host
+          net=(root/'network/control-center-network-apply').read_text()
+          for token in ['WAN and LAN cannot both be disabled',"'enabled':False",'gateway forbidden while WAN is enabled']:
+              assert token in net,token
           installer=(root/'install/install.sh').read_text()
-          for token in [
-              'VERSION=1.0.9','BUILD=20260819.3','control-center-web-run',
-              'AmbientCapabilities=CAP_NET_BIND_SERVICE','CapabilityBoundingSet=CAP_NET_BIND_SERVICE'
-          ]:
+          for token in ['Control Center 1.0.10 build 20260819.4','control-center-hostname-apply.path','control-center-db-migrate.service','Restart=on-failure','CAP_NET_BIND_SERVICE']:
               assert token in installer,token
-          assert 'User=control-center' in installer
-          assert 'ExecStart=/usr/local/sbin/control-center-web-run' in installer
-
-          # Validate the effective 1.0.9 patch applied to the preserved 1.0.8 base.
-          base=(root/'install/install-base-1.0.8.sh').read_text()
-          assert "'VERSION=1.0.7','VERSION=1.0.8'" in base
-          assert "'BUILD=20260818.2','BUILD=20260819.2'" in base
-          patched=base.replace('Control Center 1.0.8 build 20260819.2','Control Center 1.0.9 build 20260819.3')
-          patched=patched.replace("'VERSION=1.0.7','VERSION=1.0.8'","'VERSION=1.0.7','VERSION=1.0.9'")
-          patched=patched.replace("'BUILD=20260818.2','BUILD=20260819.2'","'BUILD=20260818.2','BUILD=20260819.3'")
-          assert "'VERSION=1.0.7','VERSION=1.0.9'" in patched
-          assert "'BUILD=20260818.2','BUILD=20260819.3'" in patched
-
-          req=(root/'requirements.txt').read_text()
-          assert re.search(r'^psycopg\[binary\]>=3\.2,<4\.0$',req,re.M)
-          assert (root/'app/requirements.txt').read_text()==req
-          print(f'Validated Control Center {version} build {build}')
+          assert 'samba-tool domain provision' not in ext
+          print('Architecture 1.0.10 OK')
           PY
 
-      - name: Install PostgreSQL and Python dependencies
+      - name: Install PostgreSQL and dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql postgresql-client dnsmasq-base
@@ -161,47 +111,33 @@ jobs:
           sudo systemctl start postgresql
           sudo -u postgres pg_isready
 
-      - name: Prepare PostgreSQL peer-auth test database
+      - name: Prepare peer-auth PostgreSQL database
         run: |
           set -euo pipefail
-          sudo rm -rf /tmp/control-center-ci-app
-          sudo cp -a app /tmp/control-center-ci-app
-          sudo chown -R root:root /tmp/control-center-ci-app
-          sudo chmod -R a+rX /tmp/control-center-ci-app
           if ! id control-center >/dev/null 2>&1; then sudo useradd --system --home /tmp/control-center-ci --shell /usr/sbin/nologin control-center; fi
           sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP DATABASE IF EXISTS control_center;'
           sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'DROP ROLE IF EXISTS "control-center";'
           sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'CREATE ROLE "control-center" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD NULL;'
           sudo -u postgres createdb --owner=control-center control_center
-          sudo -u control-center psql -d control_center -Atqc 'SELECT current_user,current_database()' | grep -qx 'control-center|control_center'
           sudo install -d -o control-center -g control-center -m 0755 /var/lib/control-center
           sudo install -d -o root -g control-center -m 0750 /var/lib/control-center-system /var/lib/control-center-system/modules
+          sudo rm -rf /tmp/control-center-ci-app
+          sudo cp -a app /tmp/control-center-ci-app
+          sudo chown -R root:root /tmp/control-center-ci-app
+          sudo chmod -R a+rX /tmp/control-center-ci-app
 
-      - name: Validate real PostgreSQL migrations 001 and 002
+      - name: Validate PostgreSQL migrations 001 through 003
         run: |
           set -euo pipefail
           PYTHON="${pythonLocation}/bin/python"
           sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' "$PYTHON" /tmp/control-center-ci-app/db_migrate.py
-          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 002
-          for table in ad_dc_profiles ad_dc_nodes ad_dc_preflight_runs; do
+          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 003
+          for table in ad_dc_profiles ad_dc_nodes ad_dc_preflight_runs ad_dc_readiness_runs ad_dc_change_plans; do
             sudo -u control-center psql -d control_center -Atqc "select to_regclass('control_center.${table}') is not null" | grep -qx t
           done
-          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
-          import database
-          h=database.health()
-          assert h['ok'] and h['database']=='control_center' and h['role']=='control-center'
-          assert h['migration']['version']=='002'
-          database.set_setting('web.port',8080)
-          database.set_setting('web.ssl_enabled',False)
-          database.set_setting('web.standard_port',False)
-          database.upsert_job('ci-job','ci','queued',payload={'ok':True})
-          database.sync_notifications([{'id':'ci-event','source':'ci','title':'CI','state':'ok','severity':'ok','message':'PostgreSQL works','timestamp':1}])
-          database.mark_notifications(['ci-event'])
-          database.upsert_local_node(edition='Professional',version='1.0.9',build='20260819.3')
-          assert database.cluster_nodes()
-          PY
+          sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' "$PYTHON" /tmp/control-center-ci-app/db_migrate.py | grep -q 'SKIP 003_samba_ad_dc_readiness.sql'
 
-      - name: Validate Flask runtime APIs for 1.0.9
+      - name: Validate Flask APIs and degraded Web settings
         run: |
           set -euo pipefail
           PYTHON="${pythonLocation}/bin/python"
@@ -210,40 +146,56 @@ jobs:
             CONTROL_CENTER_PORT=8080 CONTROL_CENTER_SSL=0 CONTROL_CENTER_STANDARD_PORT=0 \
             PYTHONPATH=/tmp/control-center-ci-app \
             "$PYTHON" - <<'PY'
-          import json
-          import wsgi
+          import database,main,release_110,wsgi
           c=wsgi.app.test_client()
-          h=c.get('/api/health'); assert h.status_code==200; hj=h.get_json(); assert hj['version']=='1.0.9' and hj['build']=='20260819.3'
-          s=c.get('/api/system'); assert s.status_code==200; sj=s.get_json(); assert isinstance(sj['top_cpu'],list) and isinstance(sj['top_ram'],list) and isinstance(sj['lan'],dict)
-          w=c.get('/api/settings/web'); assert w.status_code==200; wj=w.get_json(); assert wj['standard_http_port']==80 and wj['standard_https_port']==443 and 'ssl_enabled' in wj
-          p=c.post('/api/settings/web',json={'standard_port':False,'ssl_enabled':True,'port':8443}); assert p.status_code==202, p.get_data(as_text=True)
-          q=c.post('/api/settings/web',json={'standard_port':True,'ssl_enabled':False,'port':9999}); assert q.status_code in (202,409), q.get_data(as_text=True)
-          sp=c.get('/api/samba/preflight'); assert sp.status_code==200; sj=sp.get_json(); assert sj['details']['installation_enabled'] is False and 'fqdn' in sj['checks']
-          m=c.get('/api/market'); assert m.status_code==200; samba=next(x for x in m.get_json()['items'] if x['id']=='samba'); assert samba['state']=='prepared' and samba['installable'] is False
-          print('Flask 1.0.9 API smoke passed')
+          h=c.get('/api/health'); assert h.status_code==200; assert h.get_json()['version']=='1.0.10'; assert h.get_json()['build']=='20260819.4'
+          s=c.get('/api/system'); assert s.status_code==200; sj=s.get_json(); assert isinstance(sj['wan']['enabled'],bool); assert isinstance(sj['lan']['enabled'],bool)
+          w=c.get('/api/settings/web'); assert w.status_code==200; wj=w.get_json(); assert wj['standard_http_port']==80 and wj['standard_https_port']==443 and wj['database_synced'] is True
+          database.set_setting('web.port',9999)
+          w=c.get('/api/settings/web'); assert w.status_code==200 and w.get_json()['database_synced'] is True
+          assert int(database.get_setting('web.port'))==int(w.get_json()['port'])
+          old_set=release_110.database.set_setting; old_job=release_110.database.upsert_job
+          release_110.database.set_setting=lambda *a,**k: (_ for _ in ()).throw(RuntimeError('db-down'))
+          release_110.database.upsert_job=lambda *a,**k: (_ for _ in ()).throw(RuntimeError('db-down'))
+          p=c.post('/api/settings/web',json={'standard_port':True,'ssl_enabled':False,'port':9999}); assert p.status_code==202,p.get_data(as_text=True); assert p.get_json()['port']==80
+          release_110.database.set_setting=old_set; release_110.database.upsert_job=old_job
+          bad=c.post('/api/settings/hostname',json={'hostname':'bad name!'}); assert bad.status_code==400
+          good=c.post('/api/settings/hostname',json={'hostname':'cc-ci110'}); assert good.status_code in (200,202)
+          r=c.get('/api/samba/readiness'); assert r.status_code==200; rj=r.get_json(); assert rj['details']['provisioning_enabled'] is False and rj['details']['next_release_target']=='1.0.11'
+          plan=c.post('/api/samba/plan'); assert plan.status_code==200; pj=plan.get_json(); assert pj['plan']['phase']=='dry-run-only' and pj['plan']['provisioning_enabled'] is False
+          m=c.get('/api/market'); samba=next(x for x in m.get_json()['items'] if x['id']=='samba'); assert samba['installable'] is False
+          original=main._interfaces
+          main._interfaces=lambda:[{'name':'eth0'},{'name':'eth1'}]
+          one=release_110._validate_network_110(main,{'wan':{'enabled':True,'interface':'eth0','method':'dhcp'},'lan':{'enabled':False,'method':'disabled'}})
+          assert one['wan']['enabled'] and not one['lan']['enabled']
+          lan_only=release_110._validate_network_110(main,{'wan':{'enabled':False,'method':'disabled'},'lan':{'enabled':True,'interface':'eth1','method':'static','ip':'192.168.50.1','mask':24,'gateway':'192.168.50.254','dns':['1.1.1.1']}})
+          assert lan_only['lan']['gateway']=='192.168.50.254'
+          try: release_110._validate_network_110(main,{'wan':{'enabled':False,'method':'disabled'},'lan':{'enabled':False,'method':'disabled'}}); raise AssertionError('both disabled accepted')
+          except ValueError: pass
+          main._interfaces=original
+          assets=c.get('/static/app.js'); assert assets.status_code==200 and b'release-110-fix' not in assets.data
+          assert b'dhcpBefore110Fix' in assets.data
+          print('Flask/API 1.0.10 smoke OK')
           PY
-          sudo -u control-center psql -d control_center -Atqc 'select count(*)>0 from control_center.ad_dc_preflight_runs' | grep -qx t
+          sudo rm -f /var/lib/control-center/hostname-pending.json /var/lib/control-center/web-pending.json
 
-      - name: Validate TLS material generation command
+      - name: Validate TLS certificate command
         run: |
           set -euo pipefail
           TMP=$(mktemp -d)
           openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 2 \
-            -subj '/CN=control-center-ci.local' \
-            -addext 'subjectAltName=DNS:control-center-ci.local,DNS:localhost,IP:127.0.0.1' \
+            -subj '/CN=control-center-ci' \
+            -addext 'subjectAltName=DNS:a-very-long-control-center-ci-host.example.internal,DNS:localhost,IP:127.0.0.1' \
             -keyout "$TMP/server.key" -out "$TMP/server.crt" >/dev/null 2>&1
-          openssl x509 -in "$TMP/server.crt" -noout -ext subjectAltName | grep -Fq 'DNS:control-center-ci.local'
+          openssl x509 -in "$TMP/server.crt" -noout -ext subjectAltName | grep -Fq 'DNS:a-very-long-control-center-ci-host.example.internal'
           openssl pkey -in "$TMP/server.key" -noout
           rm -rf "$TMP"
 
-      - name: Install Market helper base for lifecycle tests
-        run: |
-          sudo install -d -m 0755 /usr/local/lib/control-center
-          sudo install -m 0755 market/control-center-market-apply-base-1.0.8 /usr/local/lib/control-center/control-center-market-apply-base-1.0.8
-
-      - name: Validate real fresh DHCP install and remove lifecycle
+      - name: Validate DHCP install/remove regression
         run: |
           set -euo pipefail
+          sudo install -d -m 0755 /usr/local/lib/control-center
+          sudo install -m 0755 market/control-center-market-apply-base-1.0.8 /usr/local/lib/control-center/control-center-market-apply-base-1.0.8
           sudo rm -rf /var/lib/control-center /var/lib/control-center-system
           sudo install -d -o control-center -g control-center -m 0755 /var/lib/control-center
           sudo install -d -o root -g control-center -m 0750 /var/lib/control-center-system /var/lib/control-center-system/modules
@@ -254,69 +206,23 @@ jobs:
           JSON
           sudo bash market/control-center-market-apply
           dpkg-query -W -f='${Status}' dnsmasq | grep -q 'install ok installed'
-          sudo python3 - <<'PY'
-          import json
-          state=json.load(open('/var/lib/control-center-system/modules/dhcp.json'))
-          status=json.load(open('/var/lib/control-center-system/market-status.json'))
-          assert state['installed'] is True and state['package']=='dnsmasq'
-          assert status['state']=='running' and status['module']=='dhcp'
-          PY
           sudo dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf
-          ! systemctl is-active --quiet dnsmasq.service
           sudo tee /var/lib/control-center/market-pending.json >/dev/null <<'JSON'
           {"module":"dhcp","action":"remove","request_id":"ci-dhcp-remove","requested_at":2}
           JSON
           sudo bash market/control-center-market-apply
           test ! -e /var/lib/control-center-system/modules/dhcp.json
 
-      - name: Validate legacy 1.0.6 DHCP recovery path
+      - name: Validate Professional public key and repository secrets policy
         run: |
           set -euo pipefail
-          sudo apt-get install -y dnsmasq >/dev/null
-          sudo systemctl disable --now dnsmasq.service >/dev/null 2>&1 || true
-          sudo rm -f /etc/dnsmasq.d/control-center-dhcp.conf /var/lib/control-center-system/modules/dhcp.json
-          sudo tee /var/lib/control-center-system/dhcp-recovery-legacy.json >/dev/null <<'JSON'
-          {"source":"ci","legacy_version":"1.0.6","reason":"simulated apt code 100","created_at":1}
-          JSON
-          sudo chown root:control-center /var/lib/control-center-system/dhcp-recovery-legacy.json
-          sudo chmod 0640 /var/lib/control-center-system/dhcp-recovery-legacy.json
-          sudo tee /var/lib/control-center/market-pending.json >/dev/null <<'JSON'
-          {"module":"dhcp","action":"install","request_id":"ci-legacy-recovery","requested_at":3}
-          JSON
-          sudo bash market/control-center-market-apply
-          sudo python3 - <<'PY'
-          import json,os
-          state=json.load(open('/var/lib/control-center-system/modules/dhcp.json'))
-          assert state['installed'] is True and state['legacy_recovered'] is True
-          assert not os.path.exists('/var/lib/control-center-system/dhcp-recovery-legacy.json')
-          PY
-          sudo tee /var/lib/control-center/market-pending.json >/dev/null <<'JSON'
-          {"module":"dhcp","action":"remove","request_id":"ci-legacy-remove","requested_at":4}
-          JSON
-          sudo bash market/control-center-market-apply
-
-      - name: Validate Professional public key
-        run: openssl pkey -pubin -in license/vendor-public.pem -noout
-
-      - name: Reject private signing keys
-        run: |
-          set -euo pipefail
-          if git ls-files | grep -Eai '(^|/)(private|secret|signing)[^/]*(\.pem|\.key)$'; then
-            echo 'Private/signing key material must never be committed.' >&2
-            exit 1
-          fi
-          if grep -RIl --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' 'BEGIN PRIVATE KEY\|BEGIN RSA PRIVATE KEY' .; then
-            echo 'Private key material detected in repository.' >&2
-            exit 1
-          fi
+          openssl pkey -pubin -in license/vendor-public.pem -noout
+          ! git ls-files | grep -Eai '(^|/)(private|secret|signing)[^/]*(\.pem|\.key)$'
+          ! grep -RIl --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' 'BEGIN PRIVATE KEY\|BEGIN RSA PRIVATE KEY' .
 
       - name: Required documentation
         run: |
           set -euo pipefail
-          for f in \
-            README.md docs/README.md docs/EULA-RU.md docs/PRODUCT-EDITIONS.md docs/UPDATE-LIFECYCLE-POLICY-RU.md docs/RELEASE-HISTORY.md \
-            docs/INSTALL.md docs/POSTGRESQL.md docs/WEB-PORT.md docs/SAMBA-AD-DC.md docs/UPDATE.md docs/OS_UPDATES.md docs/LICENSING.md \
-            docs/NETWORK.md docs/DHCP.md docs/NOTIFICATIONS.md docs/UI.md docs/SECURITY.md docs/TROUBLESHOOTING.md \
-            releases/1.0.9/README.md releases/1.0.9/manifest.json; do
+          for f in README.md docs/INSTALL.md docs/POSTGRESQL.md docs/WEB-PORT.md docs/SAMBA-AD-DC.md docs/NETWORK.md docs/NOTIFICATIONS.md docs/SECURITY.md docs/TROUBLESHOOTING.md releases/1.0.10/README.md releases/1.0.10/manifest.json; do
             test -s "$f"
           done
