@@ -1,6 +1,6 @@
 # Установка Control Center 1.0.11
 
-Production candidate build: **20260819.5**. Финальный `audit=passed` устанавливается только после успешных release/runtime workflow.
+Build: **20260819.5**.
 
 ## Установка / обновление
 
@@ -10,21 +10,34 @@ cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Целевая платформа: Ubuntu Server 26.04 LTS, systemd, Netplan, root/sudo и доступ к APT.
-
 Installer:
 
-1. устанавливает payload 1.0.11;
-2. применяет PostgreSQL migrations до `004_samba_ad_dc_lifecycle.sql`;
-3. сохраняет Web port/SSL/standard-mode при обновлении;
-4. устанавливает Web/network/DHCP/hostname helpers;
-5. устанавливает `control-center-samba-apply` и `control-center-samba-approve`;
-6. создаёт tmpfs runtime directories `/run/control-center` и `/run/control-center-root`;
-7. включает `control-center-samba-apply.path`;
-8. сохраняет migration retry service;
-9. выполняет Web health-check.
+1. обновляет Control Center payload;
+2. применяет PostgreSQL migrations до **005**;
+3. сохраняет Web port/SSL settings;
+4. включает Local/Domain auth architecture и `control-center-authd`;
+5. устанавливает lifecycle workers Domain/DNS/Storage/DHCP reservations;
+6. создаёт runtime directories `/run/control-center`, `/run/control-center-root`, `/run/control-center-auth`;
+7. включает systemd path watchers;
+8. выполняет health и migration checks.
 
-## После установки
+## Первый локальный вход
+
+Installer формирует группу:
+
+```text
+control-center-admins
+```
+
+Существующие обычные пользователи с `sudo`/`wheel` добавляются в неё. Root Web login запрещён.
+
+Если подходящего пользователя с паролем нет, installer создаёт `controladmin` с shell `/usr/sbin/nologin` и выводит случайный пароль **один раз**. Сменить его:
+
+```bash
+sudo passwd controladmin
+```
+
+## Проверка установки
 
 ```bash
 cat /opt/control-center/VERSION
@@ -39,90 +52,77 @@ sudo bash scripts/acceptance-1.0.11.sh
 ```text
 1.0.11
 20260819.5
-004
+005
 ACCEPTANCE 1.0.11: PASSED
 ```
 
-## Web UI
+## Первоначальная настройка Домена
 
-Чистая установка:
-
-```text
-http://SERVER_IP:8080
-```
-
-Механизм 1.0.10 для HTTP 80 / HTTPS 443 / custom ports и PostgreSQL-independent Web runtime сохраняется.
-
-## Подготовка Samba AD-DC
-
-Перед созданием домена:
-
-1. назначьте Static IPv4 нужной LAN/WAN роли;
-2. убедитесь, что время сервера синхронизировано;
-3. откройте раздел **Samba AD-DC**;
-4. укажите Realm, NetBIOS domain, сетевую роль и DNS forwarder;
-5. выполните readiness.
-
-LAN является предпочтительной ролью. WAN требует отдельного подтверждения.
-
-## Одноразовое локальное подтверждение
-
-Перед нажатием **Создать домен** выполните на сервере:
+1. В **Сети** настройте Static IPv4 для LAN или WAN. LAN предпочтителен.
+2. При необходимости заранее установите DNS и/или Сетевое хранилище из Маркета. Это необязательно: Домен установит зависимости сам.
+3. В Маркете выберите **Домен → Установить**.
+4. Пройдите мастер Realm / NetBIOS / network role / DNS forwarder / dependencies.
+5. На сервере получите one-time code:
 
 ```bash
 sudo control-center-samba-approve
 ```
 
-Введите выданный код в Web UI. Код действует 10 минут и используется один раз.
+6. Введите пароль Domain Administrator, повтор пароля и код.
+7. Дождитесь итогового события в колокольчике.
 
-Пароль Domain Administrator не сохраняется в PostgreSQL/persistent state. Секретный request живёт только под `/run` до чтения root worker.
+Если standalone DNS/Storage существовали, они сохраняются и переводятся в domain mode.
 
-## Samba lifecycle services
+## Доменная авторизация
 
-```bash
-systemctl status control-center-samba-apply.path --no-pager
-systemctl status control-center-samba-apply.service --no-pager
-journalctl -u control-center-samba-apply.service -n 200 --no-pager
-sudo cat /var/lib/control-center-system/samba-status.json 2>/dev/null || true
-sudo cat /var/lib/control-center-system/modules/samba.json 2>/dev/null || true
-```
-
-## Backup
-
-Перед provisioning создаётся root-only backup:
+После успешного provisioning на странице входа становится доступен режим **Доменная**. Bootstrap administrative group:
 
 ```text
-/var/lib/control-center-root/samba-backups/<job-id>/
+Control Center Admins
 ```
 
-Не удаляйте backup, пока не убедились, что домен и клиенты работают штатно.
+Domain Administrator добавляется в неё автоматически. Остальные доменные пользователи по умолчанию имеют viewer-доступ до развития RBAC.
 
-## Проверка активного домена
+## Удаление Домена
 
-Из Web UI используйте **Samba AD-DC → Проверить состояние** или:
+Удаление выполняется из раздела Домена/Маркета, а не uninstall-скриптом.
+
+Перед удалением:
 
 ```bash
-PORT=$(sudo sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
-SSL=$(sudo sed -n 's/^CONTROL_CENTER_SSL=//p' /etc/control-center/web.env)
-if [[ "$SSL" == 1 ]]; then
-  curl -kfsS -X POST "https://127.0.0.1:${PORT}/api/samba/health" | python3 -m json.tool
-else
-  curl -fsS -X POST "http://127.0.0.1:${PORT}/api/samba/health" | python3 -m json.tool
-fi
+sudo control-center-samba-approve --remove
 ```
 
-## Защита после provisioning
+В UI требуется отдельная фраза подтверждения. Операция разрешена только для единственного DC.
 
-Control Center блокирует обычное переименование активного DC и изменение/отключение его interface/IP. DHCP на интерфейсе домена должен раздавать IP AD-DC как единственный DNS.
+Перед destruction создаётся recovery backup, затем восстанавливается pre-domain state и выполняется fingerprint cleanup-audit.
 
-## Удаление
+## DNS / Storage removal
 
-Автоматическое уничтожение домена не входит в 1.0.11. Если managed AD-DC активен, uninstall с очисткой application data блокируется.
+DNS и Storage нельзя удалять при активном Домене. После удаления Домена они могут быть удалены отдельно из Маркета; каждая операция выполняет cleanup-audit.
 
-Для удаления панели с сохранением данных:
+Storage service removal сохраняет пользовательские данные.
+
+## Systemd
+
+Основные units:
+
+```text
+control-center.service
+control-center-authd.service
+control-center-samba-apply.path/service
+control-center-domain-destroy.path/service
+control-center-dns-apply.path/service
+control-center-storage-apply.path/service
+control-center-dhcp-reservations-apply.path/service
+```
+
+## Uninstall панели
+
+Если Domain/DNS/Storage установлены, обычный uninstall с удалением application state блокируется. Сначала удалите роли штатно через Маркет.
+
+Сохранить роли/данные и удалить только панель/runtime:
 
 ```bash
 sudo bash install/uninstall.sh --keep-data
 ```
-
-Samba domain database, `/etc/samba`, `/var/lib/samba` и SYSVOL не удаляются автоматически.
