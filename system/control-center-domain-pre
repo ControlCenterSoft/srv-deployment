@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT=/var/lib/control-center-root
+SYSTEM=/var/lib/control-center-system
+CTX_DIR="$ROOT/domain-install-context"
+CTX="$ROOT/domain-install-context.json"
+DNS="$SYSTEM/modules/dns.json"
+STORAGE="$SYSTEM/modules/storage.json"
+install -d -o root -g root -m 0700 "$ROOT" "$CTX_DIR"
+rm -f "$CTX_DIR/dns.json" "$CTX_DIR/storage.json"
+[[ -s "$DNS" ]] && cp -a "$DNS" "$CTX_DIR/dns.json"
+[[ -s "$STORAGE" ]] && cp -a "$STORAGE" "$CTX_DIR/storage.json"
+UNBOUND_ACTIVE=0;systemctl is-active --quiet unbound.service&&UNBOUND_ACTIVE=1||true
+SMBD_ACTIVE=0;systemctl is-active --quiet smbd.service&&SMBD_ACTIVE=1||true
+python3 - "$CTX" "$UNBOUND_ACTIVE" "$SMBD_ACTIVE" <<'PY'
+import json,subprocess,sys,time,os
+p,unbound,smbd=sys.argv[1:]
+packages=['samba','samba-dsdb-modules','samba-vfs-modules','winbind','krb5-user','dnsutils','acl','attr','smbclient','chrony','unbound']
+def installed(name):
+ r=subprocess.run(['dpkg-query','-W','-f=${Status}',name],text=True,capture_output=True)
+ return r.returncode==0 and 'install ok installed' in r.stdout
+data={'created_at':int(time.time()),'unbound_active':unbound=='1','smbd_active':smbd=='1','dns_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/dns.json'),'storage_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/storage.json'),'packages_preexisting':{x:installed(x) for x in packages}}
+with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n')
+os.chmod(p,0o600)
+PY
+chown root:root "$CTX"
+# Standalone Unbound owns port 53; preserve its config/module but stop it while
+# Samba Internal DNS takes ownership. It is restored automatically on rollback
+# or future domain removal when it was explicitly installed.
+if [[ "$UNBOUND_ACTIVE" == 1 ]];then systemctl stop unbound.service;fi
