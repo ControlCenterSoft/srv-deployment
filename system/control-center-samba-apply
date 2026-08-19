@@ -14,6 +14,15 @@ EVENTS="$SYSTEM_STATE/market-events.jsonl"
 LOG="$SYSTEM_STATE/samba-last.log"
 BACKUP_ROOT="$ROOT_STATE/samba-backups"
 APT_LOCK=/run/control-center-apt.lock
+POLICY=/usr/sbin/policy-rc.d
+POLICY_BACKUP=""
+POLICY_HAD=0
+POLICY_ACTIVE=0
+JOB_ID="unknown"
+ADMINPASS=""
+BACKUP=""
+ARCHIVE=""
+MANIFEST=""
 
 [[ -s "$PENDING" ]] || exit 0
 install -d -o root -g control-center -m 0750 "$SYSTEM_STATE" "$SYSTEM_STATE/modules"
@@ -22,7 +31,7 @@ install -d -o root -g root -m 0700 "$ROOT_STATE" "$BACKUP_ROOT" "$ROOT_RUN"
 exec > >(tee -a "$LOG") 2>&1
 
 status(){
-  local state="$1" message="$2" detail="${3:-}" job="${4:-}" backup="${5:-}"
+  local state="$1" message="$2" detail="${3:-}" job="${4:-$JOB_ID}" backup="${5:-$BACKUP}"
   python3 - "$STATUS" "$state" "$message" "$detail" "$job" "$backup" <<'PY'
 import json,sys,time,os,tempfile
 p,state,message,detail,job,backup=sys.argv[1:]
@@ -55,7 +64,7 @@ PY
 log_tail(){ tail -n 35 "$LOG" 2>/dev/null | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' | tail -c 3500 || true; }
 
 db_job(){
-  local state="$1" result="${2:-{}}" error="${3:-}" backup="${4:-}"
+  local state="$1" result="${2:-{}}" error="${3:-}" backup="${4:-$BACKUP}"
   [[ -x /opt/control-center/venv/bin/python ]] || return 0
   runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" \
     /opt/control-center/venv/bin/python - "$JOB_ID" "$state" "$result" "$error" "$backup" <<'PY' >/dev/null 2>&1 || true
@@ -70,14 +79,43 @@ with database.connect() as c:
 PY
 }
 
+cleanup_policy(){
+  [[ "$POLICY_ACTIVE" == 1 ]] || return 0
+  rm -f "$POLICY"
+  if [[ "$POLICY_HAD" == 1 && -n "$POLICY_BACKUP" && -e "$POLICY_BACKUP" ]]; then cp -a "$POLICY_BACKUP" "$POLICY"; fi
+  [[ -n "$POLICY_BACKUP" ]] && rm -f "$POLICY_BACKUP"
+  POLICY_ACTIVE=0
+}
+prepare_policy(){
+  POLICY_BACKUP="$BACKUP/policy-rc.d.backup"
+  if [[ -e "$POLICY" || -L "$POLICY" ]]; then
+    cp -a "$POLICY" "$POLICY_BACKUP"; POLICY_HAD=1
+    cat >"$POLICY" <<EOF
+#!/bin/sh
+case "\${1:-}" in samba-ad-dc|smbd|nmbd|winbind|chrony|chronyd) exit 101;; esac
+exec "$POLICY_BACKUP" "\$@"
+EOF
+  else
+    POLICY_HAD=0
+    cat >"$POLICY" <<'EOF'
+#!/bin/sh
+case "${1:-}" in samba-ad-dc|smbd|nmbd|winbind|chrony|chronyd) exit 101;; esac
+exit 0
+EOF
+  fi
+  chmod 0755 "$POLICY"; POLICY_ACTIVE=1
+}
+
 consume_approval(){
   local supplied="$1"
   [[ -s "$APPROVAL" ]] || return 1
   local rc=0
   python3 - "$APPROVAL" "$supplied" <<'PY' || rc=$?
-import hashlib,json,sys,time
+import hashlib,json,re,sys,time
 p,token=sys.argv[1:]
+if not re.fullmatch(r'[0-9a-f]{8}',token): raise SystemExit(4)
 j=json.load(open(p))
+if j.get('purpose')!='samba-ad-dc-provision': raise SystemExit(5)
 if int(j.get('expires_at') or 0)<int(time.time()): raise SystemExit(2)
 if hashlib.sha256(token.encode()).hexdigest()!=str(j.get('sha256') or ''): raise SystemExit(3)
 PY
@@ -85,47 +123,74 @@ PY
   return "$rc"
 }
 
+# Parse and independently validate all Web-supplied data before any mutation.
 readarray -t REQ < <(python3 - "$PENDING" <<'PY'
-import json,sys
+import ipaddress,json,re,sys
 j=json.load(open(sys.argv[1]))
-keys=['job_id','realm','netbios_domain','interface','network_role','ipv4','prefix','network','dns_forwarder','administrator_password','approval_code']
-for k in keys: print(str(j.get(k,'')))
-print('1' if j.get('replace_existing') else '0')
-print('1' if j.get('allow_wan') else '0')
+job=str(j.get('job_id') or '')
+realm=str(j.get('realm') or '').strip().rstrip('.').upper()
+domain=str(j.get('netbios_domain') or '').strip().upper()
+iface=str(j.get('interface') or '').strip()
+role=str(j.get('network_role') or '').strip().lower()
+ip=str(j.get('ipv4') or '').strip(); prefix=str(j.get('prefix') or '').strip(); network=str(j.get('network') or '').strip()
+forwarder=str(j.get('dns_forwarder') or '').strip(); password=str(j.get('administrator_password') or '')
+approval=str(j.get('approval_code') or '').strip().lower(); replace=bool(j.get('replace_existing')); allow_wan=bool(j.get('allow_wan'))
+if not re.fullmatch(r'samba-provision-[0-9]{9,12}-[0-9a-f]{8}',job): raise SystemExit('invalid job id')
+labels=realm.lower().split('.')
+if len(labels)<2 or realm.lower().endswith('.local') or len(realm)>253: raise SystemExit('invalid realm')
+if any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',x) for x in labels): raise SystemExit('invalid realm label')
+if not re.fullmatch(r'[A-Z0-9](?:[A-Z0-9-]{0,13}[A-Z0-9])?',domain): raise SystemExit('invalid NetBIOS domain')
+if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}',iface): raise SystemExit('invalid interface')
+if role not in {'lan','wan'}: raise SystemExit('invalid role')
+if role=='wan' and not allow_wan: raise SystemExit('WAN approval missing')
+try:
+    addr=ipaddress.IPv4Interface(f'{ip}/{int(prefix)}'); declared=ipaddress.IPv4Network(network,strict=False); fwd=ipaddress.IPv4Address(forwarder)
+except Exception: raise SystemExit('invalid IPv4 configuration')
+if addr.network!=declared: raise SystemExit('network mismatch')
+if fwd==addr.ip or fwd.is_loopback or fwd.is_multicast or fwd.is_unspecified: raise SystemExit('invalid DNS forwarder')
+if not 12<=len(password)<=128 or any(ord(c)<32 for c in password): raise SystemExit('invalid administrator password')
+cats=sum((any(c.islower() for c in password),any(c.isupper() for c in password),any(c.isdigit() for c in password),any(not c.isalnum() for c in password)))
+if cats<3: raise SystemExit('weak administrator password')
+if not re.fullmatch(r'[0-9a-f]{8}',approval): raise SystemExit('invalid approval code')
+for value in (job,realm,domain,iface,role,str(addr.ip),str(addr.network.prefixlen),str(addr.network),str(fwd),password,approval,'1' if replace else '0','1' if allow_wan else '0'): print(value)
 PY
-) || { rm -f "$PENDING"; status error 'Некорректный запрос Samba AD-DC'; exit 1; }
+) || { rm -f "$PENDING"; status error 'Запрос Samba AD-DC отклонён привилегированной проверкой'; event failed error 'Samba AD-DC: root validation rejected request'; exit 2; }
 JOB_ID="${REQ[0]}"; REALM="${REQ[1]}"; DOMAIN="${REQ[2]}"; IFACE="${REQ[3]}"; ROLE="${REQ[4]}"; AD_IP="${REQ[5]}"; PREFIX="${REQ[6]}"; NETWORK="${REQ[7]}"; FORWARDER="${REQ[8]}"; ADMINPASS="${REQ[9]}"; APPROVAL_CODE="${REQ[10]}"; REPLACE_EXISTING="${REQ[11]}"; ALLOW_WAN="${REQ[12]}"
 rm -f "$PENDING"
 
+if ! ip -j -4 addr show dev "$IFACE" | python3 -c 'import ipaddress,json,sys; target=ipaddress.IPv4Interface(sys.argv[1]); rows=json.load(sys.stdin); found=False
+for row in rows:
+  for a in row.get("addr_info",[]):
+    if a.get("family")=="inet" and a.get("local")==str(target.ip) and int(a.get("prefixlen",-1))==target.network.prefixlen: found=True
+raise SystemExit(0 if found else 1)' "$AD_IP/$PREFIX"; then
+  unset ADMINPASS APPROVAL_CODE
+  status error 'Статический IP выбранной роли не найден на интерфейсе.' "$IFACE · $AD_IP/$PREFIX"
+  event failed error 'Samba AD-DC: root network validation failed' "$IFACE · $AD_IP/$PREFIX"
+  db_job failed '{}' 'static IP not present on interface'
+  exit 3
+fi
+
 if ! consume_approval "$APPROVAL_CODE"; then
   unset ADMINPASS APPROVAL_CODE
-  status error 'Одноразовый код локального подтверждения отсутствует, истёк или неверен.' '' "$JOB_ID"
-  event failed error 'Создание Samba AD-DC отклонено: локальное подтверждение не пройдено' ''
+  status error 'Одноразовый код локального подтверждения отсутствует, истёк или неверен.'
+  event failed error 'Создание Samba AD-DC отклонено: локальное подтверждение не пройдено'
   db_job failed '{}' 'local approval failed'
   exit 1
 fi
 unset APPROVAL_CODE
 
-status provisioning "Создание домена $REALM выполняется…" 'Backup → packages → DNS/Kerberos → provision → acceptance' "$JOB_ID"
+status provisioning "Создание домена $REALM выполняется…" 'Backup → packages → DNS/Kerberos → provision → acceptance'
 event started installing "Создание Samba AD-DC началось: $REALM" "Интерфейс $IFACE, IP $AD_IP"
 db_job running '{}'
 
 exec 8>"$APT_LOCK"
-flock -w 900 8 || { unset ADMINPASS; status error 'Менеджер пакетов занят' '' "$JOB_ID"; event failed error 'Samba AD-DC: менеджер пакетов занят'; db_job failed '{}' 'apt lock timeout'; exit 75; }
+flock -w 900 8 || { unset ADMINPASS; status error 'Менеджер пакетов занят'; event failed error 'Samba AD-DC: менеджер пакетов занят'; db_job failed '{}' 'apt lock timeout'; exit 75; }
 
-BACKUP="$BACKUP_ROOT/$JOB_ID"
-ARCHIVE="$BACKUP/pre-provision.tar.gz"
-MANIFEST="$BACKUP/manifest.json"
+BACKUP="$BACKUP_ROOT/$JOB_ID"; ARCHIVE="$BACKUP/pre-provision.tar.gz"; MANIFEST="$BACKUP/manifest.json"
 install -d -o root -g root -m 0700 "$BACKUP"
-
-EXISTING_SAMBA=0
-[[ -s /etc/samba/smb.conf ]] && EXISTING_SAMBA=1
+EXISTING_SAMBA=0; [[ -s /etc/samba/smb.conf ]] && EXISTING_SAMBA=1
 if [[ "$EXISTING_SAMBA" == 1 && "$REPLACE_EXISTING" != 1 && ! -s "$MODULE" ]]; then
-  unset ADMINPASS
-  status error 'Обнаружена существующая Samba-конфигурация. Автоматическая замена запрещена.' 'Включите явное подтверждение замены существующей Samba только после проверки backup.' "$JOB_ID"
-  event failed error 'Samba AD-DC не создан: существующая Samba-конфигурация не захвачена' ''
-  db_job failed '{}' 'existing Samba configuration detected'
-  exit 3
+  unset ADMINPASS; status error 'Обнаружена существующая Samba-конфигурация. Автоматическая замена запрещена.' 'Включите явное подтверждение замены только после проверки backup.'; event failed error 'Samba AD-DC не создан: существующая Samba-конфигурация не захвачена'; db_job failed '{}' 'existing Samba configuration detected'; exit 3
 fi
 if [[ -s "$MODULE" ]]; then
   ACTIVE="$(python3 - "$MODULE" <<'PY'
@@ -135,19 +200,12 @@ except Exception: print(0);raise SystemExit
 print(1 if j.get('managed') and j.get('state')=='active' else 0)
 PY
 )"
-  if [[ "$ACTIVE" == 1 ]]; then
-    unset ADMINPASS
-    status active 'Samba AD-DC уже активен' '' "$JOB_ID"
-    event succeeded running 'Samba AD-DC уже был активен' ''
-    db_job done '{"already_active":true}'
-    exit 0
-  fi
+  if [[ "$ACTIVE" == 1 ]]; then unset ADMINPASS; status active 'Samba AD-DC уже активен'; event succeeded running 'Samba AD-DC уже был активен'; db_job done '{"already_active":true}'; exit 0; fi
 fi
 
 python3 - "$MANIFEST" <<'PY'
 import json,subprocess,sys,time,os
-p=sys.argv[1]
-services=['systemd-resolved.service','systemd-timesyncd.service','chrony.service','smbd.service','nmbd.service','winbind.service','samba-ad-dc.service','control-center-dhcp-server.service']
+p=sys.argv[1];services=['systemd-resolved.service','systemd-timesyncd.service','chrony.service','smbd.service','nmbd.service','winbind.service','samba-ad-dc.service','control-center-dhcp-server.service']
 def q(args):
     try:return subprocess.run(args,text=True,capture_output=True,timeout=4).stdout.strip()
     except Exception:return ''
@@ -155,89 +213,52 @@ data={'created_at':int(time.time()),'services':{s:{'active':q(['systemctl','is-a
 with open(p,'w') as f:json.dump(data,f,indent=2);f.write('\n')
 os.chmod(p,0o600)
 PY
-
-PATHS=()
-for p in etc/samba var/lib/samba var/cache/samba etc/krb5.conf etc/resolv.conf etc/hosts etc/systemd/resolved.conf etc/chrony var/lib/control-center-system/dhcp-config.json etc/dnsmasq.d/control-center-dhcp.conf; do
-  [[ -e "/$p" || -L "/$p" ]] && PATHS+=("$p")
-done
+PATHS=(); for p in etc/samba var/lib/samba var/cache/samba etc/krb5.conf etc/resolv.conf etc/hosts etc/systemd/resolved.conf etc/chrony var/lib/control-center-system/dhcp-config.json etc/dnsmasq.d/control-center-dhcp.conf; do [[ -e "/$p" || -L "/$p" ]] && PATHS+=("$p"); done
 if (( ${#PATHS[@]} )); then tar -C / --acls --xattrs -czpf "$ARCHIVE" "${PATHS[@]}"; else tar -czpf "$ARCHIVE" --files-from /dev/null; fi
-chmod 0600 "$ARCHIVE" "$MANIFEST"
-status provisioning "Backup завершён. Установка пакетов Samba AD-DC…" "$BACKUP" "$JOB_ID" "$BACKUP"
-db_job running '{}' '' "$BACKUP"
+chmod 0600 "$ARCHIVE" "$MANIFEST"; status provisioning 'Backup завершён. Установка пакетов Samba AD-DC…' "$BACKUP"; db_job running '{}' '' "$BACKUP"
 
 restore_services(){
   python3 - "$MANIFEST" <<'PY'
 import json,subprocess,sys
 j=json.load(open(sys.argv[1]))
 for s,v in j.get('services',{}).items():
-    enabled=v.get('enabled','')
-    active=v.get('active','')
+    enabled=v.get('enabled',''); active=v.get('active','')
     if enabled=='enabled': subprocess.run(['systemctl','enable',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    elif enabled in {'disabled','masked'}: subprocess.run(['systemctl',enabled,s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    elif enabled=='disabled': subprocess.run(['systemctl','disable',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    elif enabled=='masked': subprocess.run(['systemctl','mask',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     if active=='active': subprocess.run(['systemctl','start',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     else: subprocess.run(['systemctl','stop',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 PY
 }
-
 rollback(){
-  local reason="$1"
-  trap - ERR
-  unset ADMINPASS
+  local reason="$1"; trap - ERR; cleanup_policy || true; unset ADMINPASS; rm -f "$ROOT_RUN"/samba-auth-"$JOB_ID" 2>/dev/null || true
   systemctl stop samba-ad-dc.service chrony.service >/dev/null 2>&1 || true
-  rm -rf /etc/samba /var/lib/samba /var/cache/samba
-  rm -f /etc/krb5.conf /etc/resolv.conf /etc/chrony/conf.d/control-center-ad-dc.conf
-  tar -C / -xzpf "$ARCHIVE" --acls --xattrs >/dev/null 2>&1 || true
-  systemctl daemon-reload || true
-  restore_services || true
-  if [[ -f /etc/dnsmasq.d/control-center-dhcp.conf ]] && systemctl is-active --quiet control-center-dhcp-server.service; then
-    dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf >/dev/null 2>&1 && systemctl restart control-center-dhcp-server.service >/dev/null 2>&1 || true
-  fi
-  rm -f "$MODULE"
-  status rollback 'Создание Samba AD-DC не завершено. Предыдущее состояние восстановлено.' "$reason" "$JOB_ID" "$BACKUP"
-  event failed error 'Samba AD-DC: provisioning завершился rollback' "$reason"
-  db_job rollback '{}' "$reason" "$BACKUP"
+  rm -rf /etc/samba /var/lib/samba /var/cache/samba; rm -f /etc/krb5.conf /etc/resolv.conf /etc/chrony/conf.d/control-center-ad-dc.conf
+  [[ -s "$ARCHIVE" ]] && tar -C / -xzpf "$ARCHIVE" --acls --xattrs >/dev/null 2>&1 || true
+  systemctl daemon-reload || true; [[ -s "$MANIFEST" ]] && restore_services || true
+  if [[ -f /etc/dnsmasq.d/control-center-dhcp.conf ]] && systemctl is-active --quiet control-center-dhcp-server.service; then dnsmasq --test --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf >/dev/null 2>&1 && systemctl restart control-center-dhcp-server.service >/dev/null 2>&1 || true; fi
+  rm -f "$MODULE"; status rollback 'Создание Samba AD-DC не завершено. Предыдущее состояние восстановлено.' "$reason"; event failed error 'Samba AD-DC: provisioning завершился rollback' "$reason"; db_job rollback '{}' "$reason" "$BACKUP"
 }
-
 on_error(){ local rc=$?; local detail; detail="$(log_tail)"; rollback "Ошибка $rc. $detail"; exit "$rc"; }
-trap on_error ERR
+trap on_error ERR; trap cleanup_policy EXIT
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get -f install -y
-apt-get install -y samba samba-dsdb-modules samba-vfs-modules winbind krb5-user dnsutils acl attr smbclient chrony
-command -v samba-tool >/dev/null
-command -v smbclient >/dev/null
-
-# Existing distro smb.conf must not be used by domain provision. It is already in backup.
+prepare_policy; apt-get update; apt-get -f install -y; apt-get install -y samba samba-dsdb-modules samba-vfs-modules winbind krb5-user dnsutils acl attr smbclient chrony; cleanup_policy
+command -v samba-tool >/dev/null; command -v smbclient >/dev/null; command -v kinit >/dev/null; command -v host >/dev/null
 rm -f /etc/samba/smb.conf
-if [[ "$EXISTING_SAMBA" == 1 || "$REPLACE_EXISTING" == 1 ]]; then
-  rm -rf /var/lib/samba/* /var/cache/samba/*
-fi
+if [[ "$EXISTING_SAMBA" == 1 || "$REPLACE_EXISTING" == 1 ]]; then rm -rf /var/lib/samba/* /var/cache/samba/*; fi
+systemctl disable --now smbd.service nmbd.service winbind.service >/dev/null 2>&1 || true; systemctl stop samba-ad-dc.service >/dev/null 2>&1 || true
+systemctl stop systemd-resolved.service >/dev/null 2>&1 || true; systemctl disable systemd-resolved.service >/dev/null 2>&1 || true; systemctl stop systemd-timesyncd.service >/dev/null 2>&1 || true
 
-systemctl disable --now smbd.service nmbd.service winbind.service >/dev/null 2>&1 || true
-systemctl stop samba-ad-dc.service >/dev/null 2>&1 || true
-systemctl stop systemd-resolved.service >/dev/null 2>&1 || true
-systemctl disable systemd-resolved.service >/dev/null 2>&1 || true
-systemctl stop systemd-timesyncd.service >/dev/null 2>&1 || true
+port_busy(){ local p="$1"; ss -H -lntup 2>/dev/null | awk -v p=":$p" '{for(i=1;i<=NF;i++) if($i ~ p"$") found=1} END{exit found?0:1}'; }
+for port in 53 88 389 445; do if port_busy "$port"; then echo "Port $port is still occupied after managed service cutover" >&2; ss -H -lntup | grep -E ":${port}([[:space:]]|$)" >&2 || true; false; fi; done
 
-# After resolved is stopped, DNS/Kerberos/LDAP/SMB ports must not be owned by another daemon.
-for port in 53 88 389 445; do
-  if ss -H -lntup 2>/dev/null | grep -Eq "[:.]${port}([[:space:]]|$)"; then
-    echo "Port $port is still occupied after managed service cutover" >&2
-    ss -H -lntup | grep -E "[:.]${port}([[:space:]]|$)" >&2 || true
-    false
-  fi
-done
-
-HOST_SHORT="$(hostname -s)"
-REALM_LC="$(printf '%s' "$REALM" | tr '[:upper:]' '[:lower:]')"
-FQDN="${HOST_SHORT}.${REALM_LC}"
+HOST_SHORT="$(hostname -s)"; REALM_LC="$(printf '%s' "$REALM" | tr '[:upper:]' '[:lower:]')"; FQDN="${HOST_SHORT}.${REALM_LC}"
+[[ "${HOST_SHORT^^}" != "$DOMAIN" ]] || { echo 'DC hostname must not match NetBIOS domain' >&2; false; }
 python3 - /etc/hosts "$HOST_SHORT" "$FQDN" "$AD_IP" <<'PY'
 from pathlib import Path
 import sys
-p=Path(sys.argv[1]); short,fqdn,ip=sys.argv[2:]
-lines=p.read_text(errors='replace').splitlines() if p.exists() else []
-out=[]
+p=Path(sys.argv[1]); short,fqdn,ip=sys.argv[2:]; lines=p.read_text(errors='replace').splitlines() if p.exists() else [];out=[]
 for line in lines:
     if line.lstrip().startswith('#') or not line.strip(): out.append(line); continue
     parts=line.split()
@@ -245,71 +266,39 @@ for line in lines:
     names=set(parts[1:]) if len(parts)>1 else set()
     if short in names or fqdn in names: continue
     out.append(line)
-out.append(f'{ip}\t{fqdn}\t{short}')
-p.write_text('\n'.join(out).rstrip()+'\n')
+out.append(f'{ip}\t{fqdn}\t{short}');p.write_text('\n'.join(out).rstrip()+'\n')
 PY
+getent hosts "$FQDN" | grep -Fq "$AD_IP"
 
-status provisioning "Provisioning домена $REALM…" "DC $FQDN / $AD_IP" "$JOB_ID" "$BACKUP"
-# Use interactive stdin so the Administrator password is never present in the process command line.
-printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-  "$REALM" "$DOMAIN" 'dc' 'SAMBA_INTERNAL' "$FORWARDER" "$ADMINPASS" "$ADMINPASS" | \
-  samba-tool domain provision --use-rfc2307 --interactive \
-    --option="interfaces=lo $IFACE" \
-    --option="bind interfaces only=yes"
-
-test -s /etc/samba/smb.conf
-test -s /var/lib/samba/private/krb5.conf
-install -o root -g root -m 0644 /var/lib/samba/private/krb5.conf /etc/krb5.conf
-
-rm -f /etc/resolv.conf
-cat >/etc/resolv.conf <<EOF
+status provisioning "Provisioning домена $REALM…" "DC $FQDN / $AD_IP"
+printf '%s\n%s\n' "$ADMINPASS" "$ADMINPASS" | samba-tool domain provision --realm="$REALM" --domain="$DOMAIN" --server-role=dc --dns-backend=SAMBA_INTERNAL --dns-forwarder="$FORWARDER" --use-rfc2307 --interactive --option="interfaces=lo $IFACE" --option="bind interfaces only=yes"
+test -s /etc/samba/smb.conf; test -s /var/lib/samba/private/krb5.conf; install -o root -g root -m 0644 /var/lib/samba/private/krb5.conf /etc/krb5.conf
+rm -f /etc/resolv.conf; cat >/etc/resolv.conf <<EOF
 # Managed by Control Center Samba AD-DC.
 search $REALM_LC
 nameserver $AD_IP
 EOF
 chmod 0644 /etc/resolv.conf
-
-# Signed NTP for domain members.
-CHRONY_GROUP=_chrony
-getent group "$CHRONY_GROUP" >/dev/null || CHRONY_GROUP=chrony
-install -d -o root -g "$CHRONY_GROUP" -m 0750 /var/lib/samba/ntp_signd
-install -d -m 0755 /etc/chrony/conf.d
+CHRONY_GROUP=_chrony; getent group "$CHRONY_GROUP" >/dev/null || CHRONY_GROUP=chrony
+install -d -o root -g "$CHRONY_GROUP" -m 0750 /var/lib/samba/ntp_signd; install -d -m 0755 /etc/chrony/conf.d
 cat >/etc/chrony/conf.d/control-center-ad-dc.conf <<EOF
 # Managed by Control Center Samba AD-DC.
 allow $NETWORK
 ntpsigndsocket /var/lib/samba/ntp_signd
 EOF
 chmod 0644 /etc/chrony/conf.d/control-center-ad-dc.conf
-
-systemctl unmask samba-ad-dc.service >/dev/null 2>&1 || true
-systemctl enable --now samba-ad-dc.service
-systemctl enable --now chrony.service
-
-for _ in $(seq 1 30); do systemctl is-active --quiet samba-ad-dc.service && break; sleep 1; done
-systemctl is-active --quiet samba-ad-dc.service
-samba-tool testparm >/dev/null
-samba-tool ntacl sysvolcheck >/dev/null
-samba-tool domain info "$AD_IP" >/tmp/control-center-samba-domain-info.txt
-samba-tool drs showrepl --summary >/tmp/control-center-samba-repl.txt
-host -W 3 -t A "$FQDN" "$AD_IP" >/tmp/control-center-samba-dns-a.txt
-host -W 3 -t SRV "_ldap._tcp.${REALM_LC}" "$AD_IP" >/tmp/control-center-samba-dns-ldap.txt
-host -W 3 -t SRV "_kerberos._udp.${REALM_LC}" "$AD_IP" >/tmp/control-center-samba-dns-kerberos.txt
-
-printf '%s\n' "$ADMINPASS" | kinit "Administrator@$REALM"
-klist >/tmp/control-center-samba-klist.txt
-kdestroy || true
-AUTH_FILE="$ROOT_RUN/samba-auth-$JOB_ID"
-cat >"$AUTH_FILE" <<EOF
+systemctl unmask samba-ad-dc.service >/dev/null 2>&1 || true; systemctl enable --now samba-ad-dc.service; systemctl enable --now chrony.service
+for _ in $(seq 1 30); do systemctl is-active --quiet samba-ad-dc.service && break; sleep 1; done; systemctl is-active --quiet samba-ad-dc.service
+samba-tool testparm >/dev/null; samba-tool ntacl sysvolcheck >/dev/null; samba-tool domain info "$AD_IP" >/tmp/control-center-samba-domain-info.txt; samba-tool drs showrepl --summary >/tmp/control-center-samba-repl.txt
+host -W 3 -t A "$FQDN" "$AD_IP" >/tmp/control-center-samba-dns-a.txt; host -W 3 -t SRV "_ldap._tcp.${REALM_LC}" "$AD_IP" >/tmp/control-center-samba-dns-ldap.txt; host -W 3 -t SRV "_kerberos._udp.${REALM_LC}" "$AD_IP" >/tmp/control-center-samba-dns-kerberos.txt
+printf '%s\n' "$ADMINPASS" | kinit "Administrator@$REALM"; klist >/tmp/control-center-samba-klist.txt; kdestroy || true
+AUTH_FILE="$ROOT_RUN/samba-auth-$JOB_ID"; cat >"$AUTH_FILE" <<EOF
 username = Administrator
 password = $ADMINPASS
 domain = $DOMAIN
 EOF
-chmod 0600 "$AUTH_FILE"
-smbclient -A "$AUTH_FILE" -L "//$FQDN" >/tmp/control-center-samba-smbclient.txt
-rm -f "$AUTH_FILE"
-unset ADMINPASS
+chmod 0600 "$AUTH_FILE"; smbclient -A "$AUTH_FILE" -L "//$FQDN" >/tmp/control-center-samba-smbclient.txt; rm -f "$AUTH_FILE"; unset ADMINPASS
 
-# If Control Center DHCP serves this same interface, domain clients must use AD DNS.
 if [[ -s "$SYSTEM_STATE/dhcp-config.json" ]] && command -v /usr/local/sbin/control-center-dhcp-apply >/dev/null 2>&1; then
   SAME_IFACE="$(python3 - "$SYSTEM_STATE/dhcp-config.json" "$IFACE" <<'PY'
 import json,sys
@@ -321,8 +310,7 @@ PY
   if [[ "$SAME_IFACE" == 1 ]]; then
     python3 - "$SYSTEM_STATE/dhcp-config.json" "$STATE/dhcp-pending.json" "$AD_IP" <<'PY'
 import json,sys,os
-src,dst,ip=sys.argv[1:]
-j=json.load(open(src));j['dns']=[ip]
+src,dst,ip=sys.argv[1:];j=json.load(open(src));j['dns']=[ip]
 with open(dst,'w') as f:json.dump(j,f,ensure_ascii=False,indent=2);f.write('\n')
 os.chown(dst,0,0);os.chmod(dst,0o600)
 PY
@@ -337,31 +325,23 @@ p,realm,domain,fqdn,iface,role,ip,prefix,network,forwarder,backup,now=sys.argv[1
 data={'installed':True,'managed':True,'state':'active','service':'samba-ad-dc','realm':realm,'dns_domain':realm.lower(),'netbios_domain':domain,'fqdn':fqdn,'interface':iface,'network_role':role,'ipv4':ip,'prefix':int(prefix),'network':network,'dns_backend':'SAMBA_INTERNAL','dns_forwarder':forwarder,'backup_path':backup,'provisioned_at':int(now),'last_health_at':int(now),'health_state':'healthy'}
 fd,tmp=tempfile.mkstemp(prefix='.samba-module.',dir=os.path.dirname(p))
 with os.fdopen(fd,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
-os.replace(tmp,p)
-os.chmod(p,0o640)
+os.replace(tmp,p);os.chmod(p,0o640)
 PY
 chown root:control-center "$MODULE"
-
 RESULT="$(python3 - "$REALM" "$DOMAIN" "$FQDN" "$AD_IP" "$IFACE" <<'PY'
 import json,sys
-realm,domain,fqdn,ip,iface=sys.argv[1:]
-print(json.dumps({'realm':realm,'netbios_domain':domain,'fqdn':fqdn,'ipv4':ip,'interface':iface,'health':'healthy'}))
+realm,domain,fqdn,ip,iface=sys.argv[1:];print(json.dumps({'realm':realm,'netbios_domain':domain,'fqdn':fqdn,'ipv4':ip,'interface':iface,'health':'healthy'}))
 PY
-)"
-db_job done "$RESULT" '' "$BACKUP"
+)"; db_job done "$RESULT" '' "$BACKUP"
 runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" /opt/control-center/venv/bin/python - "$REALM" "$DOMAIN" "$FQDN" "$IFACE" "$AD_IP" "$FORWARDER" <<'PY' >/dev/null 2>&1 || true
 import sys
-sys.path.insert(0,'/opt/control-center/app')
-import database
+sys.path.insert(0,'/opt/control-center/app');import database
 from psycopg.types.json import Jsonb
-realm,domain,fqdn,iface,ip,forwarder=sys.argv[1:]
-profile='primary-'+domain.lower()
+realm,domain,fqdn,iface,ip,forwarder=sys.argv[1:];profile='primary-'+domain.lower()
 with database.connect() as c:
     c.execute("INSERT INTO control_center.ad_dc_profiles(profile_id,realm,netbios_domain,dns_backend,state,config,interface_name,ipv4,dns_forwarder,managed,provisioned_at,health_state,last_health_at) VALUES(%s,%s,%s,'SAMBA_INTERNAL','active',%s,%s,%s,%s,true,now(),'healthy',now()) ON CONFLICT(profile_id) DO UPDATE SET realm=EXCLUDED.realm,netbios_domain=EXCLUDED.netbios_domain,state='active',config=EXCLUDED.config,interface_name=EXCLUDED.interface_name,ipv4=EXCLUDED.ipv4,dns_forwarder=EXCLUDED.dns_forwarder,managed=true,provisioned_at=COALESCE(control_center.ad_dc_profiles.provisioned_at,now()),health_state='healthy',last_health_at=now(),updated_at=now()",(profile,realm,domain,Jsonb({'fqdn':fqdn}),iface,ip,forwarder))
     c.execute("INSERT INTO control_center.ad_dc_nodes(node_id,profile_id,dc_role,hostname,fqdn,ipv4,state,metadata) VALUES(%s,%s,'primary',%s,%s,%s,'active',%s) ON CONFLICT(node_id) DO UPDATE SET profile_id=EXCLUDED.profile_id,dc_role='primary',hostname=EXCLUDED.hostname,fqdn=EXCLUDED.fqdn,ipv4=EXCLUDED.ipv4,state='active',metadata=EXCLUDED.metadata,updated_at=now()",(fqdn.lower(),profile,fqdn.split('.')[0],fqdn,ip,Jsonb({'managed':True,'interface':iface})))
 PY
-
-status active "Samba AD-DC работает: $FQDN" "Realm $REALM · NetBIOS $DOMAIN · DNS $AD_IP · NTP/LDAP/Kerberos/SMB acceptance пройден" "$JOB_ID" "$BACKUP"
+status active "Samba AD-DC работает: $FQDN" "Realm $REALM · NetBIOS $DOMAIN · DNS $AD_IP · NTP/LDAP/Kerberos/SMB acceptance пройден"
 event succeeded running "Samba AD-DC успешно создан: $REALM" "DC $FQDN ($AD_IP), acceptance пройден"
-trap - ERR
-exit 0
+trap - ERR; cleanup_policy || true; exit 0
