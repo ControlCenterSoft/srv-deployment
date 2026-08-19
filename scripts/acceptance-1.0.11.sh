@@ -38,6 +38,16 @@ fi
 [[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/market")" == 401 ]]
 [[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/login")" == 200 ]]
 
+# The documented clean-install bootstrap must be shipped exactly: a dedicated
+# nologin user receives a random first password via chpasswd and the installer
+# prints that password once at the end instead of persisting it in app state.
+grep -Fq 'candidate=controladmin' "$ROOT/../control-center"/install/install.sh 2>/dev/null || true
+# Installed application tree does not necessarily contain install/, therefore
+# verify the executable bootstrap helper and the installed local role boundary.
+command -v control-center-auth-bootstrap >/dev/null
+getent group control-center-admins >/dev/null
+! grep -R -E 'BOOTSTRAP_PASSWORD=.*(/var/lib/control-center|/etc/control-center)' /opt/control-center 2>/dev/null
+
 SAMBA=/var/lib/control-center-system/modules/samba.json
 if [[ -s "$SAMBA" ]] && python3 - "$SAMBA" <<'PY'
 import json,sys
@@ -47,12 +57,17 @@ then
   systemctl is-active --quiet samba-ad-dc.service
   samba-tool testparm >/dev/null
   samba-tool ntacl sysvolcheck >/dev/null
+  samba-tool group listmembers 'Control Center Admins' | grep -Fxiq Administrator
+  ADMIN_SID="$(wbinfo --name-to-sid "$(python3 -c "import json;print(json.load(open('$SAMBA'))['netbios_domain'])")\\Administrator" | awk '{print $1}')"
+  [[ "$ADMIN_SID" =~ ^S-1-5-21-.*-500$ ]]
+  [[ "$(wbinfo --sid-to-uid "$ADMIN_SID")" == 0 ]]
   python3 - <<'PY'
 import json
 s=json.load(open('/var/lib/control-center-system/modules/samba.json'));d=json.load(open('/var/lib/control-center-system/modules/dns.json'));f=json.load(open('/var/lib/control-center-system/modules/storage.json'))
 assert d['provider']=='samba_internal' and 'domain' in d.get('dependency_by',[])
 assert f['provider']=='samba_ad_dc' and 'domain' in f.get('dependency_by',[])
 assert s.get('portal_auth',{}).get('domain') is True
+assert s.get('portal_auth',{}).get('admin_group')=='Control Center Admins'
 PY
 fi
 
@@ -60,14 +75,18 @@ for f in \
  /usr/local/sbin/control-center-samba-apply /usr/local/sbin/control-center-samba-apply-core \
  /usr/local/sbin/control-center-domain-pre /usr/local/sbin/control-center-domain-post \
  /usr/local/sbin/control-center-domain-restore-prestate /usr/local/sbin/control-center-domain-destroy \
- /usr/local/sbin/control-center-samba-approve /usr/local/sbin/control-center-dns-apply \
- /usr/local/sbin/control-center-storage-apply /usr/local/sbin/control-center-dhcp-reservations-apply;do bash -n "$f";done
+ /usr/local/sbin/control-center-samba-approve /usr/local/sbin/control-center-samba-package-guard \
+ /usr/local/sbin/control-center-dns-apply /usr/local/sbin/control-center-storage-apply \
+ /usr/local/sbin/control-center-dhcp-reservations-apply;do bash -n "$f";done
 python3 -m py_compile /usr/local/sbin/control-center-authd
 if command -v node >/dev/null 2>&1;then
  node --check "$ROOT/app/static/release-111.js" >/dev/null
  node --check "$ROOT/app/static/release-111-services.js" >/dev/null
  node --check "$ROOT/app/static/release-111-ui-fix.js" >/dev/null
  node --check "$ROOT/app/static/release-111-login.js" >/dev/null
+ node --check "$ROOT/app/static/release-111-compliance.js" >/dev/null
+ grep -Fq 'DHCP_CLIENTS_PAGE_SIZE_COMPLIANCE111 = 10' "$ROOT/app/static/release-111-compliance.js"
+ grep -Fq "'release-111-compliance.js'" "$ROOT/app/release_111_services_assets.py"
 fi
 
 test -z "$(dpkg --audit 2>&1||true)"
