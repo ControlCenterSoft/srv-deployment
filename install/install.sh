@@ -24,8 +24,9 @@ PY
 chmod 0755 "$TMP"
 CONTROL_CENTER_RELEASE_ROOT="$ROOT_DIR" bash "$TMP" "$@"
 
-# Portal authentication runtime. PAM is used only for local Linux users; domain
-# authentication is enabled automatically after Samba AD-DC provisioning.
+# Portal authentication runtime. The Web process never reads /etc/shadow and
+# never joins winbindd_priv: password verification is delegated over a local
+# root-owned Unix socket to control-center-authd.
 export DEBIAN_FRONTEND=noninteractive
 exec 9>/run/control-center-apt.lock
 flock -w 900 9 || { echo 'Менеджер пакетов занят.' >&2; exit 75; }
@@ -34,8 +35,6 @@ apt-get install -y pamtester
 flock -u 9
 
 groupadd -f control-center-admins
-# Grant portal admin rights to existing human sudo/wheel users. Never enable root
-# as a Web identity and never create a default password.
 while IFS=: read -r user _ uid _; do
   [[ "$uid" =~ ^[0-9]+$ ]] || continue
   (( uid >= 1000 )) || continue
@@ -61,7 +60,7 @@ if [[ ! -s "$AUTH_ENV" ]] || ! grep -Eq '^CONTROL_CENTER_SESSION_SECRET=[0-9a-f]
 fi
 chown root:control-center "$AUTH_ENV"; chmod 0640 "$AUTH_ENV"
 
-# Privileged helpers.
+install -m 0755 "$ROOT_DIR/system/control-center-authd" /usr/local/sbin/control-center-authd
 install -m 0755 "$ROOT_DIR/system/control-center-web-run" /usr/local/sbin/control-center-web-run
 install -m 0755 "$ROOT_DIR/system/control-center-web-apply" /usr/local/sbin/control-center-web-apply
 install -m 0755 "$ROOT_DIR/system/control-center-hostname-apply" /usr/local/sbin/control-center-hostname-apply
@@ -70,7 +69,6 @@ install -m 0755 "$ROOT_DIR/system/control-center-domain-pre" /usr/local/sbin/con
 install -m 0755 "$ROOT_DIR/system/control-center-domain-post" /usr/local/sbin/control-center-domain-post
 install -m 0755 "$ROOT_DIR/system/control-center-domain-restore-prestate" /usr/local/sbin/control-center-domain-restore-prestate
 install -m 0755 "$ROOT_DIR/system/control-center-domain-orchestrate" /usr/local/sbin/control-center-domain-orchestrate
-# Compatibility command name: this is the orchestrator, not the destructive core.
 install -m 0755 "$ROOT_DIR/system/control-center-domain-orchestrate" /usr/local/sbin/control-center-samba-apply
 install -m 0755 "$ROOT_DIR/system/control-center-domain-destroy" /usr/local/sbin/control-center-domain-destroy
 install -m 0755 "$ROOT_DIR/system/control-center-samba-approve" /usr/local/sbin/control-center-samba-approve
@@ -81,17 +79,15 @@ install -m 0755 "$ROOT_DIR/market/control-center-dns-apply" /usr/local/sbin/cont
 install -m 0755 "$ROOT_DIR/market/control-center-storage-apply" /usr/local/sbin/control-center-storage-apply
 install -m 0755 "$ROOT_DIR/market/control-center-dhcp-reservations-apply" /usr/local/sbin/control-center-dhcp-reservations-apply
 
-# Runtime secrets live only under /run (tmpfs).
 cat >/etc/tmpfiles.d/control-center.conf <<'TMPFILES'
 d /run/control-center 0700 control-center control-center -
 d /run/control-center-root 0700 root root -
+d /run/control-center-auth 0750 root control-center -
 TMPFILES
 chmod 0644 /etc/tmpfiles.d/control-center.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/control-center.conf
-rm -f /run/control-center/samba-provision.json /run/control-center/domain-remove.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* /run/control-center-root/samba-packages-before.tsv /run/control-center-root/samba-time-services-before.tsv 2>/dev/null || true
+rm -f /run/control-center/samba-provision.json /run/control-center/domain-remove.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* /run/control-center-root/samba-packages-before.tsv /run/control-center-root/samba-time-services-before.tsv /run/control-center-auth/auth.sock 2>/dev/null || true
 
-# DHCP reservations have their own generated file so lease configuration and
-# reservations can be validated/rolled back independently.
 install -d -m 0755 /etc/dnsmasq.d
 if [[ ! -e /etc/dnsmasq.d/control-center-dhcp-reservations.conf ]]; then
   printf '# Managed by Control Center DHCP reservations\n' >/etc/dnsmasq.d/control-center-dhcp-reservations.conf
@@ -113,11 +109,37 @@ CONTROL_CENTER_KEY=$KEY
 EOF
 chown root:root /etc/control-center/web.env; chmod 0600 /etc/control-center/web.env
 
+cat >/etc/systemd/system/control-center-authd.service <<'UNIT'
+[Unit]
+Description=Control Center isolated local/domain authentication daemon
+After=local-fs.target
+Before=control-center.service
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/sbin/control-center-authd
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/run/control-center-auth
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/samba /etc/pam.d /etc/passwd /etc/group /etc/shadow
+[Install]
+WantedBy=multi-user.target
+UNIT
 cat >/etc/systemd/system/control-center.service <<'UNIT'
 [Unit]
 Description=Control Center web interface
-After=network-online.target postgresql.service
-Wants=network-online.target postgresql.service
+After=network-online.target postgresql.service control-center-authd.service
+Wants=network-online.target postgresql.service control-center-authd.service
 [Service]
 Type=simple
 User=control-center
@@ -296,6 +318,7 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
+systemctl enable --now control-center-authd.service
 systemctl enable --now control-center-hostname-apply.path
 systemctl enable --now control-center-samba-apply.path
 systemctl enable --now control-center-domain-destroy.path
@@ -304,7 +327,6 @@ systemctl enable --now control-center-storage-apply.path
 systemctl enable --now control-center-dhcp-reservations-apply.path
 systemctl enable control-center-db-migrate.service
 systemctl restart control-center-db-migrate.service || true
-# Restart existing DHCP so reservation file becomes part of its runtime config.
 if systemctl is-active --quiet control-center-dhcp-server.service; then systemctl restart control-center-dhcp-server.service; fi
 systemctl restart control-center
 
@@ -312,8 +334,10 @@ SCHEME=http; CURL=(-fsS --max-time 3)
 if [[ "$SSL" == 1 || "$SSL" == true ]]; then SCHEME=https; CURL=(-kfsS --max-time 3); fi
 for _ in $(seq 1 25); do if curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi; sleep 1; done
 curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null
+systemctl is-active --quiet control-center-authd.service
+test -S /run/control-center-auth/auth.sock
+test "$(stat -c '%U:%G %a' /run/control-center-auth/auth.sock)" = 'root:control-center 660'
 
-# Privileged runtime must be syntactically valid before declaring installer success.
 for f in \
   /usr/local/sbin/control-center-samba-apply-core \
   /usr/local/sbin/control-center-samba-apply \
@@ -328,10 +352,12 @@ for f in \
   /usr/local/sbin/control-center-dhcp-reservations-apply; do
   bash -n "$f"
 done
+python3 -m py_compile /usr/local/sbin/control-center-authd
 
 echo 'Control Center 1.0.11 build 20260819.5 установлен.'
 echo "Web UI: $SCHEME://SERVER:$PORT"
-echo 'Авторизация: локальные PAM-пользователи; после создания Домена — Local + Domain.'
+echo 'Авторизация: локальные PAM-пользователи через изолированный auth daemon; после создания Домена — Local + Domain.'
+echo 'Локальные администраторы портала: группа control-center-admins. Root через Web запрещён.'
 echo 'Маркет: Домен, DNS и Сетевое хранилище активированы; DHCP поддерживает список клиентов и IP-бронирования.'
 echo 'Перед созданием Домена: sudo control-center-samba-approve'
 echo 'Перед удалением Домена: sudo control-center-samba-approve --remove'
