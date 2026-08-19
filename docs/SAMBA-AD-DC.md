@@ -1,52 +1,154 @@
-# Samba AD-DC — подготовка Control Center 1.0.10
+# Samba AD-DC — Control Center 1.0.11
 
 ## Статус
 
-Control Center 1.0.10 — последний подготовительный этап перед включением production provisioning в следующем релизе.
+В Control Center 1.0.11 активирован production lifecycle для **создания нового первичного Samba Active Directory Domain Controller**.
 
-В **1.0.10 установка Samba и `samba-tool domain provision` намеренно отключены**. Релиз выполняет только чтение состояния, readiness, формирование dry-run change plan и сохранение результатов.
+1.0.11 поддерживает provisioning нового домена. Автоматическое уничтожение домена, переименование активного DC и перенос DC на другой IP/interface в этот релиз не входят.
 
-Целевой релиз включения provisioning: **1.0.11**.
+## Требования
 
-## PostgreSQL
+Перед provisioning:
 
-Migration `002` сохраняется неизменной и содержит базовые таблицы:
+- выбранная WAN/LAN роль должна быть включена;
+- роль должна использовать Static IPv4;
+- LAN предпочтительна;
+- WAN требует отдельного подтверждения;
+- время сервера должно быть синхронизировано;
+- production Samba packages должны быть доступны в APT;
+- необходимо минимум 2 GiB свободного места;
+- Realm должен быть полноценным DNS-доменом, не `.local`;
+- NetBIOS domain: 1–15 символов;
+- должен быть указан внешний IPv4 DNS forwarder.
 
-```text
-control_center.ad_dc_profiles
-control_center.ad_dc_nodes
-control_center.ad_dc_preflight_runs
-```
-
-Migration `003_samba_ad_dc_readiness.sql` добавляет:
-
-```text
-control_center.ad_dc_readiness_runs
-control_center.ad_dc_change_plans
-```
-
-и дополнительные поля readiness/planning в `ad_dc_profiles`.
-
-Секрет Administrator, Kerberos keys и другие секреты в этих таблицах не сохраняются.
-
-## Readiness API
+## Readiness
 
 ```text
-GET/POST /api/samba/readiness
+POST /api/samba/readiness
 ```
 
-Проверки разделены на **blocker** и **warning**.
+Проверяются:
 
-### Blocker
+- hostname и целевой FQDN;
+- Realm/NetBIOS;
+- Static IPv4 выбранной роли;
+- NTP/time sync;
+- Samba/Kerberos/Chrony packages;
+- свободное место;
+- текущие listeners 53/88/389/445;
+- существующий `/etc/samba/smb.conf`;
+- UFW state;
+- DNS forwarder.
 
-- DNS-совместимое имя компьютера;
-- полноценный FQDN, не `.local`;
-- минимум один активный статический IPv4 на WAN или LAN;
-- подтверждённая синхронизация времени;
-- доступность обязательных APT-пакетов;
-- минимум 2 GiB свободного места на `/`.
+Если обнаружена внешняя Samba-конфигурация, provisioning блокируется до явного разрешения на backup и замену.
 
-Обязательные пакеты readiness:
+## Production plan
+
+```text
+POST /api/samba/plan
+```
+
+План описывает:
+
+1. target Realm/FQDN/interface/IP;
+2. backup;
+3. package installation;
+4. service cutover;
+5. Samba domain provision;
+6. Kerberos/resolver cutover;
+7. signed NTP;
+8. DHCP DNS integration;
+9. acceptance;
+10. rollback.
+
+## Локальное подтверждение
+
+Provisioning является root/high-impact операцией. Пока встроенная Web-аутентификация панели не завершена, одного Web POST недостаточно.
+
+На сервере выполните:
+
+```bash
+sudo control-center-samba-approve
+```
+
+Команда создаёт одноразовый 8-символьный код. Хранится только SHA-256 кода:
+
+```text
+/run/control-center-root/samba-approval.json
+```
+
+Свойства:
+
+- TTL 10 минут;
+- one-time use;
+- root-only 0600;
+- файл удаляется после попытки проверки.
+
+## Пароль Domain Administrator
+
+Пароль Administrator:
+
+- проверяется Web API и повторно privileged worker;
+- 12–128 печатных символов;
+- минимум 3 категории: lowercase/uppercase/digits/symbols;
+- не хранится в PostgreSQL;
+- не хранится в `/var/lib/control-center*`;
+- не передаётся через `--adminpass` в process argv;
+- secret request создаётся только в `/run/control-center/samba-provision.json` и удаляется worker сразу после чтения;
+- для `smbclient` acceptance создаётся временный root-only auth file под `/run`, который удаляется после проверки.
+
+## Root worker
+
+Privileged worker:
+
+```text
+/usr/local/sbin/control-center-samba-apply
+control-center-samba-apply.path
+control-center-samba-apply.service
+```
+
+Перед изменением системы worker повторно проверяет:
+
+- job ID;
+- Realm;
+- NetBIOS domain;
+- interface/role;
+- IPv4/prefix/network;
+- DNS forwarder;
+- password policy;
+- WAN approval;
+- one-time local approval;
+- наличие фактического Static IPv4 на выбранном интерфейсе.
+
+## Backup
+
+До package/service/config changes создаётся:
+
+```text
+/var/lib/control-center-root/samba-backups/<job-id>/pre-provision.tar.gz
+/var/lib/control-center-root/samba-backups/<job-id>/manifest.json
+```
+
+В backup при наличии входят:
+
+```text
+/etc/samba
+/var/lib/samba
+/var/cache/samba
+/etc/krb5.conf
+/etc/resolv.conf
+/etc/hosts
+/etc/systemd/resolved.conf
+/etc/chrony
+/var/lib/control-center-system/dhcp-config.json
+/etc/dnsmasq.d/control-center-dhcp.conf
+```
+
+Manifest также хранит исходное active/enabled состояние затрагиваемых systemd units.
+
+## Package installation
+
+Worker устанавливает:
 
 ```text
 samba
@@ -57,122 +159,130 @@ krb5-user
 dnsutils
 acl
 attr
+smbclient
+chrony
 ```
 
-### Warning / будущий cutover
+Во время APT используется временный `policy-rc.d`, чтобы Samba/Chrony services не стартовали до управляемого cutover.
 
-Проверяются текущие listeners:
+## Domain provisioning
+
+Используется:
 
 ```text
-53   DNS
-88   Kerberos
-389  LDAP
-445  SMB
+server role: dc
+dns backend: SAMBA_INTERNAL
+use-rfc2307: enabled
+interfaces: lo + выбранный interface
+bind interfaces only: yes
 ```
 
-Наличие listener не всегда блокирует подготовку, но обязательно входит в план cutover/rollback.
+Realm, NetBIOS domain, DNS forwarder и сетевой интерфейс передаются как явные параметры. Administrator password вводится через stdin interactive provisioning и не появляется в argv.
 
-Дополнительно фиксируются:
+До provisioning distro-generated `/etc/samba/smb.conf` удаляется из рабочего пути после backup.
 
-- `systemd-resolved`;
-- Control Center DHCP/dnsmasq;
-- фактическая цель `/etc/resolv.conf`;
-- существующий `/etc/samba/smb.conf`;
-- установленная версия Samba;
-- активные WAN/LAN роли.
+## DNS и resolver
 
-## Dry-run plan
+После успешного provision:
 
 ```text
-GET/POST /api/samba/plan
-```
-
-API не изменяет Samba/DNS/Kerberos. Он формирует воспроизводимый change plan и SHA-256 плана.
-
-План содержит:
-
-1. обязательный набор пакетов;
-2. выбранную сетевую роль и planned IPv4;
-3. DNS backend `SAMBA_INTERNAL`;
-4. список backup targets;
-5. порядок service cutover;
-6. порядок rollback;
-7. acceptance-команды.
-
-Backup targets перед будущим provisioning:
-
-```text
-/etc/samba
-/etc/krb5.conf
 /etc/resolv.conf
-/etc/netplan/90-control-center.yaml
-/var/lib/samba
+search <realm-lower>
+nameserver <AD-DC IPv4>
 ```
 
-## План acceptance для 1.0.11
+Внешние DNS-запросы отправляет Samba Internal DNS через настроенный `dns forwarder`.
 
-После будущего provisioning должны пройти минимум:
+Доменным клиентам нельзя напрямую раздавать публичные DNS вместо AD DNS, иначе SRV discovery LDAP/Kerberos становится ненадёжным.
+
+## DHCP integration
+
+Если Control Center DHCP обслуживает тот же interface, worker автоматически заменяет DHCP DNS на:
 
 ```text
-samba-tool domain info
-samba-tool drs showrepl
-kinit Administrator
-host -t SRV _ldap._tcp
-host -t SRV _kerberos._udp
-smbclient -L localhost
-timedatectl NTPSynchronized=yes
+<AD-DC IPv4>
 ```
 
-До прохождения этих проверок AD-DC не должен считаться успешно опубликованным.
+После активации DC API запрещает сохранить на этом DHCP interface другой DNS list. Внешние DNS остаются только Samba forwarders.
 
-## Поддержка одной сетевой роли
+## Signed NTP
 
-1.0.10 допускает работу Control Center:
+Chrony настраивается с:
 
-- WAN + LAN;
-- только WAN;
-- только LAN.
+```text
+allow <AD network>
+ntpsigndsocket /var/lib/samba/ntp_signd
+```
 
-Readiness AD-DC выбирает LAN как предпочтительную статическую роль. Если LAN выключен, допускается единственная статическая WAN-роль — метка роли не должна искусственно блокировать одноинтерфейсный сервер.
+`/var/lib/samba/ntp_signd` получает доступ группы `_chrony` (fallback `chrony`) и mode 0750.
 
-## Имя компьютера
+## Acceptance
 
-В **Настройки → Имя компьютера** можно изменить hostname перед будущим provisioning. Разрешено single-label DNS-совместимое имя длиной 1–63 символа: латинские буквы, цифры и дефис.
-
-Изменение выполняется отдельным root-helper с backup `/etc/hostname`, `/etc/hosts` и rollback.
-
-## Почему provisioning отключён
-
-Provisioning AD-DC меняет критические компоненты сервера: DNS, Kerberos, LDAP, SMB, resolver, Samba database и SYSVOL. Поэтому 1.0.10 не содержит скрытого или экспериментального вызова `samba-tool domain provision`.
-
-1.0.11 должен добавить provisioning только вместе с:
-
-- отдельным privileged lifecycle worker;
-- секретом Administrator без plaintext в PostgreSQL;
-- backup до первого изменения;
-- DNS/resolver cutover;
-- rollback;
-- automated acceptance;
-- Market lifecycle status и уведомлениями.
-
-## Диагностика
-
-При HTTP:
+Provisioning считается успешным только после всех проверок:
 
 ```bash
-PORT=$(sudo sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
-curl -fsS "http://127.0.0.1:${PORT}/api/samba/readiness" | python3 -m json.tool
-curl -fsS -X POST "http://127.0.0.1:${PORT}/api/samba/plan" | python3 -m json.tool
+samba-tool testparm
+samba-tool ntacl sysvolcheck
+samba-tool domain info <AD-IP>
+samba-tool drs showrepl --summary
+host -t A <DC-FQDN> <AD-IP>
+host -t SRV _ldap._tcp.<realm> <AD-IP>
+host -t SRV _kerberos._udp.<realm> <AD-IP>
+kinit Administrator@REALM
+smbclient -L //<DC-FQDN>
 ```
 
-При self-signed HTTPS используйте `https://` и `curl -k`.
+## Health API
 
-PostgreSQL history:
-
-```bash
-sudo -u control-center psql -d control_center -c \
-  'select id,created_at,hostname,fqdn,ready,blockers,warnings from control_center.ad_dc_readiness_runs order by id desc limit 10;'
-
-sudo -u control-center psql -d control_center -c \
-  'select plan_id,state,checksum,created_at from control_center.ad_dc_change_plans order by created_at desc limit 10;'
+```text
+GET/POST /api/samba/health
 ```
+
+Проверяется service state, domain info, replication, DNS A/SRV и SYSVOL ACL. Результаты сохраняются в:
+
+```text
+control_center.ad_dc_health_runs
+```
+
+и обновляют `health_state` профиля.
+
+## PostgreSQL migration 004
+
+Добавлены:
+
+```text
+control_center.ad_dc_lifecycle_jobs
+control_center.ad_dc_health_runs
+```
+
+`ad_dc_profiles` расширен полями interface/IP/forwarder/managed/provisioned/health.
+
+В lifecycle request сохраняются только публичные параметры. Administrator password и approval code туда не записываются.
+
+## Защита активного DC
+
+После успешного provisioning Control Center блокирует обычными endpoints:
+
+- hostname rename;
+- выключение роли DC;
+- смену interface DC;
+- смену IPv4/prefix DC;
+- раздачу внешнего DNS через Control Center DHCP на DC interface.
+
+Для изменения этих параметров потребуется отдельный AD migration lifecycle.
+
+## Rollback
+
+При ошибке worker:
+
+1. прекращает generated Samba/Chrony runtime;
+2. удаляет незавершённый generated Samba state;
+3. восстанавливает archive;
+4. возвращает исходные systemd service states;
+5. возвращает Control Center DHCP config/service;
+6. удаляет managed module marker;
+7. записывает `rollback` в status/DB/колокольчик.
+
+## Удаление Control Center
+
+Автоматическое уничтожение AD domain в 1.0.11 запрещено. Если managed DC активен, обычный uninstall с удалением application data блокируется. Используйте `--keep-data`, если необходимо удалить панель, сохранив состояние управления. Samba database/SYSVOL автоматически не удаляются.
