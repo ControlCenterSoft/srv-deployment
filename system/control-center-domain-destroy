@@ -73,7 +73,8 @@ printf 'CONTROL_CENTER_SESSION_SECRET=%s\n' "$SECRET" >"$AUTH_ENV";chown root:co
 systemctl restart control-center.service >/dev/null 2>&1||true
 
 AUDIT="$AUDITS/domain-$TS.json"
-python3 - "$AUDIT" "$REC" <<'PY'
+RC=0
+python3 - "$AUDIT" "$REC" <<'PY' || RC=$?
 import hashlib,json,os,subprocess,sys,time
 p,recovery=sys.argv[1:]
 ctx_path=os.path.join(recovery,'domain-install-context.json')
@@ -113,7 +114,6 @@ checks={
  'recovery_backup_present':os.path.exists(os.path.join(recovery,'domain-before-destroy.tar.gz')),
  'prestate_fingerprints_match':all(x['match'] for x in fingerprints.values()),
 }
-# When Samba state did not exist before Domain creation, AD DB/SYSVOL must be gone.
 if expected.get('/var/lib/samba') is None:
  checks['generated_sam_ldb_removed']=not os.path.exists('/var/lib/samba/private/sam.ldb')
  checks['generated_sysvol_removed']=not os.path.exists('/var/lib/samba/sysvol')
@@ -125,11 +125,7 @@ with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n'
 os.chmod(p,0o640)
 raise SystemExit(0 if clean else 2)
 PY
-RC=$?;chown root:control-center "$AUDIT"
-
-# Context is removed only after the exact-state audit has consumed its copy.
-[[ -n "$PREBACKUP" && "$PREBACKUP" == "$ROOT"/samba-backups/* ]]&&rm -rf "$PREBACKUP"||true
-rm -rf "$CTX_DIR";rm -f "$CTX"
+chown root:control-center "$AUDIT"
 
 if [[ -x /opt/control-center/venv/bin/python ]];then
   runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" /opt/control-center/venv/bin/python - "$AUDIT" <<'PY' >/dev/null 2>&1 || true
@@ -141,5 +137,14 @@ with database.connect() as c:c.execute('INSERT INTO control_center.service_clean
 PY
 fi
 
-if [[ $RC -ne 0 ]];then status error 'Домен удалён, но cleanup-audit обнаружил отличие от исходного состояния' "$AUDIT";exit 1;fi
+if [[ $RC -ne 0 ]];then
+  status error 'Домен удалён, но cleanup-audit обнаружил отличие от исходного состояния' "$AUDIT"
+  # Keep install-context and original pre-provision backup when cleanup is not exact.
+  # They are required for manual recovery and forensic comparison.
+  exit 1
+fi
+
+# Context is removed only after an exact-state cleanup audit has passed.
+[[ -n "$PREBACKUP" && "$PREBACKUP" == "$ROOT"/samba-backups/* ]]&&rm -rf "$PREBACKUP"||true
+rm -rf "$CTX_DIR";rm -f "$CTX"
 status removed "Домен $REALM удалён. Состояние до установки восстановлено." "Cleanup-audit PASSED · recovery: $REC"
