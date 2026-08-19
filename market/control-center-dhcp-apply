@@ -43,7 +43,7 @@ status applying 'Проверка и применение DHCP конфигур�
 WAS_ACTIVE=0
 systemctl is-active --quiet "$RUNTIME" && WAS_ACTIVE=1 || true
 [[ -f "$TARGET" ]] && cp -a "$TARGET" "$BACKUP" || rm -f "$BACKUP"
-TMP=$(mktemp /etc/netplan/../dnsmasq.d/control-center-dhcp.conf.XXXXXX 2>/dev/null || mktemp /etc/dnsmasq.d/control-center-dhcp.conf.XXXXXX)
+TMP=$(mktemp /etc/dnsmasq.d/control-center-dhcp.conf.XXXXXX)
 cleanup(){ rm -f "$TMP"; }
 trap cleanup EXIT
 if ! python3 - "$PENDING" "$TMP" <<'PY'
