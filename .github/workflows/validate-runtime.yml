@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   runtime:
     runs-on: ubuntu-latest
@@ -70,6 +74,7 @@ jobs:
           import json,sys
           assert json.loads(sys.argv[1])['status']=='pending'
           PY
+          CODE=''
           for _ in $(seq 1 120); do
             M=$(curl -fsS http://127.0.0.1:8080/api/market)
             CODE=$(python3 - "$M" <<'PY'
@@ -89,9 +94,9 @@ jobs:
           import json,sys
           assert json.loads(sys.argv[1])['status']=='pending'
           PY
+          STATE=''
           for _ in $(seq 1 60); do
             S=$(sudo cat /var/lib/control-center-system/dhcp-status.json 2>/dev/null || echo '{}')
-            STATE=$(python3 - "$S" -c '' 2>/dev/null || true)
             STATE=$(python3 - "$S" <<'PY'
           import json,sys
           try: print(json.loads(sys.argv[1]).get('state',''))
@@ -143,6 +148,7 @@ jobs:
           j=json.loads(sys.argv[1]);assert j['status']=='pending';print(j['job_id'])
           PY
           )
+          STATE=''
           for _ in $(seq 1 300); do
             S=$(curl -fsS http://127.0.0.1:8080/api/samba/status || echo '{}')
             STATE=$(python3 - "$S" <<'PY'
@@ -198,7 +204,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo cat /var/lib/control-center-system/dhcp-config.json
-          python3 - <<'PY'
+          sudo python3 - <<'PY'
           import json
           j=json.load(open('/var/lib/control-center-system/dhcp-config.json'));assert j['interface']=='ccad0' and j['dns']==['10.77.11.1']
           PY
@@ -206,10 +212,11 @@ jobs:
           CODE=$(curl -sS -o /tmp/hostname-guard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"hostname":"renamed-dc"}' http://127.0.0.1:8080/api/settings/hostname)
           set -e
           [[ "$CODE" == 409 ]]; cat /tmp/hostname-guard.json
+          PRIMARY_IF=$(ip route show default | awk '{print $5;exit}')
           set +e
-          CODE=$(curl -sS -o /tmp/network-guard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"lan":{"enabled":false,"method":"disabled"},"wan":{"enabled":true,"interface":"eth0","method":"dhcp"}}' http://127.0.0.1:8080/api/network/config)
+          CODE=$(curl -sS -o /tmp/network-guard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data "{\"lan\":{\"enabled\":false,\"method\":\"disabled\"},\"wan\":{\"enabled\":true,\"interface\":\"$PRIMARY_IF\",\"method\":\"dhcp\"}}" http://127.0.0.1:8080/api/network/config)
           set -e
-          [[ "$CODE" == 409 || "$CODE" == 400 ]]; cat /tmp/network-guard.json
+          [[ "$CODE" == 409 ]]; cat /tmp/network-guard.json
           set +e
           CODE=$(curl -sS -o /tmp/dhcp-guard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"interface":"ccad0","range_start":"10.77.11.100","range_end":"10.77.11.150","mask":24,"gateway":"10.77.11.1","dns":["1.1.1.1"],"lease_minutes":720,"extra_options":[]}' http://127.0.0.1:8080/api/dhcp/config)
           set -e
