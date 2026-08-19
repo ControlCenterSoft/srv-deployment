@@ -95,19 +95,34 @@ Unit=control-center-hostname-apply.service
 [Install]
 WantedBy=multi-user.target
 UNIT
+cat >/etc/systemd/system/control-center-db-migrate.service <<'UNIT'
+[Unit]
+Description=Control Center PostgreSQL schema migration
+After=postgresql.service
+Wants=postgresql.service
+[Service]
+Type=oneshot
+User=control-center
+Group=control-center
+EnvironmentFile=-/etc/control-center/database.env
+ExecStart=/opt/control-center/venv/bin/python /opt/control-center/app/db_migrate.py
+Restart=on-failure
+RestartSec=30s
+[Install]
+WantedBy=multi-user.target
+UNIT
 
 systemctl daemon-reload
 systemctl enable --now control-center-hostname-apply.path
+systemctl enable control-center-db-migrate.service
+# Apply migration 003 immediately when PostgreSQL is healthy. If it is down,
+# Restart=on-failure keeps retrying until the database becomes available.
+systemctl restart control-center-db-migrate.service || true
 systemctl restart control-center
 SCHEME=http; CURL=(-fsS --max-time 3)
 if [[ "$SSL" == 1 || "$SSL" == true ]]; then SCHEME=https; CURL=(-kfsS --max-time 3); fi
 for _ in $(seq 1 20); do if curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi; sleep 1; done
 curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null
-
-# Migrations are idempotent; run once more after the release payload is live to
-# guarantee that 003 is present even on servers upgraded from early 1.0.9 builds.
-runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" \
-  /opt/control-center/venv/bin/python /opt/control-center/app/db_migrate.py --dir /opt/control-center/app/migrations || true
 
 echo 'Control Center 1.0.10 build 20260819.4 установлен.'
 echo "Web UI: $SCHEME://SERVER:$PORT"
