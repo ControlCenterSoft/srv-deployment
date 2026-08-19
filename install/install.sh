@@ -29,17 +29,18 @@ install -m 0755 "$ROOT_DIR/system/control-center-web-apply" /usr/local/sbin/cont
 install -m 0755 "$ROOT_DIR/system/control-center-hostname-apply" /usr/local/sbin/control-center-hostname-apply
 install -m 0755 "$ROOT_DIR/system/control-center-samba-apply" /usr/local/sbin/control-center-samba-apply
 install -m 0755 "$ROOT_DIR/system/control-center-samba-approve" /usr/local/sbin/control-center-samba-approve
+install -m 0755 "$ROOT_DIR/system/control-center-samba-package-guard" /usr/local/sbin/control-center-samba-package-guard
 install -m 0755 "$ROOT_DIR/network/control-center-network-apply" /usr/local/sbin/control-center-network-apply
 install -m 0755 "$ROOT_DIR/market/control-center-dhcp-apply" /usr/local/sbin/control-center-dhcp-apply
 
-# Samba secrets are intentionally held only under /run (tmpfs on Ubuntu).
+# Samba secrets and the temporary package snapshot live only under /run.
 cat >/etc/tmpfiles.d/control-center.conf <<'TMPFILES'
 d /run/control-center 0700 control-center control-center -
 d /run/control-center-root 0700 root root -
 TMPFILES
 chmod 0644 /etc/tmpfiles.d/control-center.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/control-center.conf
-rm -f /run/control-center/samba-provision.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* 2>/dev/null || true
+rm -f /run/control-center/samba-provision.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* /run/control-center-root/samba-packages-before.tsv 2>/dev/null || true
 
 OLD_PORT="$(printf '%s\n' "$OLD_WEB_ENV" | sed -n 's/^CONTROL_CENTER_PORT=//p' | head -1)"
 PORT="${OLD_PORT:-$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env 2>/dev/null | head -1)}"; PORT="${PORT:-8080}"
@@ -114,7 +115,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/control-center/database.env
+ExecStartPre=/usr/local/sbin/control-center-samba-package-guard snapshot
 ExecStart=/usr/local/sbin/control-center-samba-apply
+ExecStopPost=/usr/local/sbin/control-center-samba-package-guard restore $SERVICE_RESULT
 TimeoutStartSec=45min
 UNIT
 cat >/etc/systemd/system/control-center-samba-apply.path <<'UNIT'
@@ -154,9 +157,10 @@ if [[ "$SSL" == 1 || "$SSL" == true ]]; then SCHEME=https; CURL=(-kfsS --max-tim
 for _ in $(seq 1 20); do if curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi; sleep 1; done
 curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null
 
-# Root worker must be syntactically valid before declaring installer success.
+# Privileged runtime must be syntactically valid before declaring installer success.
 bash -n /usr/local/sbin/control-center-samba-apply
 bash -n /usr/local/sbin/control-center-samba-approve
+bash -n /usr/local/sbin/control-center-samba-package-guard
 
 echo 'Control Center 1.0.11 build 20260819.5 установлен.'
 echo "Web UI: $SCHEME://SERVER:$PORT"
