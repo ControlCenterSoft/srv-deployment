@@ -16,6 +16,8 @@ import release_111
 import release_111_guard
 import release_111_safety
 import release_111_notifications
+import release_111_services
+import release_111_auth
 
 app = main.app
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
@@ -51,6 +53,8 @@ release_111.register(app, main)
 release_111_guard.register(app, main)
 release_111_safety.register(app, main)
 release_111_notifications.register(app, main)
+release_111_services.register(app, main)
+release_111_auth.register(app, main)
 
 
 @app.before_request
