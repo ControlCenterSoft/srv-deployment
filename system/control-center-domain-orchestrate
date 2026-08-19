@@ -254,13 +254,26 @@ PY
   fi
 fi
 
-rc=0
-env KRB5CCNAME="FILE:$CACHE" /usr/bin/smbclient --use-kerberos=required --use-krb5-ccache="$CACHE" "${out[@]}"||rc=$?
-if [[ $rc -eq 0 ]];then
-  echo 'CONTROL_CENTER_ACCEPT: SMB Kerberos smbclient OK' >&2
-else
-  echo "CONTROL_CENTER_ACCEPT: SMB Kerberos smbclient FAILED rc=$rc" >&2
-fi
+# systemd can report samba-ad-dc active before the embedded SMB server has
+# finished rebinding TCP/445 after the compatibility restart above. Treat
+# connection-refused during that short window as readiness, not as a failed
+# domain provision. We still require a real Kerberos-authenticated smbclient
+# success; no acceptance criterion is bypassed.
+tmp="$(mktemp /tmp/control-center-samba-smb-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
+rc=1
+for attempt in $(seq 1 45);do
+  env KRB5CCNAME="FILE:$CACHE" /usr/bin/smbclient --use-kerberos=required --use-krb5-ccache="$CACHE" "${out[@]}" >"$tmp" 2>&1
+  rc=$?
+  if [[ $rc -eq 0 ]];then
+    cat "$tmp"
+    echo "CONTROL_CENTER_ACCEPT: SMB Kerberos smbclient OK attempt=$attempt" >&2
+    exit 0
+  fi
+  systemctl is-active --quiet samba-ad-dc.service||break
+  sleep 1
+done
+echo "CONTROL_CENTER_ACCEPT: SMB Kerberos smbclient FAILED after readiness retries rc=$rc" >&2
+cat "$tmp" >&2
 exit "$rc"
 SH
   chmod 0700 "$KRB_SHIM/kinit" "$KRB_SHIM/klist" "$KRB_SHIM/kdestroy" "$KRB_SHIM/samba-tool" "$KRB_SHIM/host" "$KRB_SHIM/smbclient"
