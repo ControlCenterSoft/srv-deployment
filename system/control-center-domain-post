@@ -32,18 +32,21 @@ PY
 install -d -m 0750 "$(dirname "$DATA")"
 install -d -m 0770 "$DATA"
 cp -a "$SMB" "$ROOT/smb.conf.domain-post.rollback"
-python3 - "$SMB" "$SHARE" "$DATA" <<'PY'
+python3 - "$SMB" "$SHARE" "$DATA" "$DOMAIN" <<'PY'
 from pathlib import Path
 import sys
-p=Path(sys.argv[1]);name,path=sys.argv[2:];text=p.read_text(errors='replace');b='\n# BEGIN CONTROL CENTER STORAGE\n';e='# END CONTROL CENTER STORAGE\n'
+p=Path(sys.argv[1]);name,path,domain=sys.argv[2:];text=p.read_text(errors='replace');b='\n# BEGIN CONTROL CENTER STORAGE\n';e='# END CONTROL CENTER STORAGE\n'
 if b in text and e in text:text=text.split(b,1)[0]+text.split(e,1)[1]
-block=f'''\n# BEGIN CONTROL CENTER STORAGE\n[{name}]\n\tpath = {path}\n\tbrowseable = yes\n\tread only = no\n\tguest ok = no\n\tinherit acls = yes\n\tmap acl inherit = yes\n\tvfs objects = acl_xattr\n\tacl_xattr:ignore system acls = yes\n# END CONTROL CENTER STORAGE\n'''
+block=f'''\n# BEGIN CONTROL CENTER STORAGE\n[{name}]\n\tpath = {path}\n\tbrowseable = yes\n\tread only = no\n\tguest ok = no\n\tvalid users = @"{domain}\\Domain Users" @"{domain}\\Domain Admins"\n\tadmin users = @"{domain}\\Domain Admins"\n\tinherit acls = yes\n\tmap acl inherit = yes\n\tvfs objects = acl_xattr\n\tacl_xattr:ignore system acls = yes\n# END CONTROL CENTER STORAGE\n'''
 p.write_text(text.rstrip()+block)
 PY
 if ! samba-tool testparm >/dev/null 2>&1;then cp -a "$ROOT/smb.conf.domain-post.rollback" "$SMB";exit 3;fi
 systemctl restart samba-ad-dc.service
 systemctl is-active --quiet samba-ad-dc.service
-# Bootstrap group used until the RBAC editor becomes authoritative.
+
+# Bootstrap administrative group for portal authorization until RBAC bindings
+# become authoritative. Authentication itself is handled by the isolated root
+# auth daemon; the Web service user never receives winbindd_priv membership.
 samba-tool group add 'Control Center Admins' --description='Control Center portal administrators' >/dev/null 2>&1 || true
 samba-tool group addmembers 'Control Center Admins' Administrator >/dev/null 2>&1 || true
 
@@ -55,7 +58,7 @@ s['dependencies']={'dns':{'required':True,'explicit_before':dexp=='1','standalon
 s['portal_auth']={'local':True,'domain':True,'admin_group':'Control Center Admins','rbac_mode':'bootstrap','auth_daemon':'control-center-authd'}
 open(sp,'w').write(json.dumps(s,ensure_ascii=False,indent=2)+'\n');os.chmod(sp,0o640)
 d={'installed':True,'provider':'samba_internal','explicit':dexp=='1','package_owned':downed=='1','dependency_by':['domain'],'interface':iface,'ipv4':ip,'forwarders':[fwd] if fwd else [],'installed_at':now,'standalone_preserved':bool(ctx.get('dns_snapshot'))}
-f={'installed':True,'provider':'samba_ad_dc','mode':'domain','explicit':fexp=='1','package_owned':fowned=='1','dependency_by':['domain'],'share_name':share,'path':path,'rbac_ready':True,'installed_at':now,'standalone_preserved':bool(ctx.get('storage_snapshot'))}
+f={'installed':True,'provider':'samba_ad_dc','mode':'domain','explicit':fexp=='1','package_owned':fowned=='1','dependency_by':['domain'],'share_name':share,'path':path,'rbac_ready':True,'access_model':'domain-users','installed_at':now,'standalone_preserved':bool(ctx.get('storage_snapshot'))}
 for p,obj in ((dp,d),(fp,f)):
  open(p,'w').write(json.dumps(obj,ensure_ascii=False,indent=2)+'\n');os.chmod(p,0o640)
 PY
@@ -66,6 +69,3 @@ for p,msg in [(sys.argv[1],f'Samba Internal DNS работает на {sys.argv[
  open(p,'w').write(json.dumps({'state':'active','message':msg,'timestamp':int(time.time())},ensure_ascii=False,indent=2)+'\n');os.chmod(p,0o640)
 PY
 chown root:control-center "$DNS_STATUS" "$STORAGE_STATUS"
-# control-center-authd is root-isolated and reads the managed domain state on
-# every login attempt; the Web process never joins winbindd_priv.
-systemctl restart control-center-authd.service >/dev/null 2>&1 || true
