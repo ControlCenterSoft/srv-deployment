@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+MODE="${1:-rollback}"
+SYSTEM=/var/lib/control-center-system
+ROOT=/var/lib/control-center-root
+SAMBA="$SYSTEM/modules/samba.json"
+DNS="$SYSTEM/modules/dns.json"
+STORAGE="$SYSTEM/modules/storage.json"
+CTX="$ROOT/domain-install-context.json"
+CTX_DIR="$ROOT/domain-install-context"
+STATUS="$SYSTEM/samba-status.json"
+[[ -s "$CTX" ]] || { echo 'Domain install context is missing' >&2;exit 2; }
+BACKUP=""
+if [[ -s "$SAMBA" ]];then BACKUP="$(python3 - "$SAMBA" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1])).get('backup_path',''))
+PY
+)";fi
+if [[ -z "$BACKUP" && -s "$STATUS" ]];then BACKUP="$(python3 - "$STATUS" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1])).get('backup_path',''))
+PY
+)";fi
+[[ -n "$BACKUP" && -s "$BACKUP/pre-provision.tar.gz" && -s "$BACKUP/manifest.json" ]] || { echo "Domain pre-provision backup is missing: $BACKUP" >&2;exit 3; }
+ARCHIVE="$BACKUP/pre-provision.tar.gz";MANIFEST="$BACKUP/manifest.json"
+
+systemctl stop samba-ad-dc.service smbd.service nmbd.service winbind.service chrony.service >/dev/null 2>&1||true
+rm -rf /etc/samba /var/lib/samba /var/cache/samba
+rm -f /etc/krb5.conf /etc/resolv.conf /etc/chrony/conf.d/control-center-ad-dc.conf
+tar -C / -xzpf "$ARCHIVE" --acls --xattrs
+systemctl daemon-reload
+python3 - "$MANIFEST" <<'PY'
+import json,subprocess,sys
+j=json.load(open(sys.argv[1]))
+for s,v in j.get('services',{}).items():
+ enabled=v.get('enabled','');active=v.get('active','')
+ if enabled=='enabled':subprocess.run(['systemctl','enable',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ elif enabled=='disabled':subprocess.run(['systemctl','disable',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ elif enabled=='masked':subprocess.run(['systemctl','mask',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ if active=='active':subprocess.run(['systemctl','start',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ else:subprocess.run(['systemctl','stop',s],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+PY
+
+rm -f "$DNS" "$STORAGE"
+if [[ -s "$CTX_DIR/dns.json" ]];then cp -a "$CTX_DIR/dns.json" "$DNS";chown root:control-center "$DNS";chmod 0640 "$DNS";fi
+if [[ -s "$CTX_DIR/storage.json" ]];then cp -a "$CTX_DIR/storage.json" "$STORAGE";chown root:control-center "$STORAGE";chmod 0640 "$STORAGE";fi
+UNBOUND_ACTIVE="$(python3 - "$CTX" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print('1' if j.get('unbound_active') else '0')
+PY
+)"
+if [[ "$UNBOUND_ACTIVE" == 1 && -s /etc/unbound/unbound.conf.d/control-center.conf ]];then systemctl enable --now unbound.service >/dev/null 2>&1||true;fi
+if getent group winbindd_priv >/dev/null 2>&1;then gpasswd -d control-center winbindd_priv >/dev/null 2>&1||true;fi
+
+# Remove only direct packages that were absent before Domain provisioning and are
+# not required by a restored standalone Storage service.
+STORAGE_RESTORED=0;[[ -s "$CTX_DIR/storage.json" ]]&&STORAGE_RESTORED=1
+readarray -t REMOVE < <(python3 - "$CTX" "$STORAGE_RESTORED" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));storage=sys.argv[2]=='1';pre=j.get('packages_preexisting') or {}
+for p,was in pre.items():
+ if was:continue
+ if storage and p in {'samba','samba-dsdb-modules','samba-vfs-modules','winbind','acl','attr','smbclient'}:continue
+ if p=='unbound':continue
+ print(p)
+PY
+)
+if [[ ${#REMOVE[@]} -gt 0 ]];then
+  exec 8>/run/control-center-apt.lock;flock -w 900 8||true
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get purge -y "${REMOVE[@]}" >/dev/null 2>&1||true
+fi
+rm -f "$SAMBA"
+# Remove the automatically-created empty storage tree; never delete user data.
+if [[ ! -s "$CTX_DIR/storage.json" && -d /srv/control-center/storage/public ]];then rmdir /srv/control-center/storage/public 2>/dev/null||true;rmdir /srv/control-center/storage 2>/dev/null||true;rmdir /srv/control-center 2>/dev/null||true;fi
+# Restore Control Center DHCP runtime from its restored config when applicable.
+if [[ -s /etc/dnsmasq.d/control-center-dhcp.conf ]] && systemctl is-enabled --quiet control-center-dhcp-server.service 2>/dev/null;then systemctl restart control-center-dhcp-server.service >/dev/null 2>&1||true;fi
+systemctl restart control-center.service >/dev/null 2>&1||true
+printf 'Domain pre-state restored (%s) from %s\n' "$MODE" "$BACKUP"
