@@ -6,6 +6,8 @@ PENDING="$STATE/dhcp-reservations-pending.json"
 CONFIG="$SYSTEM/dhcp-config.json"
 RES="$SYSTEM/dhcp-reservations.json"
 STATUS="$SYSTEM/dhcp-reservations-status.json"
+SAMBA="$SYSTEM/modules/samba.json"
+LEASES=/var/lib/misc/dnsmasq.leases
 CONF=/etc/dnsmasq.d/control-center-dhcp-reservations.conf
 MAIN=/etc/dnsmasq.d/control-center-dhcp.conf
 [[ -s "$PENDING" ]] || exit 0
@@ -21,32 +23,60 @@ chown root:control-center "$STATUS";chmod 0640 "$STATUS"; }
 [[ -s "$CONFIG" && -s "$MAIN" ]]||{ rm -f "$PENDING";status rejected 'DHCP сначала должен быть настроен';exit 1; }
 status applying 'Применение DHCP-бронирований…'
 TMP=$(mktemp /etc/dnsmasq.d/control-center-dhcp-reservations.conf.XXXXXX);trap 'rm -f "$TMP"' EXIT
-python3 - "$PENDING" "$CONFIG" "$TMP" <<'PY'
-import ipaddress,json,re,sys
-pending,cfg_path,out=sys.argv[1:]
+python3 - "$PENDING" "$CONFIG" "$SAMBA" "$LEASES" "$TMP" <<'PY'
+import ipaddress,json,os,re,sys,time
+pending,cfg_path,samba_path,leases_path,out=sys.argv[1:]
 p=json.load(open(pending));c=json.load(open(cfg_path));items=p.get('reservations') or []
 if not isinstance(items,list) or len(items)>512:raise SystemExit('invalid reservations')
-start=ipaddress.IPv4Address(c['range_start']);end=ipaddress.IPv4Address(c['range_end']);prefix=int(c['mask']);net=ipaddress.IPv4Network(f'{start}/{prefix}',strict=False);gw=ipaddress.IPv4Address(c['gateway'])
+start=ipaddress.IPv4Address(c['range_start']);prefix=int(c['mask']);net=ipaddress.IPv4Network(f'{start}/{prefix}',strict=False);gw=ipaddress.IPv4Address(c['gateway']);iface=str(c.get('interface') or '')
+try:samba=json.load(open(samba_path))
+except Exception:samba={}
+dc_ip=str(samba.get('ipv4') or '') if samba.get('managed') and samba.get('state')=='active' and samba.get('interface')==iface else ''
+active_leases={}
+try:
+ for line in open(leases_path,errors='replace'):
+  x=line.split()
+  if len(x)<3:continue
+  try:expiry=int(x[0]);mac=x[1].lower();ip=str(ipaddress.IPv4Address(x[2]))
+  except Exception:continue
+  if expiry==0 or expiry>int(time.time()):active_leases[ip]=mac
+except Exception:pass
 seen_mac=set();seen_ip=set();clean=[]
 for item in items:
  if not isinstance(item,dict):raise SystemExit('invalid reservation')
  mac=str(item.get('mac') or '').lower().strip();ip=ipaddress.IPv4Address(str(item.get('ip') or '').strip());host=str(item.get('hostname') or '').strip()
  if not re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}',mac):raise SystemExit('invalid MAC')
  if ip not in net or ip in {net.network_address,net.broadcast_address,gw}:raise SystemExit(f'invalid reservation IP {ip}')
+ if dc_ip and str(ip)==dc_ip:raise SystemExit('reservation conflicts with active domain controller IP')
  if mac in seen_mac or str(ip) in seen_ip:raise SystemExit('duplicate reservation')
- if host and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,62}',host):raise SystemExit('invalid hostname')
+ other=active_leases.get(str(ip))
+ if other and other!=mac:raise SystemExit(f'reservation IP {ip} is leased to {other}')
+ if host and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]{0,61}[A-Za-z0-9])?',host):raise SystemExit('invalid hostname')
  seen_mac.add(mac);seen_ip.add(str(ip));clean.append({'mac':mac,'ip':str(ip),'hostname':host})
 with open(out,'w') as f:
  f.write('# Managed by Control Center DHCP reservations\n')
  for x in sorted(clean,key=lambda z:(ipaddress.IPv4Address(z['ip']),z['mac'])):
   suffix=','+x['hostname'] if x['hostname'] else ''
   f.write(f"dhcp-host={x['mac']},{x['ip']}{suffix}\n")
-json.dump({'reservations':clean},open(pending,'w'),ensure_ascii=False,indent=2);open(pending,'a').write('\n')
+with open(pending,'w') as f:json.dump({'reservations':clean},f,ensure_ascii=False,indent=2);f.write('\n')
 PY
 chmod 0644 "$TMP"
 dnsmasq --test --conf-file="$MAIN" --conf-file="$TMP" >/tmp/control-center-dhcp-reservations-test.log 2>&1||{ rm -f "$PENDING";status rejected 'DHCP reservations не прошли dnsmasq --test' "$(tail -c 2000 /tmp/control-center-dhcp-reservations-test.log)";exit 1; }
 BACKUP="${CONF}.rollback";[[ -f "$CONF" ]]&&cp -a "$CONF" "$BACKUP"||rm -f "$BACKUP";mv "$TMP" "$CONF";trap - EXIT
 if systemctl restart control-center-dhcp-server.service && systemctl is-active --quiet control-center-dhcp-server.service;then
-  cp "$PENDING" "$RES";rm -f "$PENDING";chown root:control-center "$RES";chmod 0640 "$RES";status applied 'DHCP-бронирования применены';exit 0
+  cp "$PENDING" "$RES";rm -f "$PENDING";chown root:control-center "$RES";chmod 0640 "$RES"
+  if [[ -x /opt/control-center/venv/bin/python ]];then
+    runuser -u control-center -- env CONTROL_CENTER_DB_DSN="${CONTROL_CENTER_DB_DSN:-dbname=control_center user=control-center host=/var/run/postgresql}" /opt/control-center/venv/bin/python - "$RES" <<'PY' >/dev/null 2>&1 || true
+import json,sys
+sys.path.insert(0,'/opt/control-center/app')
+import database
+items=json.load(open(sys.argv[1])).get('reservations') or []
+with database.connect() as c:
+ c.execute('DELETE FROM control_center.dhcp_reservations')
+ for x in items:
+  c.execute("INSERT INTO control_center.dhcp_reservations(mac,ipv4,hostname,enabled,metadata) VALUES(%s,%s,NULLIF(%s,''),true,'{}'::jsonb)",(x['mac'],x['ip'],x.get('hostname') or ''))
+PY
+  fi
+  status applied 'DHCP-бронирования применены';exit 0
 fi
 [[ -f "$BACKUP" ]]&&cp -a "$BACKUP" "$CONF"||printf '# Managed by Control Center DHCP reservations\n' >"$CONF";systemctl restart control-center-dhcp-server.service >/dev/null 2>&1||true;rm -f "$PENDING";status rollback 'Ошибка применения DHCP-бронирований. Предыдущее состояние восстановлено.';exit 1
