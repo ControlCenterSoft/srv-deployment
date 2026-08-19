@@ -13,6 +13,10 @@
     "domain": true,
     "isolated_root_auth_daemon": true,
     "root_portal_login": false,
+    "clean_install_bootstrap_user": "controladmin",
+    "clean_install_bootstrap_shell": "/usr/sbin/nologin",
+    "bootstrap_password_one_time_output": true,
+    "bootstrap_password_plaintext_persisted": false,
     "rbac_mode": "bootstrap",
     "roles": ["admin", "viewer"]
   },
@@ -25,6 +29,9 @@
       "local_approval_required": true,
       "approval_ttl_seconds": 600,
       "administrator_password_persisted": false,
+      "administrator_sid_uid0_acceptance": true,
+      "portal_admin_group_required": "Control Center Admins",
+      "exact_package_prestate_restore": true,
       "guarded_removal_enabled": true,
       "removal_requires_single_dc": true,
       "cleanup_fingerprint_audit": true
@@ -52,6 +59,7 @@
       "ip_reservations": true,
       "reservation_edit": true,
       "reservation_pagination": true,
+      "reservation_pagination_page_size": 10,
       "domain_dns_guard": true
     }
   },
@@ -62,6 +70,8 @@
     "sysvol_netlogon": true,
     "signed_ntp": true,
     "backup_rollback": true,
+    "exact_package_prestate_restore": true,
+    "administrator_sid_uid0_acceptance": true,
     "active_dc_hostname_guard": true,
     "active_dc_network_guard": true,
     "external_ad_takeover": false
@@ -77,17 +87,21 @@
     "standalone-samba-storage",
     "domain-smb-storage",
     "local-domain-portal-authentication",
+    "clean-install-controladmin-bootstrap",
     "isolated-auth-daemon",
     "rbac-bootstrap-schema",
     "kerberos",
     "ldap",
     "sysvol-netlogon",
     "signed-ntp-chrony",
+    "administrator-sid-uid0-acceptance",
     "domain-backup-rollback",
+    "domain-exact-package-prestate-rollback",
     "domain-destroy-recovery",
     "cleanup-fingerprint-audit",
     "dhcp-client-inventory",
     "dhcp-ip-reservations",
+    "dhcp-client-pagination-10",
     "dhcp-ad-dns-integration",
     "active-dc-network-guards",
     "active-dc-hostname-guard",
@@ -100,10 +114,13 @@
     "Domain provisioning and Domain removal require separate purpose-bound one-time local approval codes.",
     "Domain Administrator password is passed through /run and is not stored in PostgreSQL or persistent Control Center state.",
     "Portal authentication supports local PAM identities and, after Domain activation, domain identities through an isolated root authentication daemon.",
+    "A clean server without a suitable local portal administrator receives the nologin controladmin account with a random password shown once by the installer and not persisted in plaintext.",
+    "Domain activation requires Control Center Admins bootstrap membership and proof that the built-in Administrator SID maps to UID 0 before authenticated SMB acceptance.",
+    "Before Domain package changes, Control Center captures the exact APT transaction pre-state and rollback package bytes; guarded Domain removal restores package presence, versions and manual/auto marks.",
     "Active Domain controller hostname, role, interface, IPv4 and prefix are protected from ordinary settings changes.",
     "DNS and Storage cannot be removed while Domain is active.",
     "Domain removal is permitted only when the local topology proves that this is the single domain controller; a root-only recovery bundle is created first.",
     "Cleanup audits verify service artifacts after Domain, DNS and Storage removal; Domain cleanup compares deterministic pre-state fingerprints and verifies generated AD database/SYSVOL removal.",
-    "DHCP exposes clients and supports validated MAC-to-IP reservations with conflict protection."
+    "DHCP exposes clients and supports validated MAC-to-IP reservations with conflict protection; the client table is paginated by 10 rows."
   ]
 }
