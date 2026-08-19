@@ -213,12 +213,9 @@ for ((i=0;i<${#args[@]};i++));do
   esac
 done
 if [[ -n "$auth_file" && "$auth_file" == /run/control-center-root/samba-auth-* ]];then rm -f -- "$auth_file"||true;fi
-[[ -n "$list_host" ]] && echo "CONTROL_CENTER_ACCEPT: SMB Kerberos list start host=$list_host" >&2
+[[ -n "$list_host" ]] && echo "CONTROL_CENTER_ACCEPT: SMB Kerberos list start host=$list_host cache=$CACHE" >&2
 rc=0
-# smbclient uses the default Kerberos ccache when Kerberos is required. The
-# cache is already selected through KRB5CCNAME and validated by kinit/klist;
-# avoid supplying a second cache location with a different ccache-name syntax.
-env KRB5CCNAME="FILE:$CACHE" /usr/bin/smbclient --use-kerberos=required "${out[@]}"||rc=$?
+env KRB5CCNAME="FILE:$CACHE" /usr/bin/smbclient --use-kerberos=required --use-krb5-ccache="$CACHE" "${out[@]}"||rc=$?
 if [[ $rc -eq 0 ]];then
   echo 'CONTROL_CENTER_ACCEPT: SMB Kerberos smbclient OK' >&2
 else
