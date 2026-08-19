@@ -1,8 +1,8 @@
-# Сети Control Center 1.0.10
+# Сети Control Center 1.0.11
 
 ## Сетевые роли
 
-Control Center поддерживает три рабочих схемы:
+Поддерживаются:
 
 ```text
 WAN + LAN
@@ -10,128 +10,106 @@ WAN + LAN
 только LAN
 ```
 
-В выпадающем списке каждой роли есть пункт **«Выключен»**. Обе роли одновременно выключить нельзя.
-
-Состояние выключенной роли сохраняется явно как:
-
-```json
-{"enabled": false, "interface": "", "method": "disabled"}
-```
-
-Это важно: после перезапуска Control Center не пытается автоматически назначить выключенную роль другому интерфейсу.
+В каждой роли есть **«Выключен»**. Обе роли одновременно выключить нельзя.
 
 ## Маршрутизация
 
 - WAN Static требует gateway.
-- При включённом WAN поле gateway для LAN запрещено, чтобы не создавать второй default route.
-- LAN DHCP при включённом WAN получает `dhcp4-overrides.use-routes: false`.
-- Если WAN выключен и LAN является единственной сетью, LAN может использовать DHCP default route или Static gateway.
+- При включённом WAN LAN не создаёт второй default route.
+- LAN DHCP при включённом WAN использует `dhcp4-overrides.use-routes: false`.
+- В LAN-only режиме LAN может использовать DHCP default route или Static gateway.
 
-Таким образом одноинтерфейсный сервер не вынужден искусственно иметь две роли.
+## Samba AD-DC
+
+Начиная с 1.0.11 новая доменная роль может использовать только активную WAN/LAN роль со **Static IPv4**.
+
+Предпочтение:
+
+1. Static LAN;
+2. Static WAN только при явном подтверждении.
+
+Web API не принимает произвольный IP для AD-DC: interface/IP/prefix определяются из уже применённой Control Center network configuration.
+
+Перед изменением системы privileged Samba worker повторно проверяет, что заявленный IPv4/prefix фактически присутствует на выбранном interface.
+
+## Защита активного контроллера
+
+После успешного Samba AD-DC provisioning обычный POST `/api/network/config` не может:
+
+- выключить роль DC;
+- изменить interface DC;
+- перевести роль на DHCP;
+- изменить IPv4;
+- изменить prefix.
+
+Параметры другой сетевой роли можно изменять штатно. Изменение сетевой идентичности самого DC будет отдельным migration lifecycle.
+
+## DNS домена
+
+Локальный resolver активного AD-DC использует IP самого контроллера. Внешнее разрешение выполняет Samba Internal DNS через configured DNS forwarder.
+
+Если Control Center DHCP обслуживает interface DC, DHCP clients получают только AD-DC IPv4 как DNS. Публичные DNS не должны раздаваться доменным клиентам напрямую.
 
 ## Dashboard
 
-`/api/system` возвращает для WAN и LAN поле `enabled`.
-
-Web UI:
-
-- показывает графики WAN и LAN, если включены обе роли;
-- скрывает LAN-карточку, если LAN выключен;
-- скрывает WAN-карточку, если WAN выключен.
-
-## Перечень интерфейсов
-
-В разделе **Сети** отображаются:
-
-- роль WAN/LAN или отсутствие роли;
-- имя интерфейса;
-- ethernet / wifi / virtual;
-- link state;
-- IPv4;
-- gateway;
-- DNS;
-- MAC;
-- MTU;
-- скорость.
-
-Live-источники:
-
-```text
-/sys/class/net
-ip -j -4 addr
-ip -j -4 route
-resolvectl dns
-```
-
-Длинный перечень интерфейсов использует пагинацию.
+`/api/system` возвращает `enabled` отдельно для WAN и LAN. UI показывает только графики активных ролей.
 
 ## Effective configuration
 
-GET `/api/network/config` использует applied-state:
+Applied-state:
 
 ```text
 /var/lib/control-center-system/network-config.json
 ```
 
-Если applied-state уже существует, `enabled=false` имеет приоритет над автоматическим обнаружением. Для старых установок без applied-state сохраняется legacy auto-detection WAN по default route.
+Выключенная роль сохраняется явно:
 
-## Проверка и применение
+```json
+{"enabled": false, "interface": "", "method": "disabled"}
+```
 
-POST `/api/network/config` сначала валидирует запрос в Web API, затем записывает:
+## Netplan apply
+
+POST `/api/network/config` создаёт request:
 
 ```text
 /var/lib/control-center/network-pending.json
 ```
 
-Root helper повторно проверяет роли и генерирует только активные интерфейсы в:
+Root helper повторно валидирует configuration, генерирует только активные interfaces в:
 
 ```text
 /etc/netplan/90-control-center.yaml
 ```
 
-После этого выполняются:
+и выполняет:
 
 ```bash
 netplan generate
 netplan apply
 ```
 
-При успехе applied-state сохраняется в:
-
-```text
-/var/lib/control-center-system/network-config.json
-```
-
-Rollback Netplan:
+Rollback:
 
 ```text
 /var/lib/control-center-root/90-control-center.yaml.rollback
 ```
-
-## Валидация Static
-
-Для активной роли проверяются:
-
-- существующий интерфейс;
-- уникальность интерфейса между WAN/LAN;
-- IPv4 и маска;
-- gateway;
-- DNS;
-- пересечение статических WAN/LAN подсетей.
-
-WAN Static требует gateway. LAN Static может иметь gateway только когда WAN выключен.
 
 ## Диагностика
 
 ```bash
 curl -fsS http://127.0.0.1:8080/api/network/config | python3 -m json.tool
 sudo cat /var/lib/control-center-system/network-config.json
-sudo cat /var/lib/control-center-system/network-status.json
 sudo cat /etc/netplan/90-control-center.yaml
 ip -br addr
 ip route
-resolvectl status
+resolvectl status 2>/dev/null || true
 journalctl -u control-center-network-apply.service -n 100 --no-pager
 ```
 
-Изменение интерфейса или адреса может оборвать Web/SSH-сессию. Root helper сохраняет rollback Netplan, но внешний firewall/NAT и физический доступ находятся вне контроля приложения.
+После активации Samba AD-DC дополнительно:
+
+```bash
+sudo cat /var/lib/control-center-system/modules/samba.json
+ip -4 addr show dev <AD-interface>
+```
