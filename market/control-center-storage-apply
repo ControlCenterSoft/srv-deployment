@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+STATE=/var/lib/control-center
+SYSTEM=/var/lib/control-center-system
+ROOT=/var/lib/control-center-root
+PENDING="$STATE/storage-pending.json"
+MODULE="$SYSTEM/modules/storage.json"
+SAMBA="$SYSTEM/modules/samba.json"
+STATUS="$SYSTEM/storage-status.json"
+SMB=/etc/samba/smb.conf
+DATA=/srv/control-center/storage/public
+AUDITS="$SYSTEM/cleanup-audits"
+APT_LOCK=/run/control-center-apt.lock
+[[ -s "$PENDING" ]] || exit 0
+install -d -o root -g control-center -m 0750 "$SYSTEM" "$SYSTEM/modules" "$AUDITS"
+install -d -o root -g root -m 0700 "$ROOT"
+status(){ python3 - "$STATUS" "$1" "$2" "${3:-}" <<'PY'
+import json,sys,time,os,tempfile
+p,state,msg,detail=sys.argv[1:];d={'state':state,'message':msg,'detail':detail,'timestamp':int(time.time())}
+fd,tmp=tempfile.mkstemp(prefix='.storage-status.',dir=os.path.dirname(p))
+with os.fdopen(fd,'w') as f:json.dump(d,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+os.replace(tmp,p)
+PY
+chown root:control-center "$STATUS";chmod 0640 "$STATUS"; }
+DOMAIN_ACTIVE=0
+if [[ -s "$SAMBA" ]] && python3 - "$SAMBA" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except Exception:raise SystemExit(1)
+raise SystemExit(0 if j.get('managed') and j.get('state')=='active' else 1)
+PY
+then DOMAIN_ACTIVE=1;fi
+readarray -t REQUEST < <(python3 - "$PENDING" <<'PY'
+import json,re,sys
+j=json.load(open(sys.argv[1]));a=str(j.get('action') or '')
+name=str(j.get('share_name') or 'Public').strip()
+if not re.fullmatch(r'[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9 _.-]{0,31}',name):raise SystemExit(2)
+print(a);print(name)
+PY
+) || { rm -f "$PENDING";status error 'Storage request rejected';exit 1; }
+ACTION="${REQUEST[0]}";SHARE="${REQUEST[1]}"
+
+write_domain_share(){
+  local name="$1" backup="$ROOT/smb.conf.storage.rollback"
+  cp -a "$SMB" "$backup"
+  python3 - "$SMB" "$name" "$DATA" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]);name,path=sys.argv[2:];text=p.read_text(errors='replace')
+b='\n# BEGIN CONTROL CENTER STORAGE\n';e='# END CONTROL CENTER STORAGE\n'
+if b in text and e in text:
+ pre=text.split(b,1)[0];post=text.split(e,1)[1];text=pre+post
+block=f'''\n# BEGIN CONTROL CENTER STORAGE\n[{name}]\n\tpath = {path}\n\tbrowseable = yes\n\tread only = no\n\tguest ok = no\n\tinherit acls = yes\n\tmap acl inherit = yes\n\tvfs objects = acl_xattr\n# END CONTROL CENTER STORAGE\n'''
+p.write_text(text.rstrip()+block)
+PY
+  if samba-tool testparm >/dev/null 2>&1 && systemctl restart samba-ad-dc.service && systemctl is-active --quiet samba-ad-dc.service;then return 0;fi
+  cp -a "$backup" "$SMB";systemctl restart samba-ad-dc.service >/dev/null 2>&1||true;return 1
+}
+write_module(){ python3 - "$MODULE" "$@" <<'PY'
+import json,sys,time,os
+p,provider,explicit,owned,name,path=sys.argv[1:]
+try:d=json.load(open(p))
+except Exception:d={}
+d.update({'installed':True,'provider':provider,'mode':'domain' if provider=='samba_ad_dc' else 'standalone','explicit':explicit=='1','package_owned':owned=='1','dependency_by':['domain'] if provider=='samba_ad_dc' else [],'share_name':name,'path':path,'rbac_ready':True,'installed_at':d.get('installed_at') or int(time.time())})
+open(p,'w').write(json.dumps(d,ensure_ascii=False,indent=2)+'\n');os.chmod(p,0o640)
+PY
+chown root:control-center "$MODULE"; }
+
+if [[ "$ACTION" == configure ]];then
+  [[ -s "$MODULE" || "$DOMAIN_ACTIVE" == 1 ]]||{ rm -f "$PENDING";status error 'Сетевое хранилище не установлено';exit 1; }
+  if [[ "$DOMAIN_ACTIVE" == 1 ]];then
+    status applying 'Применение SMB ресурса в доменном режиме…'
+    install -d -m 0770 "$DATA"
+    if write_domain_share "$SHARE";then
+      EXPLICIT=0;[[ -s "$MODULE" ]]&&EXPLICIT="$(python3 - "$MODULE" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except Exception:j={}
+print('1' if j.get('explicit') else '0')
+PY
+)"
+      write_module samba_ad_dc "$EXPLICIT" 0 "$SHARE" "$DATA";rm -f "$PENDING";status applied "Доменное хранилище [$SHARE] применено";exit 0
+    fi
+    rm -f "$PENDING";status rollback 'Ошибка применения SMB ресурса. smb.conf восстановлен.';exit 1
+  fi
+  OWNED="$(python3 - "$MODULE" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print('1' if j.get('package_owned') else '0')
+PY
+)";EXPLICIT=1
+elif [[ "$ACTION" == install ]];then
+  if [[ "$DOMAIN_ACTIVE" == 1 ]];then
+    install -d -m 0770 "$DATA";write_domain_share "$SHARE"||{ rm -f "$PENDING";status error 'Не удалось активировать SMB share в домене';exit 1; };write_module samba_ad_dc 1 0 "$SHARE" "$DATA";rm -f "$PENDING";status applied 'Сетевое хранилище отмечено как явно установленное в составе Домена';exit 0
+  fi
+  status installing 'Установка standalone SMB-хранилища…'
+  if [[ -s "$SMB" && ! -s "$MODULE" ]] && ! grep -q '^# Managed by Control Center Storage' "$SMB";then rm -f "$PENDING";status rejected 'Обнаружена внешняя Samba-конфигурация. Автоматический takeover запрещён.' "$SMB";exit 1;fi
+  PRE=0;dpkg-query -W -f='${Status}' samba 2>/dev/null|grep -q 'install ok installed'&&PRE=1||true
+  exec 8>"$APT_LOCK";flock -w 900 8||{ rm -f "$PENDING";status error 'Менеджер пакетов занят';exit 75; };export DEBIAN_FRONTEND=noninteractive;apt-get update;apt-get install -y samba smbclient acl attr
+  OWNED=$((1-PRE));EXPLICIT=1
+elif [[ "$ACTION" == remove ]];then
+  [[ "$DOMAIN_ACTIVE" == 0 ]]||{ rm -f "$PENDING";status rejected 'Сетевое хранилище является обязательной зависимостью активного Домена';exit 1; }
+  [[ -s "$MODULE" ]]||{ rm -f "$PENDING";status removed 'Сетевое хранилище уже отсутствует';exit 0; }
+  OWNED="$(python3 - "$MODULE" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print('1' if j.get('package_owned') else '0')
+PY
+)"
+  status removing 'Удаление standalone SMB-хранилища…'
+  systemctl disable --now smbd.service nmbd.service winbind.service >/dev/null 2>&1||true
+  if [[ -f "$SMB" ]]&&grep -q '^# Managed by Control Center Storage' "$SMB";then rm -f "$SMB";fi
+  if id control-center-storage >/dev/null 2>&1;then chown -R root:root /srv/control-center/storage 2>/dev/null||true;userdel control-center-storage >/dev/null 2>&1||true;fi
+  if [[ "$OWNED" == 1 ]];then exec 8>"$APT_LOCK";flock -w 900 8;export DEBIAN_FRONTEND=noninteractive;apt-get purge -y samba samba-dsdb-modules samba-vfs-modules winbind||true;apt-get autoremove -y||true;fi
+  rm -f "$MODULE" "$PENDING"
+  TS=$(date +%s);AUDIT="$AUDITS/storage-$TS.json"
+  python3 - "$AUDIT" "$SMB" "$OWNED" "$DATA" <<'PY'
+import json,subprocess,sys,time,os
+p,smb,owned,data=sys.argv[1:]
+def rc(a):return subprocess.run(a,text=True,capture_output=True).returncode
+checks={'managed_smb_conf_removed':not os.path.exists(smb),'smbd_inactive':rc(['systemctl','is-active','--quiet','smbd.service'])!=0,'service_user_removed':rc(['id','control-center-storage'])!=0}
+if owned=='1':checks['owned_samba_package_removed']=rc(['dpkg-query','-W','samba'])!=0
+clean=all(checks.values());json.dump({'service':'storage','action':'remove','clean':clean,'checks':checks,'timestamp':int(time.time()),'preserved_user_data':data if os.path.exists(data) else None},open(p,'w'),ensure_ascii=False,indent=2);open(p,'a').write('\n');os.chmod(p,0o640)
+raise SystemExit(0 if clean else 2)
+PY
+  RC=$?;chown root:control-center "$AUDIT";if [[ $RC -ne 0 ]];then status error 'Хранилище удалено, cleanup-audit обнаружил остаточные service artifacts' "$AUDIT";exit 1;fi
+  status removed 'Сетевое хранилище удалено. Пользовательские данные сохранены.' "$AUDIT";exit 0
+else rm -f "$PENDING";status error 'Неизвестное действие Storage';exit 1;fi
+
+# Standalone install/configure.
+if ! id control-center-storage >/dev/null 2>&1;then useradd --system --home /nonexistent --shell /usr/sbin/nologin control-center-storage;fi
+install -d -o control-center-storage -g control-center-storage -m 0770 "$DATA"
+install -d -m 0755 /etc/samba
+BACKUP="$ROOT/smb.conf.storage-standalone.rollback";[[ -f "$SMB" ]]&&cp -a "$SMB" "$BACKUP"||rm -f "$BACKUP"
+cat >"$SMB" <<EOF
+# Managed by Control Center Storage
+[global]
+    workgroup = WORKGROUP
+    server role = standalone server
+    security = user
+    map to guest = Bad User
+    server min protocol = SMB2
+    load printers = no
+    disable spoolss = yes
+    dns proxy = no
+
+[$SHARE]
+    path = $DATA
+    browseable = yes
+    read only = no
+    guest ok = yes
+    force user = control-center-storage
+    create mask = 0660
+    directory mask = 0770
+EOF
+chmod 0644 "$SMB"
+if testparm -s "$SMB" >/dev/null 2>&1 && systemctl enable --now smbd.service && systemctl restart smbd.service && systemctl is-active --quiet smbd.service;then
+  write_module samba_standalone "$EXPLICIT" "$OWNED" "$SHARE" "$DATA";rm -f "$PENDING";status applied "Standalone SMB-хранилище работает: [$SHARE]";exit 0
+fi
+[[ -f "$BACKUP" ]]&&cp -a "$BACKUP" "$SMB"||rm -f "$SMB";systemctl restart smbd.service >/dev/null 2>&1||true;rm -f "$PENDING";status rollback 'Ошибка SMB. Предыдущая конфигурация восстановлена.';exit 1
