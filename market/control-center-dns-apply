@@ -51,7 +51,7 @@ import json,ipaddress,sys
 j=json.load(open(sys.argv[1]));f=j.get('forwarders') or []
 if not isinstance(f,list) or not f:raise SystemExit(2)
 for x in f:
- ip=ipaddress.IPv4Address(str(x));
+ ip=ipaddress.IPv4Address(str(x))
  if ip.is_loopback or ip.is_multicast or ip.is_unspecified:raise SystemExit(3)
  print(ip)
 PY
@@ -100,7 +100,6 @@ PY
 )
   IFACE="${META[0]}";IP="${META[1]}";NETWORK="${META[2]}";EXPLICIT="${META[3]}";OWNED="${META[4]}"
   status applying 'Применение standalone DNS…'
-  ;;
 elif [[ "$ACTION" == install ]]; then
   if [[ "$DOMAIN_ACTIVE" == 1 ]]; then
     python3 - "$MODULE" "$SAMBA" <<'PY'
@@ -165,7 +164,6 @@ PY
   status removed 'DNS удалён. Cleanup-audit: артефактов Control Center DNS не обнаружено.' "$AUDIT";exit 0
 fi
 
-# Shared standalone configure/install path.
 install -d -m 0755 /etc/unbound/unbound.conf.d
 TMP=$(mktemp /etc/unbound/unbound.conf.d/control-center.conf.XXXXXX);trap 'rm -f "$TMP"' EXIT
 {
