@@ -104,9 +104,10 @@ jobs:
           j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==8081
           PY
           sudo /usr/local/sbin/control-center-web-apply
-          curl -fsS http://127.0.0.1:8081/api/health | python3 - <<'PY'
+          HEALTH=$(curl -fsS http://127.0.0.1:8081/api/health)
+          python3 - "$HEALTH" <<'PY'
           import json,sys
-          j=json.load(sys.stdin);assert j['database']=='degraded' and j['version']=='1.0.10'
+          j=json.loads(sys.argv[1]);assert j['database']=='degraded' and j['version']=='1.0.10'
           PY
           sudo grep -qx 'CONTROL_CENTER_PORT=8081' /etc/control-center/web.env
           sudo grep -qx 'CONTROL_CENTER_SSL=0' /etc/control-center/web.env
