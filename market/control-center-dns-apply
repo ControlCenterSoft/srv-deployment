@@ -150,8 +150,8 @@ PY
   rm -f "$CONF"
   if [[ "$OWNED" == 1 ]]; then exec 8>"$APT_LOCK";flock -w 900 8;export DEBIAN_FRONTEND=noninteractive;apt-get purge -y unbound;apt-get autoremove -y || true;fi
   rm -f "$MODULE" "$PENDING"
-  TS="$(date +%s)";AUDIT="$AUDITS/dns-$TS.json"
-  python3 - "$AUDIT" "$CONF" "$OWNED" <<'PY'
+  TS="$(date +%s)";AUDIT="$AUDITS/dns-$TS.json";RC=0
+  python3 - "$AUDIT" "$CONF" "$OWNED" <<'PY' || RC=$?
 import json,subprocess,sys,time,os
 p,conf,owned=sys.argv[1:]
 def run(a):return subprocess.run(a,text=True,capture_output=True).returncode
@@ -160,7 +160,7 @@ if owned=='1':checks['owned_package_removed']=run(['dpkg-query','-W','unbound'])
 healthy=all(checks.values());json.dump({'service':'dns','action':'remove','clean':healthy,'checks':checks,'timestamp':int(time.time()),'allowed_remaining':['Control Center cleanup audit only']},open(p,'w'),ensure_ascii=False,indent=2);open(p,'a').write('\n');os.chmod(p,0o640)
 raise SystemExit(0 if healthy else 2)
 PY
-  RC=$?;chown root:control-center "$AUDIT";if [[ $RC -ne 0 ]];then status error 'DNS удалён, но cleanup-audit обнаружил остаточные артефакты' "$AUDIT";exit 1;fi
+  chown root:control-center "$AUDIT";if [[ $RC -ne 0 ]];then status error 'DNS удалён, но cleanup-audit обнаружил остаточные артефакты' "$AUDIT";exit 1;fi
   status removed 'DNS удалён. Cleanup-audit: артефактов Control Center DNS не обнаружено.' "$AUDIT";exit 0
 fi
 
