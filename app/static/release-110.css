@@ -1,0 +1,14 @@
+/* Control Center 1.0.10 */
+#wanDashboardCard.hidden,#lanDashboardCard.hidden{display:none!important}
+.dashboard-grid-109{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+#hostnameCard110 .card-title-row{align-items:flex-start}
+#hostnameCard110 input{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.samba-plan-110{margin-top:14px;display:grid;gap:10px}
+.samba-plan-110>div{display:grid;gap:4px;padding:11px 12px;border:1px solid rgba(67,181,216,.16);border-radius:10px;background:rgba(5,22,32,.45)}
+.samba-plan-110 b{font-size:13px;color:#e9f4fb}
+.samba-plan-110 span{font-size:12px;line-height:1.45;color:#87a4b6;overflow-wrap:anywhere}
+select option[value="__disabled__"]{font-weight:700}
+.notification-item.info{border-left-color:#5ba9d6}
+.notification-item.info .notification-meta b{color:#bfe7ff}
+.disabled-field{opacity:.62}
+@media(max-width:900px){.dashboard-grid-109{grid-template-columns:1fr}.samba-plan-110 span{font-size:11px}}
