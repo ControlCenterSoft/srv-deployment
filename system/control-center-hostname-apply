@@ -47,12 +47,13 @@ old_short=old.split('.')[0]
 for line in lines:
     if re.match(r'^\s*127\.0\.1\.1\s+',line):
         out.append(f'127.0.1.1\t{new}');found=True;continue
-    if old_short:
+    updated=line
+    if old_short and line.strip() and not line.lstrip().startswith('#'):
         parts=line.split()
-        if parts and not parts[0].startswith('#'):
+        if parts and any(token in {old,old_short} for token in parts[1:]):
             parts=[new if token in {old,old_short} else token for token in parts]
-            line='\t'.join(parts)
-    out.append(line)
+            updated='\t'.join(parts)
+    out.append(updated)
 if not found: out.append(f'127.0.1.1\t{new}')
 p.write_text('\n'.join(out).rstrip()+'\n')
 PY
