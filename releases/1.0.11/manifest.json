@@ -1,0 +1,47 @@
+{
+  "product": "Control Center",
+  "release": "1.0.11",
+  "build": "20260819.5",
+  "channel": "production",
+  "upgrade_from": ["1.0.10", "1.0.9", "clean install"],
+  "database": {
+    "engine": "PostgreSQL",
+    "schema_migration": "004"
+  },
+  "samba_ad_dc": {
+    "installation_enabled": true,
+    "provisioning_enabled": true,
+    "dns_backend": "SAMBA_INTERNAL",
+    "local_approval_required": true,
+    "approval_ttl_seconds": 600,
+    "administrator_password_persisted": false,
+    "automatic_domain_removal_enabled": false
+  },
+  "components": [
+    "samba-ad-dc-production-provisioning",
+    "samba-internal-dns",
+    "kerberos",
+    "ldap",
+    "sysvol-netlogon",
+    "signed-ntp-chrony",
+    "samba-readiness",
+    "samba-health",
+    "samba-backup-rollback",
+    "one-time-local-approval",
+    "dhcp-ad-dns-integration",
+    "active-dc-network-guards",
+    "active-dc-hostname-guard",
+    "postgresql-migration-004"
+  ],
+  "notes": [
+    "Samba AD-DC provisioning is enabled for a new primary domain controller",
+    "The selected domain interface must use a static IPv4 address",
+    "Provisioning requires a one-time local approval code generated with sudo control-center-samba-approve",
+    "The Domain Administrator password is passed through /run and is not stored in PostgreSQL or persistent Control Center state",
+    "A root-only backup is created before package, resolver, Kerberos or Samba changes",
+    "Failed provisioning triggers rollback of Samba, resolver, service and Control Center DHCP state",
+    "When Control Center DHCP serves the AD interface, clients are forced to use the AD-DC IP as their only DNS server",
+    "Renaming an active DC or changing/disabling its interface/IP is blocked",
+    "Automatic domain destruction/removal is intentionally not implemented in 1.0.11"
+  ]
+}
