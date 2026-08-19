@@ -5,7 +5,15 @@ DIR=/run/control-center-root
 FILE="$DIR/samba-approval.json"
 PURPOSE=samba-ad-dc-provision
 LABEL='создании домена'
-if [[ "${1:-}" == '--remove' ]];then PURPOSE=domain-destroy;LABEL='удалении домена';elif [[ -n "${1:-}" ]];then echo 'Использование: sudo control-center-samba-approve [--remove]' >&2;exit 2;fi
+OUTPUT_LABEL='Control Center Samba AD-DC approval code'
+if [[ "${1:-}" == '--remove' ]];then
+  PURPOSE=domain-destroy
+  LABEL='удалении домена'
+  OUTPUT_LABEL='Control Center Domain removal approval code'
+elif [[ -n "${1:-}" ]];then
+  echo 'Использование: sudo control-center-samba-approve [--remove]' >&2
+  exit 2
+fi
 install -d -o root -g root -m 0700 "$DIR"
 TOKEN="$(openssl rand -hex 4)"
 HASH="$(printf '%s' "$TOKEN" | sha256sum | awk '{print $1}')"
@@ -18,5 +26,5 @@ with open(p,'w',encoding='utf-8') as f:
 os.chmod(p,0o600)
 PY
 chown root:root "$FILE"
-printf '\nControl Center approval code: %s\n' "$TOKEN"
+printf '\n%s: %s\n' "$OUTPUT_LABEL" "$TOKEN"
 printf 'Назначение: %s. Действует 10 минут и используется один раз. Введите его в Web UI при %s.\n\n' "$PURPOSE" "$LABEL"
