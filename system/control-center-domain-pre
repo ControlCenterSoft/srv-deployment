@@ -38,7 +38,10 @@ python3 - "$CTX" "$UNBOUND_ACTIVE" "$SMBD_ACTIVE" <<'PY'
 import hashlib,json,os,subprocess,sys,time
 p,unbound,smbd=sys.argv[1:]
 packages=['samba','samba-dsdb-modules','samba-vfs-modules','winbind','krb5-user','dnsutils','acl','attr','smbclient','chrony','unbound']
-paths=['/etc/samba','/var/lib/samba','/var/cache/samba','/etc/krb5.conf','/etc/resolv.conf','/etc/hosts','/etc/chrony','/etc/unbound/unbound.conf.d/control-center.conf','/etc/dnsmasq.d/control-center-dhcp.conf','/etc/dnsmasq.d/control-center-dhcp-reservations.conf','/var/lib/control-center-system/modules/dns.json','/var/lib/control-center-system/modules/storage.json']
+# Only deterministic configuration/state is fingerprinted exactly. Samba TDB
+# runtime directories are intentionally excluded because an ordinary smbd start
+# mutates them; AD-specific artifacts are tracked separately below.
+paths=['/etc/samba','/etc/krb5.conf','/etc/resolv.conf','/etc/hosts','/etc/chrony','/etc/unbound/unbound.conf.d/control-center.conf','/etc/dnsmasq.d/control-center-dhcp.conf','/etc/dnsmasq.d/control-center-dhcp-reservations.conf','/var/lib/control-center-system/modules/dns.json','/var/lib/control-center-system/modules/storage.json']
 def installed(name):
  r=subprocess.run(['dpkg-query','-W','-f=${Status}',name],text=True,capture_output=True)
  return r.returncode==0 and 'install ok installed' in r.stdout
@@ -62,17 +65,12 @@ def tree_hash(path):
    except OSError:h.update(b'!unreadable')
  return h.hexdigest()
 data={
- 'created_at':int(time.time()),
- 'unbound_active':unbound=='1','smbd_active':smbd=='1',
+ 'created_at':int(time.time()),'unbound_active':unbound=='1','smbd_active':smbd=='1',
  'dns_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/dns.json'),
  'storage_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/storage.json'),
  'packages_preexisting':{x:installed(x) for x in packages},
  'prestate_fingerprints':{x:tree_hash(x) for x in paths},
- 'prestate_artifacts':{
-   'sam_ldb':os.path.exists('/var/lib/samba/private/sam.ldb'),
-   'sysvol':os.path.exists('/var/lib/samba/sysvol'),
-   'netlogon':os.path.exists('/var/lib/samba/sysvol') and any('scripts' in root for root,dirs,files in os.walk('/var/lib/samba/sysvol')),
- }
+ 'prestate_artifacts':{'sam_ldb':os.path.exists('/var/lib/samba/private/sam.ldb'),'sysvol':os.path.exists('/var/lib/samba/sysvol')}
 }
 with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n')
 os.chmod(p,0o600)
