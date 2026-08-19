@@ -131,10 +131,12 @@ SH
 set -uo pipefail
 CACHE="${CONTROL_CENTER_KRB5CCACHE:?}"
 [[ "$CACHE" == /run/control-center-root/krb5cc-domain-* ]]||exit 2
-rc=0
-env KRB5CCNAME="FILE:$CACHE" /usr/bin/kdestroy "$@"||rc=$?
-rm -f "$CACHE"
-exit "$rc"
+# The legacy core destroys credentials immediately after klist, but SMB
+# acceptance now intentionally uses the same verified TGT. Defer destruction;
+# the parent orchestrator removes the root-only cache unconditionally after
+# the core returns (success or rollback).
+echo 'CONTROL_CENTER_ACCEPT: Kerberos cache destruction deferred until SMB acceptance completes' >&2
+exit 0
 SH
   cat >"$KRB_SHIM/samba-tool" <<'SH'
 #!/usr/bin/env bash
