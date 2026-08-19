@@ -136,6 +136,47 @@ env KRB5CCNAME="FILE:$CACHE" /usr/bin/kdestroy "$@"||rc=$?
 rm -f "$CACHE"
 exit "$rc"
 SH
+  cat >"$KRB_SHIM/samba-tool" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+retry=0
+label=''
+if [[ "${1:-}" == domain && "${2:-}" == info ]];then retry=1;label='LDAP domain-info';fi
+if [[ "${1:-}" == drs && "${2:-}" == showrepl ]];then retry=1;label='DRS replication';fi
+if [[ $retry -eq 0 ]];then exec /usr/bin/samba-tool "$@";fi
+tmp="$(mktemp /tmp/control-center-samba-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
+rc=1
+for attempt in $(seq 1 45);do
+  if /usr/bin/samba-tool "$@" >"$tmp" 2>&1;then
+    cat "$tmp"
+    echo "CONTROL_CENTER_ACCEPT: $label ready attempt=$attempt" >&2
+    exit 0
+  fi
+  rc=$?
+  sleep 1
+done
+echo "CONTROL_CENTER_ACCEPT: $label FAILED after 45 attempts rc=$rc" >&2
+cat "$tmp" >&2
+exit "$rc"
+SH
+  cat >"$KRB_SHIM/host" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+tmp="$(mktemp /tmp/control-center-samba-dns-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
+rc=1
+for attempt in $(seq 1 30);do
+  if /usr/bin/host "$@" >"$tmp" 2>&1;then
+    cat "$tmp"
+    echo "CONTROL_CENTER_ACCEPT: DNS query ready attempt=$attempt" >&2
+    exit 0
+  fi
+  rc=$?
+  sleep 1
+done
+echo "CONTROL_CENTER_ACCEPT: DNS query FAILED after 30 attempts rc=$rc" >&2
+cat "$tmp" >&2
+exit "$rc"
+SH
   cat >"$KRB_SHIM/smbclient" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -167,9 +208,6 @@ for ((i=0;i<${#args[@]};i++));do
     *) out+=("${args[$i]}");;
   esac
 done
-# The core creates a root-only auth file for older password-based acceptance.
-# Kerberos acceptance does not need it: remove it before invoking smbclient so
-# the Administrator password is no longer present in /run during the SMB test.
 if [[ -n "$auth_file" && "$auth_file" == /run/control-center-root/samba-auth-* ]];then rm -f -- "$auth_file"||true;fi
 [[ -n "$list_host" ]] && echo "CONTROL_CENTER_ACCEPT: SMB Kerberos list start host=$list_host" >&2
 rc=0
@@ -181,7 +219,7 @@ else
 fi
 exit "$rc"
 SH
-  chmod 0700 "$KRB_SHIM/kinit" "$KRB_SHIM/klist" "$KRB_SHIM/kdestroy" "$KRB_SHIM/smbclient"
+  chmod 0700 "$KRB_SHIM/kinit" "$KRB_SHIM/klist" "$KRB_SHIM/kdestroy" "$KRB_SHIM/samba-tool" "$KRB_SHIM/host" "$KRB_SHIM/smbclient"
 }
 
 trap cleanup_kerberos_shim EXIT
@@ -204,8 +242,6 @@ PY
   exit "$rc"
 fi
 
-# Core has passed Samba/Kerberos/LDAP/SMB acceptance. Keep the public status in
-# a non-final state until mandatory DNS/Storage/Auth post-integration finishes.
 write_status postconfig 'Базовый контроллер создан. Завершается интеграция DNS, хранилища и авторизации…'
 set +e
 "$POST"
@@ -219,7 +255,5 @@ if [[ $rc -ne 0 ]];then
   exit "$rc"
 fi
 
-# Final active means the complete Domain product, including required services
-# and portal authentication integration, is ready—not merely the Samba daemon.
 write_status active 'Домен полностью активирован: Samba AD-DC, DNS, Сетевое хранилище и авторизация работают.'
 exit 0
