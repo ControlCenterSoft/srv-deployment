@@ -13,6 +13,7 @@ import release_109
 import release_110
 import release_110_fix
 import release_111
+import release_111_guard
 
 app = main.app
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
@@ -45,6 +46,7 @@ release_109.register(app, main)
 release_110.register(app, main)
 release_110_fix.register(app, main)
 release_111.register(app, main)
+release_111_guard.register(app, main)
 
 
 @app.before_request
