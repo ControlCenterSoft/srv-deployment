@@ -141,13 +141,11 @@ SH
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Keep the core worker's documented --use-rfc2307 provisioning flag intact.
-# Samba AD-DC relies on idmap.ldb for local SID-to-Unix token conversion; on
-# the Ubuntu/Samba runtime used by 1.0.11, stripping the flag produced a fresh
-# DC that passed LDAP/DNS/Kerberos but failed authenticated SMB with
-# NT_STATUS_INVALID_SID. Do not add member-server idmap config here: the only
-# accepted mapping setting is the DC-local idmap_ldb RFC2307 switch generated
-# by samba-tool provision.
+# Keep --use-rfc2307 during provisioning so the NIS extension objects are
+# available for future interoperability. Local SID-to-Unix mapping on an AD DC
+# remains idmap.ldb-owned; the SMB acceptance shim below proves that the built-in
+# Administrator SID maps to UID 0 and may disable only the local RFC2307 lookup
+# switch if the distribution runtime fails that mapping.
 if [[ "${1:-}" == domain && "${2:-}" == provision ]];then
   /usr/bin/samba-tool "$@"
   rc=$?
@@ -156,7 +154,7 @@ if [[ "${1:-}" == domain && "${2:-}" == provision ]];then
       echo 'CONTROL_CENTER_ACCEPT: Samba AD DC RFC2307 idmap switch missing' >&2
       exit 1
     fi
-    echo 'CONTROL_CENTER_ACCEPT: Samba AD DC idmap.ldb RFC2307 switch enabled' >&2
+    echo 'CONTROL_CENTER_ACCEPT: Samba AD DC RFC2307 schema/idmap switch provisioned' >&2
   fi
   exit "$rc"
 fi
@@ -204,10 +202,13 @@ SH
   cat >"$KRB_SHIM/smbclient" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
-# Kerberos is already verified immediately before this step by kinit+klist.
-# SMB acceptance deliberately uses the root-only authentication file generated
-# by the core worker. This validates a real AD password-authenticated SMB token
-# and SYSVOL/NETLOGON transport without placing the password in argv/env/logs.
+# The core supplies a root-only authentication file; validate its boundary first
+# and then prove that Samba can convert the built-in Administrator SID to UID 0
+# before attempting authenticated SMB. A fresh AD DC must own that mapping in
+# idmap.ldb. Some distribution builds expose the RFC2307 switch but fail the
+# fallback mapping when no uidNumber exists; in that precise case Control Center
+# disables only idmap_ldb RFC2307 lookup, keeps the NIS schema, restarts the DC,
+# and requires the built-in mapping to become healthy before continuing.
 auth_file=''
 args=("$@")
 for ((i=0;i<${#args[@]};i++));do
@@ -224,6 +225,42 @@ if [[ -z "$auth_file" || "$auth_file" != /run/control-center-root/samba-auth-* |
 fi
 perm="$(stat -c '%U:%G %a' "$auth_file" 2>/dev/null||true)"
 [[ "$perm" == 'root:root 600' ]]||{ echo "CONTROL_CENTER_ACCEPT: unsafe SMB credential file permissions: $perm" >&2;exit 2; }
+domain="$(sed -n 's/^[[:space:]]*domain[[:space:]]*=[[:space:]]*//p' "$auth_file" | head -1 | tr -d '\r')"
+[[ -n "$domain" ]]||{ echo 'CONTROL_CENTER_ACCEPT: SMB credential domain missing' >&2;exit 2; }
+admin_sid=''
+for attempt in $(seq 1 30);do
+  admin_sid="$(/usr/bin/wbinfo --name-to-sid "${domain}\\Administrator" 2>/dev/null | awk '{print $1}')"
+  [[ "$admin_sid" =~ ^S-1-5-21-.*-500$ ]]&&break
+  sleep 1
+done
+[[ "$admin_sid" =~ ^S-1-5-21-.*-500$ ]]||{ echo 'CONTROL_CENTER_ACCEPT: Administrator SID resolution failed' >&2;exit 1; }
+admin_uid="$(/usr/bin/wbinfo --sid-to-uid "$admin_sid" 2>/dev/null||true)"
+if [[ "$admin_uid" != 0 ]];then
+  echo "CONTROL_CENTER_ACCEPT: Administrator SID mapping unhealthy (uid=${admin_uid:-none}); applying DC-local idmap fallback" >&2
+  python3 - /etc/samba/smb.conf <<'PY'
+from pathlib import Path
+import re,sys
+p=Path(sys.argv[1]);text=p.read_text()
+pat=re.compile(r'(?im)^\s*idmap_ldb:use\s+rfc2307\s*=\s*yes\s*$')
+if not pat.search(text):
+    raise SystemExit('expected idmap_ldb RFC2307 switch not found')
+text=pat.sub('\tidmap_ldb:use rfc2307 = no',text,1)
+p.write_text(text)
+PY
+  /usr/bin/samba-tool testparm >/dev/null
+  systemctl restart samba-ad-dc.service
+  admin_uid=''
+  for attempt in $(seq 1 30);do
+    admin_uid="$(/usr/bin/wbinfo --sid-to-uid "$admin_sid" 2>/dev/null||true)"
+    [[ "$admin_uid" == 0 ]]&&break
+    sleep 1
+  done
+  [[ "$admin_uid" == 0 ]]||{ echo "CONTROL_CENTER_ACCEPT: Administrator SID still does not map to UID 0 (uid=${admin_uid:-none})" >&2;exit 1; }
+  echo 'CONTROL_CENTER_ACCEPT: Administrator SID mapping repaired; NIS schema retained, DC-local RFC2307 lookup disabled' >&2
+else
+  echo 'CONTROL_CENTER_ACCEPT: Administrator SID maps to UID 0' >&2
+fi
+
 tmp="$(mktemp /tmp/control-center-samba-smb-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
 rc=1
 for attempt in $(seq 1 45);do
