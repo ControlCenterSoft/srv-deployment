@@ -31,7 +31,9 @@ control-center-admins
 
 Существующие обычные пользователи с `sudo`/`wheel` добавляются в неё. Root Web login запрещён.
 
-Если подходящего пользователя с паролем нет, installer создаёт `controladmin` с shell `/usr/sbin/nologin` и выводит случайный пароль **один раз**. Сменить его:
+Если подходящего пользователя с паролем нет, installer создаёт `controladmin` с shell `/usr/sbin/nologin`, устанавливает криптографически случайный пароль и выводит его **один раз** в конце локальной установки. Пароль не сохраняется Control Center в открытом виде.
+
+После входа пароль можно сменить:
 
 ```bash
 sudo passwd controladmin
@@ -73,6 +75,8 @@ sudo control-center-samba-approve
 
 Если standalone DNS/Storage существовали, они сохраняются и переводятся в domain mode.
 
+Перед установкой пакетов Домена Control Center выполняет APT dry-run и фиксирует все пакеты, которые будут установлены, обновлены или удалены. Для уже установленных затрагиваемых пакетов сохраняются точная версия, APT manual/auto mark и точный rollback `.deb`. Если точный rollback подготовить нельзя, создание Домена блокируется до изменения системы.
+
 ## Доменная авторизация
 
 После успешного provisioning на странице входа становится доступен режим **Доменная**. Bootstrap administrative group:
@@ -81,7 +85,7 @@ sudo control-center-samba-approve
 Control Center Admins
 ```
 
-Domain Administrator добавляется в неё автоматически. Остальные доменные пользователи по умолчанию имеют viewer-доступ до развития RBAC.
+Domain Administrator добавляется в неё автоматически. Создание группы, membership `Administrator` и SID resolution проверяются как обязательная часть provisioning. Остальные доменные пользователи по умолчанию имеют viewer-доступ до развития RBAC.
 
 ## Удаление Домена
 
@@ -95,7 +99,9 @@ sudo control-center-samba-approve --remove
 
 В UI требуется отдельная фраза подтверждения. Операция разрешена только для единственного DC.
 
-Перед destruction создаётся recovery backup, затем восстанавливается pre-domain state и выполняется fingerprint cleanup-audit.
+Перед destruction создаётся recovery backup. Затем Control Center восстанавливает точный pre-domain пакетный state — наличие пакетов, версии и APT manual/auto marks — после чего возвращает конфигурацию Samba/DNS/Kerberos/resolver/chrony/DHCP и выполняет fingerprint cleanup-audit.
+
+Пакетный pre-state находится в `/var/lib/control-center-root/domain-package-prestate/` только пока Домен активен и удаляется после успешного применения при штатном removal.
 
 ## DNS / Storage removal
 
