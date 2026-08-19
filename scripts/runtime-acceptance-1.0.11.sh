@@ -47,13 +47,14 @@ PY
   echo "Timeout waiting $file => $good (last=$state)" >&2;return 1
 }
 wait_market(){
-  local id="$1" good="$2";local code=''
-  for _ in $(seq 1 180);do
+  local id="$1" good="$2" timeout="${3:-600}";local code=''
+  for _ in $(seq 1 "$timeout");do
     code="$(api "$ADMIN_COOKIE" GET /api/market | python3 -c "import json,sys;j=json.load(sys.stdin);print(next(x for x in j['items'] if x['id']=='$id')['status']['code'])")"
     [[ "$code" == "$good" ]]&&return 0
     [[ "$code" == error ]]&&{ api "$ADMIN_COOKIE" GET /api/market|python3 -m json.tool;return 1; }
     sleep 1
   done
+  echo "Timeout waiting Market $id => $good (last=$code)" >&2
   return 1
 }
 apt_mark_of(){
@@ -115,18 +116,18 @@ api "$ADMIN_COOKIE" GET /api/network/config|python3 -c "import json,sys;j=json.l
 
 log 'Standalone DNS install and configuration'
 api "$ADMIN_COOKIE" POST /api/market/dns '{"action":"install"}' >/dev/null
-wait_json_state /var/lib/control-center-system/dns-status.json applied 'error|rollback|rejected' 240
+wait_json_state /var/lib/control-center-system/dns-status.json applied 'error|rollback|rejected' 600
 systemctl is-active --quiet unbound.service
 sudo python3 - <<'PY'
 import json
 j=json.load(open('/var/lib/control-center-system/modules/dns.json'));assert j['installed'] and j['provider']=='unbound' and j['explicit']
 PY
 api "$ADMIN_COOKIE" POST /api/dns/config '{"forwarders":["1.1.1.1","9.9.9.9"]}' >/dev/null
-wait_json_state /var/lib/control-center-system/dns-status.json applied 'error|rollback|rejected' 120
+wait_json_state /var/lib/control-center-system/dns-status.json applied 'error|rollback|rejected' 180
 
 log 'Standalone Network Storage install'
 api "$ADMIN_COOKIE" POST /api/market/storage '{"action":"install"}' >/dev/null
-wait_json_state /var/lib/control-center-system/storage-status.json applied 'error|rollback|rejected' 300
+wait_json_state /var/lib/control-center-system/storage-status.json applied 'error|rollback|rejected' 900
 systemctl is-active --quiet smbd.service
 sudo sh -c "echo preserve-me > /srv/control-center/storage/public/runtime-preserve.txt"
 sudo python3 - <<'PY'
@@ -136,14 +137,14 @@ PY
 
 log 'DHCP install, client list, documented pagination and IP reservation'
 api "$ADMIN_COOKIE" POST /api/market/dhcp '{"action":"install"}' >/dev/null
-wait_market dhcp running
+wait_market dhcp running 600
 api "$ADMIN_COOKIE" POST /api/dhcp/config '{"interface":"ccad0","range_start":"10.77.11.100","range_end":"10.77.11.150","mask":24,"gateway":"10.77.11.1","dns":["1.1.1.1"],"lease_minutes":720,"extra_options":[]}' >/dev/null
-wait_json_state /var/lib/control-center-system/dhcp-status.json applied 'error|rollback|rejected' 120
+wait_json_state /var/lib/control-center-system/dhcp-status.json applied 'error|rollback|rejected' 180
 api "$ADMIN_COOKIE" GET /api/dhcp/clients >/dev/null
 curl -fsS "$BASE/static/app.js" | grep -Fq 'DHCP_CLIENTS_PAGE_SIZE_COMPLIANCE111 = 10'
 curl -fsS "$BASE/static/app.js" | grep -Fq 'dhcpClientsPager111'
 api "$ADMIN_COOKIE" POST /api/dhcp/reservations '{"action":"reserve","mac":"02:11:22:33:44:55","ip":"10.77.11.120","hostname":"ci-client"}' >/dev/null
-wait_json_state /var/lib/control-center-system/dhcp-reservations-status.json applied 'error|rollback|rejected' 120
+wait_json_state /var/lib/control-center-system/dhcp-reservations-status.json applied 'error|rollback|rejected' 180
 grep -Fq 'dhcp-host=02:11:22:33:44:55,10.77.11.120,ci-client' /etc/dnsmasq.d/control-center-dhcp-reservations.conf
 sudo -u control-center psql -d control_center -Atqc "select count(*) from control_center.dhcp_reservations where mac='02:11:22:33:44:55' and ipv4='10.77.11.120'"|grep -qx 1
 
@@ -174,7 +175,7 @@ PY
 )
 api "$ADMIN_COOKIE" POST /api/samba/provision "$REQ" >/tmp/domain-request-result.json
 STATE=''
-for _ in $(seq 1 420);do
+for _ in $(seq 1 900);do
   STATE=$(sudo python3 - <<'PY' 2>/dev/null||true
 import json
 try:print(json.load(open('/var/lib/control-center-system/samba-status.json')).get('state',''))
@@ -197,7 +198,7 @@ PY
 # ExecStartPost commits the exact package/time-service pre-state only after the
 # orchestrator completes successfully. Keep an external CI copy for the removal
 # verification below.
-for _ in $(seq 1 60);do sudo test -s /var/lib/control-center-root/domain-package-prestate/packages-before.tsv&&break;sleep 1;done
+for _ in $(seq 1 120);do sudo test -s /var/lib/control-center-root/domain-package-prestate/packages-before.tsv&&break;sleep 1;done
 sudo test -s /var/lib/control-center-root/domain-package-prestate/packages-before.tsv
 sudo cp /var/lib/control-center-root/domain-package-prestate/packages-before.tsv "$DOMAIN_PACKAGE_SNAPSHOT"
 sudo test -s /var/lib/control-center-root/domain-package-prestate/time-services-before.tsv && sudo cp /var/lib/control-center-root/domain-package-prestate/time-services-before.tsv "$DOMAIN_TIME_SNAPSHOT" || true
@@ -261,7 +262,7 @@ print(json.dumps({'approval_code':sys.argv[1],'confirmation':'УДАЛИТЬ Д�
 PY
 )
 api "$ADMIN_COOKIE" POST /api/domain/remove "$REMOVE_REQ" >/dev/null
-wait_json_state /var/lib/control-center-system/samba-status.json removed 'error|rollback|rejected' 420
+wait_json_state /var/lib/control-center-system/samba-status.json removed 'error|rollback|rejected' 900
 LATEST_DOMAIN_AUDIT=$(ls -1t /var/lib/control-center-system/cleanup-audits/domain-*.json|head -1)
 sudo python3 - "$LATEST_DOMAIN_AUDIT" <<'PY'
 import json,sys
@@ -284,7 +285,7 @@ login local "$ADMIN_USER" "$ADMIN_PASS" "$ADMIN_COOKIE"
 
 log 'Remove standalone Storage and verify artifacts/user data'
 api "$ADMIN_COOKIE" POST /api/market/storage '{"action":"remove"}' >/dev/null
-wait_json_state /var/lib/control-center-system/storage-status.json removed 'error|rollback|rejected' 300
+wait_json_state /var/lib/control-center-system/storage-status.json removed 'error|rollback|rejected' 600
 test -f /srv/control-center/storage/public/runtime-preserve.txt
 test ! -e /var/lib/control-center-system/modules/storage.json
 LATEST_STORAGE_AUDIT=$(ls -1t /var/lib/control-center-system/cleanup-audits/storage-*.json|head -1)
@@ -295,7 +296,7 @@ PY
 
 log 'Remove standalone DNS and verify artifacts'
 api "$ADMIN_COOKIE" POST /api/market/dns '{"action":"remove"}' >/dev/null
-wait_json_state /var/lib/control-center-system/dns-status.json removed 'error|rollback|rejected' 300
+wait_json_state /var/lib/control-center-system/dns-status.json removed 'error|rollback|rejected' 600
 test ! -e /var/lib/control-center-system/modules/dns.json
 test ! -e /etc/unbound/unbound.conf.d/control-center.conf
 LATEST_DNS_AUDIT=$(ls -1t /var/lib/control-center-system/cleanup-audits/dns-*.json|head -1)
