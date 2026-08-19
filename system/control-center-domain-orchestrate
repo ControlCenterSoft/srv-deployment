@@ -105,14 +105,26 @@ except ChildProcessError:
     pass
 if not sent:
     raise SystemExit('kinit password prompt was not observed')
-raise SystemExit(os.waitstatus_to_exitcode(status))
+rc = os.waitstatus_to_exitcode(status)
+if rc == 0:
+    os.write(2, b'CONTROL_CENTER_ACCEPT: Kerberos kinit OK\n')
+else:
+    os.write(2, f'CONTROL_CENTER_ACCEPT: Kerberos kinit FAILED rc={rc}\n'.encode())
+raise SystemExit(rc)
 PY
   cat >"$KRB_SHIM/klist" <<'SH'
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -uo pipefail
 CACHE="${CONTROL_CENTER_KRB5CCACHE:?}"
 [[ "$CACHE" == /run/control-center-root/krb5cc-domain-* ]]||exit 2
-exec env KRB5CCNAME="FILE:$CACHE" /usr/bin/klist "$@"
+rc=0
+env KRB5CCNAME="FILE:$CACHE" /usr/bin/klist "$@"||rc=$?
+if [[ $rc -eq 0 ]];then
+  echo 'CONTROL_CENTER_ACCEPT: Kerberos klist OK' >&2
+else
+  echo "CONTROL_CENTER_ACCEPT: Kerberos klist FAILED rc=$rc" >&2
+fi
+exit "$rc"
 SH
   cat >"$KRB_SHIM/kdestroy" <<'SH'
 #!/usr/bin/env bash
@@ -124,7 +136,36 @@ env KRB5CCNAME="FILE:$CACHE" /usr/bin/kdestroy "$@"||rc=$?
 rm -f "$CACHE"
 exit "$rc"
 SH
-  chmod 0700 "$KRB_SHIM/kinit" "$KRB_SHIM/klist" "$KRB_SHIM/kdestroy"
+  cat >"$KRB_SHIM/smbclient" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+args=("$@")
+list_host=''
+for ((i=0;i<${#args[@]};i++));do
+  if [[ "${args[$i]}" == '-L' || "${args[$i]}" == '--list' ]];then
+    j=$((i+1))
+    if (( j < ${#args[@]} ));then
+      args[$j]="${args[$j]#//}"
+      list_host="${args[$j]}"
+    fi
+  elif [[ "${args[$i]}" == --list=* ]];then
+    value="${args[$i]#--list=}"
+    value="${value#//}"
+    args[$i]="--list=$value"
+    list_host="$value"
+  fi
+done
+[[ -n "$list_host" ]] && echo "CONTROL_CENTER_ACCEPT: SMB list start host=$list_host" >&2
+rc=0
+/usr/bin/smbclient "${args[@]}"||rc=$?
+if [[ $rc -eq 0 ]];then
+  echo 'CONTROL_CENTER_ACCEPT: SMB smbclient OK' >&2
+else
+  echo "CONTROL_CENTER_ACCEPT: SMB smbclient FAILED rc=$rc" >&2
+fi
+exit "$rc"
+SH
+  chmod 0700 "$KRB_SHIM/kinit" "$KRB_SHIM/klist" "$KRB_SHIM/kdestroy" "$KRB_SHIM/smbclient"
 }
 
 trap cleanup_kerberos_shim EXIT
