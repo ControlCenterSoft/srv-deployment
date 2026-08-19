@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 
 MODE="${1:-}"
-RESULT="${2:-}"
 ROOT_RUN=/run/control-center-root
 SNAPSHOT="$ROOT_RUN/samba-packages-before.tsv"
 APT_LOCK=/run/control-center-apt.lock
@@ -30,12 +29,17 @@ case "$MODE" in
     mv "$TMP" "$SNAPSHOT"
     ;;
 
+  commit)
+    # ExecStartPost reaches this point only after the provisioning worker exits
+    # successfully. Removing the snapshot commits the package transaction.
+    rm -f "$SNAPSHOT"
+    ;;
+
   restore)
+    # ExecStopPost always calls restore. On success the preceding commit removed
+    # the snapshot, so this is a no-op. Any failure/timeout before commit leaves
+    # the snapshot present and therefore triggers package reconciliation.
     [[ -s "$SNAPSHOT" ]] || exit 0
-    if [[ "$RESULT" == success ]]; then
-      rm -f "$SNAPSHOT"
-      exit 0
-    fi
 
     exec 8>"$APT_LOCK"
     flock -w 900 8 || { echo 'Samba package rollback: APT lock timeout' >&2; exit 75; }
@@ -61,8 +65,6 @@ case "$MODE" in
       apt-get install -y "${restore[@]}" || true
     fi
 
-    # A failed provisioning must not leave the machine without the time daemon
-    # it had before the operation. Verify every originally installed package.
     missing=()
     while IFS=$'\t' read -r pkg was_installed version; do
       if [[ "$was_installed" == 1 ]] && ! installed "$pkg"; then missing+=("$pkg"); fi
@@ -77,7 +79,7 @@ case "$MODE" in
     ;;
 
   *)
-    echo 'Usage: control-center-samba-package-guard snapshot | restore <systemd SERVICE_RESULT>' >&2
+    echo 'Usage: control-center-samba-package-guard snapshot|commit|restore' >&2
     exit 2
     ;;
 esac
