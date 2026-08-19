@@ -39,7 +39,7 @@ jobs:
           echo "::add-mask::$PASSWORD"
           getent passwd controladmin | awk -F: '$1=="controladmin" && $7=="/usr/sbin/nologin"{ok=1} END{exit !ok}'
           id -nG controladmin | tr ' ' '\n' | grep -qx control-center-admins
-          passwd -S controladmin | awk '$2=="P"{ok=1} END{exit !ok}'
+          sudo passwd -S controladmin | awk '$2=="P"{ok=1} END{exit !ok}'
 
           python3 - "$USERNAME" "$PASSWORD" >/tmp/control-center-bootstrap-login.json <<'PY'
           import json,sys
