@@ -214,6 +214,46 @@ for ((i=0;i<${#args[@]};i++));do
 done
 if [[ -n "$auth_file" && "$auth_file" == /run/control-center-root/samba-auth-* ]];then rm -f -- "$auth_file"||true;fi
 [[ -n "$list_host" ]] && echo "CONTROL_CENTER_ACCEPT: SMB Kerberos list start host=$list_host cache=$CACHE" >&2
+
+# Samba maps the built-in domain Administrator (RID 500) to Unix uid 0 on an
+# AD DC. Samba 4.13+ protects low Unix ids by default; without this explicit DC
+# setting, authenticated SMB sessions can fail with NT_STATUS_INVALID_SID even
+# though Kerberos, LDAP and DNS are healthy. Keep the exception scoped to the
+# DC configuration and validate it before the SMB acceptance request.
+if [[ -s /etc/samba/smb.conf ]];then
+  current="$(/usr/bin/samba-tool testparm --parameter-name='min domain uid' 2>/dev/null | tail -n1 | tr -d '[:space:]')"
+  if [[ "$current" != 0 ]];then
+    cp -a /etc/samba/smb.conf /run/control-center-root/smb.conf.min-domain-uid.rollback
+    python3 - /etc/samba/smb.conf <<'PY'
+from pathlib import Path
+import re,sys
+p=Path(sys.argv[1]);lines=p.read_text(errors='replace').splitlines();out=[];inside=False;done=False
+for line in lines:
+    s=line.strip()
+    if s.startswith('['): inside=s.lower()=='[global]'
+    if inside and re.match(r'^\s*min\s+domain\s+uid\s*=',line,re.I):
+        if not done: out.append('\tmin domain uid = 0');done=True
+        continue
+    out.append(line)
+if not done:
+    for i,line in enumerate(out):
+        if line.strip().lower()=='[global]': out.insert(i+1,'\tmin domain uid = 0');done=True;break
+if not done: raise SystemExit('global section not found')
+p.write_text('\n'.join(out).rstrip()+'\n')
+PY
+    if ! /usr/bin/samba-tool testparm >/dev/null 2>&1;then
+      cp -a /run/control-center-root/smb.conf.min-domain-uid.rollback /etc/samba/smb.conf
+      echo 'CONTROL_CENTER_ACCEPT: Samba min domain uid compatibility validation FAILED' >&2
+      exit 1
+    fi
+    systemctl restart samba-ad-dc.service
+    for _ in $(seq 1 20);do systemctl is-active --quiet samba-ad-dc.service&&break;sleep 1;done
+    systemctl is-active --quiet samba-ad-dc.service||exit 1
+    rm -f /run/control-center-root/smb.conf.min-domain-uid.rollback
+    echo 'CONTROL_CENTER_ACCEPT: Samba AD-DC min domain uid = 0 applied for RID-500 mapping' >&2
+  fi
+fi
+
 rc=0
 env KRB5CCNAME="FILE:$CACHE" /usr/bin/smbclient --use-kerberos=required --use-krb5-ccache="$CACHE" "${out[@]}"||rc=$?
 if [[ $rc -eq 0 ]];then
