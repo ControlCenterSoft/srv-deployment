@@ -1,39 +1,24 @@
-# PostgreSQL в Control Center 1.0.11
+# PostgreSQL — Control Center 1.0.11
 
-PostgreSQL — application data layer Control Center. Локальное приложение подключается через Unix socket/peer authentication:
+Control Center использует локальную PostgreSQL `control_center` через Unix socket/peer authentication:
 
 ```text
 dbname=control_center user=control-center host=/var/run/postgresql
 ```
 
-Пароль PostgreSQL для локальной роли приложению не требуется.
-
-## Versioned migrations
-
-Migrations находятся в:
+## Migrations
 
 ```text
-/opt/control-center/app/migrations
+001  base application schema
+002  Samba AD-DC preparation
+003  AD readiness/change plans
+004  AD production lifecycle/health
+005  RBAC bootstrap + service dependencies + DHCP reservations + cleanup audits
 ```
 
-История:
+Последняя migration 1.0.11: **005**.
 
-- `001` — базовая application schema;
-- `002` — Samba AD-DC preparation profiles/nodes/preflight;
-- `003` — readiness runs и dry-run change plans;
-- `004` — production Samba AD-DC lifecycle jobs и health runs.
-
-Контрольная таблица:
-
-```text
-control_center.schema_migrations
-```
-
-Checksum уже применённой migration не может изменяться. Installer включает `control-center-db-migrate.service` с retry при временно недоступной PostgreSQL.
-
-## Samba AD-DC 1.0.11
-
-Основные таблицы:
+## Domain lifecycle
 
 ```text
 control_center.ad_dc_profiles
@@ -45,33 +30,67 @@ control_center.ad_dc_lifecycle_jobs
 control_center.ad_dc_health_runs
 ```
 
-`ad_dc_profiles` в migration 004 получает interface/IP/DNS-forwarder, managed/provisioned и health fields.
+Administrator password и one-time approval code в эти таблицы не записываются.
 
-`ad_dc_lifecycle_jobs` хранит:
+## RBAC-ready schema
 
-- job ID;
-- action/state;
-- публичный request;
-- result;
-- backup path;
-- error/timestamps.
+Migration 005 создаёт:
 
-`ad_dc_health_runs` хранит результаты post-provision health checks.
+```text
+control_center.rbac_roles
+control_center.rbac_bindings
+```
+
+Seed roles:
+
+```text
+admin
+viewer
+```
+
+Текущий portal authorization использует bootstrap mapping, но schema позволяет последующим релизам перенести mapping Local/Domain principals в PostgreSQL без изменения способа аутентификации.
+
+## Service dependencies
+
+```text
+control_center.service_dependencies
+```
+
+Обязательные связи:
+
+```text
+domain -> dns
+domain -> storage
+```
+
+## DHCP reservations
+
+```text
+control_center.dhcp_reservations
+```
+
+Сохраняются MAC, IPv4, hostname, enabled и metadata. Root worker остаётся фактическим источником применённой dnsmasq-конфигурации; DB синхронизируется после успешного apply.
+
+## Cleanup audit history
+
+```text
+control_center.service_cleanup_audits
+```
+
+Хранятся service/action, clean flag, checks и recovery path. Root JSON audit остаётся доступен даже при временно недоступной PostgreSQL.
 
 ## Secret boundary
 
-В PostgreSQL **не сохраняются**:
+Не сохраняются:
 
+- Local/Domain passwords;
 - Domain Administrator password;
-- одноразовый Samba approval code;
+- provisioning/removal approval codes;
 - temporary smbclient credentials;
-- private license signing keys.
+- session secret;
+- vendor private signing key.
 
-Provision request для DB формируется отдельно от secret request и содержит только Realm/NetBIOS/interface/IP/network/forwarder и safety flags.
-
-## Web runtime independence
-
-Начиная с 1.0.10 фактический Web port/SSL runtime не зависит от текущей доступности PostgreSQL. После восстановления БД Web settings reconciled автоматически.
+Session secret хранится отдельно в `/etc/control-center/auth.env`, а provisioning secrets — только в `/run`.
 
 ## Проверка
 
@@ -80,8 +99,14 @@ sudo -u control-center psql -d control_center -Atqc \
   "select version,name,applied_at from control_center.schema_migrations order by version"
 
 sudo -u control-center psql -d control_center -c \
-  'select job_id,action,state,backup_path,error,created_at,finished_at from control_center.ad_dc_lifecycle_jobs order by created_at desc limit 20;'
+  'select * from control_center.service_dependencies order by service_id,depends_on;'
 
 sudo -u control-center psql -d control_center -c \
-  'select profile_id,healthy,created_at from control_center.ad_dc_health_runs order by id desc limit 20;'
+  'select auth_source,principal,role_id,enabled from control_center.rbac_bindings order by id;'
+
+sudo -u control-center psql -d control_center -c \
+  'select mac,ipv4,hostname,enabled from control_center.dhcp_reservations order by ipv4;'
+
+sudo -u control-center psql -d control_center -c \
+  'select service_id,action,clean,created_at,recovery_path from control_center.service_cleanup_audits order by id desc limit 30;'
 ```
