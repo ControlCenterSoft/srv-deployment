@@ -14,6 +14,7 @@ import release_110
 import release_110_fix
 import release_111
 import release_111_guard
+import release_111_safety
 import release_111_notifications
 
 app = main.app
@@ -48,6 +49,7 @@ release_110.register(app, main)
 release_110_fix.register(app, main)
 release_111.register(app, main)
 release_111_guard.register(app, main)
+release_111_safety.register(app, main)
 release_111_notifications.register(app, main)
 
 
