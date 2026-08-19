@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Запустите от root: sudo control-center-auth-bootstrap [username]' >&2; exit 1; }
+USER_NAME="${1:-controladmin}"
+[[ "$USER_NAME" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || { echo 'Недопустимое имя пользователя.' >&2; exit 2; }
+[[ "$USER_NAME" != root ]] || { echo 'Root не может использоваться для входа в Web-портал.' >&2; exit 2; }
+groupadd -f control-center-admins
+if ! id "$USER_NAME" >/dev/null 2>&1; then
+  useradd --create-home --shell /usr/sbin/nologin "$USER_NAME"
+fi
+UID_VALUE="$(id -u "$USER_NAME")"
+(( UID_VALUE >= 1000 )) || { echo 'Пользователь портала должен иметь UID >= 1000.' >&2; exit 2; }
+usermod -aG control-center-admins "$USER_NAME"
+PASSWORD="$(openssl rand -base64 27 | tr -d '\n' | tr '/+' '_-')"
+printf '%s:%s\n' "$USER_NAME" "$PASSWORD" | chpasswd
+printf '\nControl Center local portal administrator\n'
+printf '  Логин:  %s\n' "$USER_NAME"
+printf '  Пароль: %s\n' "$PASSWORD"
+printf '\nПароль показан только сейчас и нигде Control Center не сохраняется в открытом виде.\n'
+printf 'После входа его можно сменить системной командой: sudo passwd %s\n\n' "$USER_NAME"
+unset PASSWORD
