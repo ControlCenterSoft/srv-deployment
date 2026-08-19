@@ -31,6 +31,10 @@ Daemon проверяет Linux `SO_PEERCRED`: peer UID должен быть UI
 
 Local password проверяется PAM. Domain password — `ntlm_auth`; RBAC bootstrap membership вычисляется по Samba SID (`wbinfo --name-to-sid` + `--user-sids`). Пароли не сохраняются в audit/session/DB.
 
+## Первый локальный администратор
+
+Если на чистой системе нет обычного локального администратора с рабочим паролем, installer создаёт `controladmin` с `/usr/sbin/nologin`, задаёт криптографически случайный пароль и показывает его один раз в локальном выводе установки. Открытый пароль не сохраняется в application state, PostgreSQL или `/etc/control-center`.
+
 ## Domain provisioning approval
 
 Перед созданием Домена:
@@ -86,6 +90,30 @@ UI дополнительно требует фразу подтверждени
 - выдача внешнего DNS доменным DHCP-клиентам;
 - reservation на IPv4 самого DC.
 
+## SID / Unix mapping acceptance
+
+Control Center не считает AD-DC активным только по факту успешного `samba-tool domain provision`. До перехода в `active` отдельно проверяются встроенный `Administrator` (RID 500), его SID resolution и локальное SID→UID сопоставление. На DC `Administrator` должен отображаться в UID 0; затем выполняется password-authenticated SMB acceptance.
+
+Member-server `idmap config` не добавляется в конфигурацию AD-DC. При несовместимом поведении локального RFC2307 lookup Control Center может отключить только `idmap_ldb:use rfc2307` на самом DC, сохранив NIS schema, после чего обязан повторно доказать SID→UID 0.
+
+## Package rollback boundary
+
+До установки пакетов Домена privileged worker выполняет APT simulation и фиксирует все пакеты, которые транзакция установит, обновит или удалит. Для каждого уже установленного затрагиваемого пакета root worker сохраняет:
+
+- точную версию;
+- APT manual/auto mark;
+- точный rollback `.deb`.
+
+Если необходимые rollback bytes получить невозможно, Domain provisioning блокируется **до изменения системы**.
+
+После успешного provisioning pre-state хранится только root в:
+
+```text
+/var/lib/control-center-root/domain-package-prestate
+```
+
+Web-процесс этот каталог не читает. При штатном Domain removal exact package pre-state применяется до окончательного восстановления конфигурации. `autoremove` намеренно не используется, чтобы не удалить shared dependencies постороннего ПО.
+
 ## Backup / cleanup boundary
 
 Root-only:
@@ -94,9 +122,10 @@ Root-only:
 /var/lib/control-center-root/samba-backups
 /var/lib/control-center-root/domain-destroy-backups
 /var/lib/control-center-root/domain-install-context*
+/var/lib/control-center-root/domain-package-prestate
 ```
 
-После Domain removal cleanup-audit сравнивает deterministic pre-state fingerprints и отдельно проверяет generated AD database/SYSVOL. Recovery backup разрешён как единственный намеренно сохраняемый Domain artifact.
+После Domain removal cleanup-audit сравнивает deterministic pre-state fingerprints, проверяет generated AD database/SYSVOL и подтверждает восстановление package pre-state. Recovery backup разрешён как единственный намеренно сохраняемый Domain artifact.
 
 DNS/Storage также выполняют собственные cleanup audits.
 
