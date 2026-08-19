@@ -18,6 +18,7 @@ import release_111_safety
 import release_111_notifications
 import release_111_services
 import release_111_dependencies
+import release_111_dhcp
 import release_111_services_assets
 import release_111_auth
 
@@ -57,6 +58,7 @@ release_111_safety.register(app, main)
 release_111_notifications.register(app, main)
 release_111_services.register(app, main)
 release_111_dependencies.register(app, main)
+release_111_dhcp.register(app, main)
 release_111_services_assets.register(app, main)
 release_111_auth.register(app, main)
 
