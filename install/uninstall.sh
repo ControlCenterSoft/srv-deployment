@@ -29,8 +29,8 @@ systemctl disable --now control-center-samba-apply.path >/dev/null 2>&1 || true
 systemctl stop control-center-samba-apply.service >/dev/null 2>&1 || true
 rm -f /etc/systemd/system/control-center-update-now.path /var/lib/control-center/update-now
 rm -f /etc/systemd/system/control-center-samba-apply.path /etc/systemd/system/control-center-samba-apply.service
-rm -f /usr/local/sbin/control-center-samba-apply /usr/local/sbin/control-center-samba-approve
-rm -f /run/control-center/samba-provision.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* 2>/dev/null || true
+rm -f /usr/local/sbin/control-center-samba-apply /usr/local/sbin/control-center-samba-approve /usr/local/sbin/control-center-samba-package-guard
+rm -f /run/control-center/samba-provision.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* /run/control-center-root/samba-packages-before.tsv 2>/dev/null || true
 rm -f /etc/tmpfiles.d/control-center.conf
 rm -f /usr/local/sbin/control-center-web-run
 rm -rf /usr/local/lib/control-center
