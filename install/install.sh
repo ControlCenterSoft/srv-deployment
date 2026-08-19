@@ -6,7 +6,12 @@ BASE="$ROOT_DIR/install/install-base-1.0.8.sh"
 TMP="$(mktemp /tmp/control-center-install-1.0.11.XXXXXX)"
 OLD_WEB_ENV="$(cat /etc/control-center/web.env 2>/dev/null || true)"
 BOOTSTRAP_USER=""
-trap 'rm -f "$TMP"' EXIT
+BOOTSTRAP_PASSWORD=""
+cleanup_install(){
+  rm -f "$TMP"
+  unset BOOTSTRAP_PASSWORD
+}
+trap cleanup_install EXIT
 [[ -f "$BASE" ]] || { echo 'Отсутствует install/install-base-1.0.8.sh' >&2; exit 1; }
 
 python3 - "$BASE" "$TMP" <<'PY'
@@ -46,10 +51,10 @@ if [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-root}" != root ]] && id "$SUDO_USER" 
   uid="$(id -u "$SUDO_USER")"; (( uid >= 1000 )) && usermod -aG control-center-admins "$SUDO_USER" || true
 fi
 
-# A root-only server may have no password-authenticating human account. Never
-# expose a generated portal password in unattended installer/update logs. Create
-# a dedicated non-SSH identity in locked state and require an explicit local
-# bootstrap command to set/show the first password.
+# If the server has no human local portal administrator with a working password,
+# create the documented dedicated non-SSH account and set a cryptographically
+# random first password. The clear-text value exists only in this installer
+# process and is printed once at the end of this local installation.
 HAS_PORTAL_ADMIN=0
 IFS=',' read -ra CC_ADMINS <<<"$(getent group control-center-admins | awk -F: '{print $4}')"
 for user in "${CC_ADMINS[@]}"; do
@@ -67,7 +72,9 @@ if [[ "$HAS_PORTAL_ADMIN" == 0 ]]; then
   usermod -aG control-center-admins "$candidate"
   status="$(passwd -S "$candidate" 2>/dev/null | awk '{print $2}' || true)"
   if [[ "$status" != P ]]; then
-    passwd -l "$candidate" >/dev/null 2>&1 || true
+    BOOTSTRAP_PASSWORD="$(openssl rand -base64 27 | tr -d '\n' | tr '/+' '_-')"
+    [[ ${#BOOTSTRAP_PASSWORD} -ge 20 ]] || { echo 'Не удалось сформировать первичный пароль Control Center.' >&2; exit 1; }
+    printf '%s:%s\n' "$candidate" "$BOOTSTRAP_PASSWORD" | chpasswd
     BOOTSTRAP_USER="$candidate"
   fi
 fi
@@ -391,11 +398,12 @@ echo "Web UI: $SCHEME://SERVER:$PORT"
 echo 'Авторизация: локальная через PAM/authd; после создания Домена доступна Local + Domain.'
 echo 'Локальные администраторы портала: группа control-center-admins. Root через Web запрещён.'
 if [[ -n "$BOOTSTRAP_USER" ]]; then
-  printf '\nВАЖНО: на сервере нет локального администратора портала с установленным паролем.\n'
-  printf 'Подготовлен заблокированный Web-пользователь без SSH-доступа: %s\n' "$BOOTSTRAP_USER"
-  printf 'Для явного локального создания/сброса пароля выполните:\n'
-  printf '  sudo control-center-auth-bootstrap %s\n' "$BOOTSTRAP_USER"
-  printf 'Пароль будет показан только в этом локальном вызове и не попадёт в журнал автоматического обновления.\n\n'
+  printf '\nПервичный локальный администратор Control Center создан автоматически.\n'
+  printf '  Логин:  %s\n' "$BOOTSTRAP_USER"
+  printf '  Пароль: %s\n' "$BOOTSTRAP_PASSWORD"
+  printf 'Учетная запись не имеет SSH-shell. Пароль показан только сейчас и Control Center его не сохраняет в открытом виде.\n'
+  printf 'После первого входа пароль рекомендуется сменить: sudo passwd %s\n\n' "$BOOTSTRAP_USER"
+  unset BOOTSTRAP_PASSWORD
 fi
 echo 'Маркет: Домен, DNS и Сетевое хранилище активированы; DHCP поддерживает список клиентов и IP-бронирования.'
 echo 'Перед созданием Домена: sudo control-center-samba-approve'
