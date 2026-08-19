@@ -1,82 +1,97 @@
-# Control Center 1.0.9
+# Control Center 1.0.10
 
-Control Center — web-панель управления Linux-сервером. Текущая release-ветка: **1.0.9**, build **20260819.3**.
+Control Center — web-панель управления Linux-сервером. Текущий Production release: **1.0.10**, build **20260819.4**, audit `passed`.
 
-## Главное в 1.0.9
+## Главное в 1.0.10
 
-- единая пагинация для длинных перечней и таблиц;
-- CPU dashboard: live chart + отдельный Top CPU;
-- RAM dashboard: live chart + отдельный Top RAM;
-- хранилище: круговая диаграмма заполнения + mount usage;
-- LAN RX/TX вместо WAN-карточки на обзоре;
-- в Web-настройках: **Стандартный порт** и **SSL / HTTPS**;
-- standard HTTP → `80`, standard HTTPS → `443`, custom → `1024–65535`;
-- self-signed TLS certificate с health-check/rollback;
-- PostgreSQL migration `002` под будущий Samba AD-DC;
-- `/api/samba/preflight` и UI проверки FQDN/LAN/time/DNS prerequisites;
-- Samba AD-DC отображается в Маркете как **Подготовлено**, но provisioning пока отключён.
+- Samba AD-DC: расширенный readiness, migration `003` и воспроизводимый dry-run change plan;
+- реальный provisioning Samba намеренно отключён до **1.0.11**;
+- переименование компьютера из Настроек через отдельный root-helper с backup/rollback;
+- исправлена смена Web-порта и SSL при недоступной PostgreSQL;
+- стандартный HTTP → `80`, стандартный HTTPS → `443`, custom → `1024–65535`;
+- фактический Web runtime хранится независимо от PostgreSQL и автоматически синхронизируется в БД после её восстановления;
+- operational alerts консолидированы в центр уведомлений;
+- WAN и LAN можно выключать по отдельности;
+- поддерживаются WAN+LAN, только WAN и только LAN;
+- dashboard показывает только графики активных сетевых ролей.
 
-## Пагинация
+## Web runtime
 
-Pager автоматически появляется только когда список не помещается на одну страницу. Он используется для сетевых интерфейсов, DHCP options, RBAC users/groups, уведомлений и Маркета.
+Control Center работает от системной УЗ `control-center`. Для портов 80/443 systemd выдаёт только:
 
-## Web-порт и HTTPS
+```text
+CAP_NET_BIND_SERVICE
+```
 
-Control Center по-прежнему работает от системной УЗ `control-center`. Для bind на 80/443 systemd выдаёт только `CAP_NET_BIND_SERVICE`.
-
-При первом включении HTTPS создаются:
+При включении HTTPS используются:
 
 ```text
 /etc/control-center/tls/server.crt
 /etc/control-center/tls/server.key
 ```
 
-Сертификат self-signed, поэтому браузер может показать предупреждение доверия. ACME/Let's Encrypt и пользовательские certificates будут отдельным этапом.
+Self-signed certificate может вызвать предупреждение браузера. Изменение Web runtime проходит через privileged helper с проверкой порта, restart, HTTP/HTTPS health-check и rollback.
 
-Изменение Web runtime проходит через root helper с проверкой порта, restart, HTTP/HTTPS health-check и rollback.
+В 1.0.10 PostgreSQL больше не является обязательным условием применения порта/SSL. Если БД временно недоступна, Web runtime всё равно применяется, а факт degraded-состояния попадает в колокольчик. После восстановления БД настройки reconciled автоматически.
 
-## PostgreSQL и Samba AD-DC preparation
+## Сети
 
-PostgreSQL остаётся application data layer. Migration `002` создаёт `ad_dc_profiles`, `ad_dc_nodes`, `ad_dc_preflight_runs`. Пароли домена/Administrator не сохраняются в этих таблицах.
+В WAN и LAN доступен пункт **«Выключен»**. Допустимы:
 
-1.0.9 не выполняет `samba-tool domain provision` и не меняет DNS/realm автоматически. Это будет отдельный релиз после preflight/backup/rollback архитектуры.
+```text
+WAN + LAN
+только WAN
+только LAN
+```
+
+Обе роли одновременно выключить нельзя. При включённом WAN LAN не создаёт второй default route; в LAN-only режиме LAN может использовать gateway/default route.
+
+## Samba AD-DC
+
+Migration `003` добавляет readiness history и change plans. Проверяются hostname/FQDN, статический IPv4, NTP, обязательные APT-пакеты, свободное место, порты 53/88/389/445 и существующая Samba-конфигурация.
+
+API:
+
+```text
+GET/POST /api/samba/readiness
+GET/POST /api/samba/plan
+```
+
+1.0.10 **не выполняет** `samba-tool domain provision`. Production provisioning, DNS/Kerberos cutover, backup/rollback и acceptance будут включены только в следующем релизе после проверки подготовленного плана.
 
 ## Установка
 
 ```bash
-git clone --depth 1 --branch release/1.0.9 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.10 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
 
-По умолчанию Web UI остаётся:
+Для чистой установки Web UI стартует на:
 
 ```text
 http://SERVER_IP:8080
 ```
 
-Далее в **Настройки → Web-панель** можно выбрать standard port и HTTPS.
-
 ## Acceptance
 
 ```bash
-sudo bash scripts/acceptance-1.0.9.sh
+sudo bash scripts/acceptance-1.0.10.sh
 ```
 
 Ожидаемо:
 
 ```text
-VERSION 1.0.9
-BUILD   20260819.3
-PostgreSQL migration 002
+VERSION 1.0.10
+BUILD   20260819.4
+PostgreSQL migration 003
+ACCEPTANCE 1.0.10: PASSED
 ```
 
-## Наследование 1.0.8
+## Наследование
 
-Сохраняются persistent Market statuses, исправленный DHCP lifecycle, PostgreSQL notifications, update-install button, recovery старого 1.0.6/dpkg состояния, Home/Professional, protected state и version/build-aware updater.
+Сохраняются пагинация 1.0.9, CPU/RAM Top, storage visualization, TLS, persistent Market statuses, DHCP lifecycle/recovery, PostgreSQL notifications, Update Center, Home/Professional, protected state и version/build-aware updater.
 
 ## Безопасность
 
 Встроенная Web-аутентификация административной панели пока не реализована. Даже при HTTPS Web UI необходимо ограничивать доверенной LAN/VPN/firewall и не публиковать напрямую в Интернет.
-
-Подробности: `releases/1.0.9/README.md`, `docs/WEB-PORT.md`, `docs/SAMBA-AD-DC.md`, `docs/UI.md`.
