@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -160,8 +164,6 @@ jobs:
           assert password not in row and 'abcdef12' not in row and 'administrator_password' not in row and 'approval_code' not in row
           pathlib.Path('/run/control-center/samba-provision.json').unlink()
           release_111._readiness=old_readiness
-          module=pathlib.Path('/var/lib/control-center-system/modules/samba.json')
-          # The root-prepared fixture is injected by the next shell command, so guards are unit-tested below separately.
           assets=c.get('/static/app.js');assert assets.status_code==200 and b'control-center-samba-approve' in assets.data
           print('Samba API secret boundary OK')
           PY
@@ -172,8 +174,7 @@ jobs:
           sudo chmod 0640 /var/lib/control-center-system/modules/samba.json
           sudo -u control-center env CONTROL_CENTER_DB_DSN='dbname=control_center user=control-center host=/var/run/postgresql' PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
           import main,wsgi
-          fake_ifaces=[{'name':'ccad0'},{'name':'ccwan0'}]
-          main._interfaces=lambda:fake_ifaces
+          main._interfaces=lambda:[{'name':'ccad0'},{'name':'ccwan0'}]
           c=wsgi.app.test_client()
           r=c.post('/api/settings/hostname',json={'hostname':'renamed-dc'});assert r.status_code==409
           r=c.post('/api/network/config',json={'lan':{'enabled':False,'method':'disabled'},'wan':{'enabled':True,'interface':'ccwan0','method':'dhcp'}});assert r.status_code==409,r.get_data(as_text=True)
@@ -188,4 +189,4 @@ jobs:
           openssl pkey -pubin -in license/vendor-public.pem -noout
           ! git ls-files | grep -Eai '(^|/)(private|secret|signing)[^/]*(\.pem|\.key)$'
           ! grep -RIl --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' 'BEGIN PRIVATE KEY\|BEGIN RSA PRIVATE KEY' .
-          for f in README.md docs/INSTALL.md docs/SAMBA-AD-DC.md docs/NETWORK.md docs/NOTIFICATIONS.md docs/SECURITY.md releases/1.0.11/README.md releases/1.0.11/manifest.json; do test -s "$f"; done
+          for f in README.md docs/INSTALL.md docs/SAMBA-AD-DC.md docs/NETWORK.md docs/NOTIFICATIONS.md docs/SECURITY.md docs/POSTGRESQL.md releases/1.0.11/README.md releases/1.0.11/manifest.json; do test -s "$f"; done
