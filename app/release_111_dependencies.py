@@ -32,6 +32,22 @@ def _managed_dns(main):
     return m if m.get('installed') and m.get('provider') == 'unbound' else {}
 
 
+def _protected_dir_probe(path: Path):
+    """Return True/False when visible, None when intentionally inaccessible.
+
+    Domain storage is root/service-owned and the unprivileged Web process does
+    not need traverse permission. A PermissionError is therefore not evidence
+    that the share is absent. Root lifecycle workers remain responsible for
+    creating/removing the path and publishing the trusted module state.
+    """
+    try:
+        return path.is_dir()
+    except PermissionError:
+        return None
+    except OSError:
+        return False
+
+
 def register(app, main):
     original_readiness = release_111._readiness
     original_health = release_111._quick_health
@@ -163,15 +179,26 @@ def register(app, main):
             'message': 'Samba Internal DNS dependency',
         }
         share_path = Path(str(storage.get('path') or '/srv/control-center/storage/public'))
+        path_exists = _protected_dir_probe(share_path)
         marker = False
         try:
             marker = '# BEGIN CONTROL CENTER STORAGE' in Path('/etc/samba/smb.conf').read_text(errors='replace')
         except Exception:
             pass
+        storage_state_ok = bool(
+            storage.get('installed')
+            and storage.get('provider') == 'samba_ad_dc'
+            and 'domain' in (storage.get('dependency_by') or [])
+        )
         checks['storage_dependency'] = {
-            'ok': bool(storage.get('installed') and storage.get('provider') == 'samba_ad_dc' and 'domain' in (storage.get('dependency_by') or []) and share_path.is_dir() and marker),
-            'value': {'module': storage, 'path_exists': share_path.is_dir(), 'config_marker': marker},
-            'message': 'Domain SMB storage dependency',
+            'ok': bool(storage_state_ok and path_exists is not False and marker),
+            'value': {
+                'module': storage,
+                'path_exists': path_exists,
+                'path_probe': 'protected' if path_exists is None else 'visible',
+                'config_marker': marker,
+            },
+            'message': 'Domain SMB storage dependency; protected path is validated by the root lifecycle worker and trusted module state.',
         }
         rc, out, err = main_arg._run(['systemctl', 'is-active', 'control-center-authd.service'], 4)
         checks['portal_auth_daemon'] = {'ok': rc == 0 and out.strip() == 'active', 'value': out.strip() or err.strip(), 'message': 'Local/domain portal auth daemon'}
