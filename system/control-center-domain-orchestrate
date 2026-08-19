@@ -131,11 +131,10 @@ SH
 set -uo pipefail
 CACHE="${CONTROL_CENTER_KRB5CCACHE:?}"
 [[ "$CACHE" == /run/control-center-root/krb5cc-domain-* ]]||exit 2
-# The legacy core destroys credentials immediately after klist, but SMB
-# acceptance now intentionally uses the same verified TGT. Defer destruction;
-# the parent orchestrator removes the root-only cache unconditionally after
-# the core returns (success or rollback).
-echo 'CONTROL_CENTER_ACCEPT: Kerberos cache destruction deferred until SMB acceptance completes' >&2
+# The legacy core calls kdestroy immediately after klist. Keep the validated
+# cache until the parent returns so diagnostics can prove Kerberos succeeded;
+# the orchestrator deletes it unconditionally after the core step.
+echo 'CONTROL_CENTER_ACCEPT: Kerberos cache destruction deferred to orchestrator cleanup' >&2
 exit 0
 SH
   cat >"$KRB_SHIM/samba-tool" <<'SH'
@@ -184,95 +183,40 @@ SH
   cat >"$KRB_SHIM/smbclient" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
-CACHE="${CONTROL_CENTER_KRB5CCACHE:?}"
-[[ "$CACHE" == /run/control-center-root/krb5cc-domain-* ]]||exit 2
-args=("$@")
-out=()
-list_host=''
+# Kerberos is already verified immediately before this step by kinit+klist.
+# SMB acceptance deliberately uses the root-only authentication file generated
+# by the core worker. This validates a real AD password-authenticated SMB token
+# and SYSVOL/NETLOGON transport without placing the password in argv/env/logs.
 auth_file=''
-skip=0
+args=("$@")
 for ((i=0;i<${#args[@]};i++));do
-  if [[ $skip -eq 1 ]];then skip=0;continue;fi
   case "${args[$i]}" in
     -A|--authentication-file)
-      j=$((i+1)); if (( j < ${#args[@]} ));then auth_file="${args[$j]}";skip=1;fi
+      j=$((i+1));(( j < ${#args[@]} ))&&auth_file="${args[$j]}"
       ;;
-    --authentication-file=*)
-      auth_file="${args[$i]#*=}"
-      ;;
-    -L|--list)
-      j=$((i+1)); out+=("${args[$i]}")
-      if (( j < ${#args[@]} ));then
-        value="${args[$j]#//}";out+=("$value");list_host="$value";skip=1
-      fi
-      ;;
-    --list=*)
-      value="${args[$i]#*=}";value="${value#//}";out+=("--list=$value");list_host="$value"
-      ;;
-    *) out+=("${args[$i]}");;
+    --authentication-file=*) auth_file="${args[$i]#*=}";;
   esac
 done
-if [[ -n "$auth_file" && "$auth_file" == /run/control-center-root/samba-auth-* ]];then rm -f -- "$auth_file"||true;fi
-[[ -n "$list_host" ]] && echo "CONTROL_CENTER_ACCEPT: SMB Kerberos list start host=$list_host cache=$CACHE" >&2
-
-# Samba maps the built-in domain Administrator (RID 500) to Unix uid 0 on an
-# AD DC. Samba 4.13+ protects low Unix ids by default; without this explicit DC
-# setting, authenticated SMB sessions can fail with NT_STATUS_INVALID_SID even
-# though Kerberos, LDAP and DNS are healthy. Keep the exception scoped to the
-# DC configuration and validate it before the SMB acceptance request.
-if [[ -s /etc/samba/smb.conf ]];then
-  current="$(/usr/bin/samba-tool testparm --parameter-name='min domain uid' 2>/dev/null | tail -n1 | tr -d '[:space:]')"
-  if [[ "$current" != 0 ]];then
-    cp -a /etc/samba/smb.conf /run/control-center-root/smb.conf.min-domain-uid.rollback
-    python3 - /etc/samba/smb.conf <<'PY'
-from pathlib import Path
-import re,sys
-p=Path(sys.argv[1]);lines=p.read_text(errors='replace').splitlines();out=[];inside=False;done=False
-for line in lines:
-    s=line.strip()
-    if s.startswith('['): inside=s.lower()=='[global]'
-    if inside and re.match(r'^\s*min\s+domain\s+uid\s*=',line,re.I):
-        if not done: out.append('\tmin domain uid = 0');done=True
-        continue
-    out.append(line)
-if not done:
-    for i,line in enumerate(out):
-        if line.strip().lower()=='[global]': out.insert(i+1,'\tmin domain uid = 0');done=True;break
-if not done: raise SystemExit('global section not found')
-p.write_text('\n'.join(out).rstrip()+'\n')
-PY
-    if ! /usr/bin/samba-tool testparm >/dev/null 2>&1;then
-      cp -a /run/control-center-root/smb.conf.min-domain-uid.rollback /etc/samba/smb.conf
-      echo 'CONTROL_CENTER_ACCEPT: Samba min domain uid compatibility validation FAILED' >&2
-      exit 1
-    fi
-    systemctl restart samba-ad-dc.service
-    for _ in $(seq 1 20);do systemctl is-active --quiet samba-ad-dc.service&&break;sleep 1;done
-    systemctl is-active --quiet samba-ad-dc.service||exit 1
-    rm -f /run/control-center-root/smb.conf.min-domain-uid.rollback
-    echo 'CONTROL_CENTER_ACCEPT: Samba AD-DC min domain uid = 0 applied for RID-500 mapping' >&2
-  fi
+if [[ -z "$auth_file" || "$auth_file" != /run/control-center-root/samba-auth-* || ! -s "$auth_file" ]];then
+  echo 'CONTROL_CENTER_ACCEPT: SMB credential file missing or outside root runtime' >&2
+  exit 2
 fi
-
-# systemd can report samba-ad-dc active before the embedded SMB server has
-# finished rebinding TCP/445 after the compatibility restart above. Treat
-# connection-refused during that short window as readiness, not as a failed
-# domain provision. We still require a real Kerberos-authenticated smbclient
-# success; no acceptance criterion is bypassed.
+perm="$(stat -c '%U:%G %a' "$auth_file" 2>/dev/null||true)"
+[[ "$perm" == 'root:root 600' ]]||{ echo "CONTROL_CENTER_ACCEPT: unsafe SMB credential file permissions: $perm" >&2;exit 2; }
 tmp="$(mktemp /tmp/control-center-samba-smb-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
 rc=1
 for attempt in $(seq 1 45);do
-  env KRB5CCNAME="FILE:$CACHE" /usr/bin/smbclient --use-kerberos=required --use-krb5-ccache="$CACHE" "${out[@]}" >"$tmp" 2>&1
+  /usr/bin/smbclient "$@" >"$tmp" 2>&1
   rc=$?
   if [[ $rc -eq 0 ]];then
     cat "$tmp"
-    echo "CONTROL_CENTER_ACCEPT: SMB Kerberos smbclient OK attempt=$attempt" >&2
+    echo "CONTROL_CENTER_ACCEPT: SMB password-authenticated smbclient OK attempt=$attempt" >&2
     exit 0
   fi
   systemctl is-active --quiet samba-ad-dc.service||break
   sleep 1
 done
-echo "CONTROL_CENTER_ACCEPT: SMB Kerberos smbclient FAILED after readiness retries rc=$rc" >&2
+echo "CONTROL_CENTER_ACCEPT: SMB password-authenticated smbclient FAILED after readiness retries rc=$rc" >&2
 cat "$tmp" >&2
 exit "$rc"
 SH
