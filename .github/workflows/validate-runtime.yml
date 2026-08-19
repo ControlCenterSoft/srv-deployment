@@ -56,7 +56,12 @@ jobs:
           dpkg --audit || true
 
           sudo rm -rf /tmp/control-center-ci-diagnostics
-          sudo install -d -m 0755 /tmp/control-center-ci-diagnostics/state /tmp/control-center-ci-diagnostics/journal
+          sudo install -d -m 0755 \
+            /tmp/control-center-ci-diagnostics/state \
+            /tmp/control-center-ci-diagnostics/journal \
+            /tmp/control-center-ci-diagnostics/acceptance
+          sudo chown -R "$USER:$USER" /tmp/control-center-ci-diagnostics
+
           for f in \
             samba-status.json samba-last.log dns-status.json storage-status.json \
             dhcp-status.json dhcp-reservations-status.json market-status.json; do
@@ -64,6 +69,8 @@ jobs:
           done
           sudo test -d /var/lib/control-center-system/modules && sudo cp -a /var/lib/control-center-system/modules /tmp/control-center-ci-diagnostics/state/modules || true
           sudo test -d /var/lib/control-center-system/cleanup-audits && sudo cp -a /var/lib/control-center-system/cleanup-audits /tmp/control-center-ci-diagnostics/state/cleanup-audits || true
+          sudo find /tmp -maxdepth 1 -type f -name 'control-center-samba-*' -exec cp {} /tmp/control-center-ci-diagnostics/acceptance/ \; 2>/dev/null || true
+
           sudo journalctl -u control-center -u control-center-authd -u control-center-samba-apply.service -u control-center-domain-destroy.service -u control-center-dns-apply.service -u control-center-storage-apply.service --no-pager > /tmp/control-center-ci-diagnostics/journal/control-center.log 2>&1 || true
           sudo systemctl status control-center control-center-authd control-center-samba-apply.service control-center-domain-destroy.service control-center-dns-apply.service control-center-storage-apply.service control-center-dhcp-server.service --no-pager > /tmp/control-center-ci-diagnostics/systemd-status.txt 2>&1 || true
           dpkg --audit > /tmp/control-center-ci-diagnostics/dpkg-audit.txt 2>&1 || true
