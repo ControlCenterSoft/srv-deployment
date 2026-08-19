@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+RUN=/run/control-center
+ROOT_RUN=/run/control-center-root
+SYSTEM=/var/lib/control-center-system
+ROOT=/var/lib/control-center-root
+PENDING="$RUN/domain-remove.json"
+APPROVAL="$ROOT_RUN/samba-approval.json"
+SAMBA="$SYSTEM/modules/samba.json"
+STATUS="$SYSTEM/samba-status.json"
+AUDITS="$SYSTEM/cleanup-audits"
+CTX="$ROOT/domain-install-context.json"
+CTX_DIR="$ROOT/domain-install-context"
+[[ -s "$PENDING" && -s "$SAMBA" ]] || exit 0
+install -d -o root -g control-center -m 0750 "$AUDITS"
+status(){ python3 - "$STATUS" "$1" "$2" "${3:-}" <<'PY'
+import json,sys,time,os,tempfile
+p,state,msg,detail=sys.argv[1:]
+try:d=json.load(open(p))
+except Exception:d={}
+d.update({'state':state,'message':msg,'detail':detail,'timestamp':int(time.time())})
+fd,tmp=tempfile.mkstemp(prefix='.samba-status.',dir=os.path.dirname(p))
+with os.fdopen(fd,'w') as f:json.dump(d,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+os.replace(tmp,p)
+PY
+chown root:control-center "$STATUS";chmod 0640 "$STATUS"; }
+readarray -t R < <(python3 - "$PENDING" "$SAMBA" <<'PY'
+import json,re,sys
+p=json.load(open(sys.argv[1]));s=json.load(open(sys.argv[2]));code=str(p.get('approval_code') or '').strip().lower()
+if not re.fullmatch(r'[0-9a-f]{8}',code):raise SystemExit(2)
+if p.get('realm')!=s.get('realm') or p.get('fqdn')!=s.get('fqdn'):raise SystemExit(3)
+print(code);print(s.get('realm',''));print(s.get('fqdn',''));print(s.get('ipv4',''));print(s.get('backup_path',''))
+PY
+) || { rm -f "$PENDING";status rejected 'Удаление Домена отклонено privileged validation';exit 1; }
+CODE="${R[0]}";REALM="${R[1]}";FQDN="${R[2]}";IP="${R[3]}";PREBACKUP="${R[4]}"
+rm -f "$PENDING"
+# One-time local approval is purpose-bound to destructive removal.
+if ! python3 - "$APPROVAL" "$CODE" <<'PY'
+import hashlib,json,re,sys,time
+p,code=sys.argv[1:]
+if not re.fullmatch(r'[0-9a-f]{8}',code):raise SystemExit(2)
+j=json.load(open(p))
+if j.get('purpose')!='domain-destroy' or int(j.get('expires_at') or 0)<int(time.time()):raise SystemExit(3)
+if hashlib.sha256(code.encode()).hexdigest()!=j.get('sha256'):raise SystemExit(4)
+PY
+then rm -f "$APPROVAL";status rejected 'Одноразовый код удаления отсутствует, истёк или имеет другое назначение';exit 1;fi
+rm -f "$APPROVAL";unset CODE
+
+# Never destroy a domain when another DC exists. Query the local AD database
+# directly through Samba's ldb Python module; inability to prove a single-DC
+# topology blocks removal.
+DC_COUNT="$(/usr/bin/python3 - <<'PY'
+import ldb
+p='/var/lib/samba/private/sam.ldb'
+db=ldb.Ldb(p)
+r=db.search(base='',scope=ldb.SCOPE_SUBTREE,expression='(objectClass=nTDSDSA)',attrs=['dn'])
+print(len(r))
+PY
+)" || { status rejected 'Не удалось проверить количество контроллеров домена. Удаление заблокировано.';exit 1; }
+[[ "$DC_COUNT" =~ ^[0-9]+$ && "$DC_COUNT" -eq 1 ]] || { status rejected "Обнаружено контроллеров домена: $DC_COUNT. Автоматическое уничтожение разрешено только для единственного DC.";exit 1; }
+
+status removing "Удаление Домена $REALM…" 'Создаётся recovery backup, затем восстанавливается точное состояние до Domain provisioning.'
+TS=$(date +%s);REC="$ROOT/domain-destroy-backups/$TS";install -d -o root -g root -m 0700 "$REC"
+PATHS=();for p in etc/samba var/lib/samba var/cache/samba etc/krb5.conf etc/resolv.conf etc/chrony var/lib/control-center-system/modules/samba.json var/lib/control-center-system/modules/dns.json var/lib/control-center-system/modules/storage.json var/lib/control-center-system/dhcp-config.json;do [[ -e "/$p" || -L "/$p" ]]&&PATHS+=("$p");done
+if (( ${#PATHS[@]} ));then tar -C / --acls --xattrs -czpf "$REC/domain-before-destroy.tar.gz" "${PATHS[@]}";else tar -czpf "$REC/domain-before-destroy.tar.gz" --files-from /dev/null;fi
+cp -a "$CTX" "$CTX_DIR" "$REC/" 2>/dev/null||true
+chmod -R go-rwx "$REC"
+
+/usr/local/sbin/control-center-domain-restore-prestate destroy
+# Rotate the portal session secret so any existing domain-authenticated session
+# becomes invalid immediately after the domain disappears.
+AUTH_ENV=/etc/control-center/auth.env
+SECRET="$(openssl rand -hex 32)"
+printf 'CONTROL_CENTER_SESSION_SECRET=%s\n' "$SECRET" >"$AUTH_ENV";chown root:control-center "$AUTH_ENV";chmod 0640 "$AUTH_ENV";unset SECRET
+systemctl restart control-center.service >/dev/null 2>&1||true
+
+# Remove operational install context and pre-provision backup after it has been
+# captured in the dedicated recovery bundle above.
+[[ -n "$PREBACKUP" && "$PREBACKUP" == "$ROOT"/samba-backups/* ]]&&rm -rf "$PREBACKUP"||true
+rm -rf "$CTX_DIR";rm -f "$CTX"
+
+AUDIT="$AUDITS/domain-$TS.json"
+python3 - "$AUDIT" "$REC" "$IP" <<'PY'
+import json,subprocess,sys,time,os
+p,recovery,old_ip=sys.argv[1:]
+def active(unit):return subprocess.run(['systemctl','is-active','--quiet',unit]).returncode==0
+def load(path):
+ try:return json.load(open(path))
+ except Exception:return {}
+dns=load('/var/lib/control-center-system/modules/dns.json');storage=load('/var/lib/control-center-system/modules/storage.json')
+checks={
+ 'domain_module_removed':not os.path.exists('/var/lib/control-center-system/modules/samba.json'),
+ 'samba_ad_dc_inactive':not active('samba-ad-dc.service'),
+ 'domain_context_removed':not os.path.exists('/var/lib/control-center-root/domain-install-context.json') and not os.path.exists('/var/lib/control-center-root/domain-install-context'),
+ 'dns_dependency_removed':dns.get('provider')!='samba_internal' and 'domain' not in (dns.get('dependency_by') or []),
+ 'storage_dependency_removed':storage.get('provider')!='samba_ad_dc' and 'domain' not in (storage.get('dependency_by') or []),
+ 'winbind_portal_membership_removed':True,
+ 'recovery_backup_present':os.path.exists(os.path.join(recovery,'domain-before-destroy.tar.gz')),
+}
+r=subprocess.run(['id','-nG','control-center'],text=True,capture_output=True)
+if r.returncode==0 and 'winbindd_priv' in r.stdout.split():checks['winbind_portal_membership_removed']=False
+clean=all(checks.values())
+data={'service':'domain','action':'remove','clean':clean,'checks':checks,'timestamp':int(time.time()),'recovery_backup':recovery,'allowed_remaining':['root-only recovery backup','generic Control Center feature code','cleanup audit'],'restored_dns_provider':dns.get('provider'),'restored_storage_provider':storage.get('provider')}
+with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n')
+os.chmod(p,0o640)
+raise SystemExit(0 if clean else 2)
+PY
+RC=$?;chown root:control-center "$AUDIT"
+if [[ $RC -ne 0 ]];then status error 'Домен удалён, но cleanup-audit обнаружил остаточные артефакты' "$AUDIT";exit 1;fi
+status removed "Домен $REALM удалён. Состояние до установки восстановлено." "Cleanup-audit PASSED · recovery: $REC"
