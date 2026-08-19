@@ -2,105 +2,114 @@
 
 ## Web process
 
-Web UI работает от непривилегированной системной УЗ `control-center`. Root operations выполняются отдельными systemd workers через проверяемые pending requests.
+Web UI работает как непривилегированный `control-center`. Для 80/443 используется только `CAP_NET_BIND_SERVICE`. Root lifecycle вынесен в отдельные systemd workers.
 
-Для Web ports 80/443 службе выдаётся только `CAP_NET_BIND_SERVICE`; Flask/Gunicorn не запускаются от root.
+## Авторизация портала активна
 
-## Встроенная Web-аутентификация
+В 1.0.11 включена встроенная Local/Domain авторизация.
 
-Полноценная встроенная Web-аутентификация административной панели пока не завершена. Поэтому Web UI должен быть доступен только из доверенной LAN/VPN/firewall и не должен публиковаться напрямую в Интернет.
+- без сессии административные API возвращают 401;
+- `viewer` не может выполнять POST/PUT/PATCH/DELETE;
+- `admin` получает изменения;
+- root Web login запрещён;
+- login rate-limit: 8 неуспешных попыток на IP+username за 5 минут.
 
-## Samba AD-DC: двойное подтверждение
+Сессии: HttpOnly, SameSite Strict, Secure при HTTPS, lifetime 8 часов.
 
-Domain provisioning — высокорисковая root-операция. В 1.0.11 одного Web POST недостаточно.
+## Isolated auth daemon
 
-Перед созданием домена требуется локально выполнить:
+Web-процесс не читает `/etc/shadow` и не получает `winbindd_priv`.
+
+`control-center-authd` работает root, sandboxed и принимает запросы только через:
+
+```text
+/run/control-center-auth/auth.sock
+root:control-center 0660
+```
+
+Daemon проверяет Linux `SO_PEERCRED`: peer UID должен быть UID `control-center`.
+
+Local password проверяется PAM. Domain password — `ntlm_auth`; RBAC bootstrap membership вычисляется по Samba SID (`wbinfo --name-to-sid` + `--user-sids`). Пароли не сохраняются в audit/session/DB.
+
+## Domain provisioning approval
+
+Перед созданием Домена:
 
 ```bash
 sudo control-center-samba-approve
 ```
 
-Команда генерирует случайный 8-hex one-time code. В `/run/control-center-root/samba-approval.json` сохраняется только SHA-256 кода.
+Код:
 
-Свойства approval:
-
-- root-only;
+- случайный 8-hex;
 - TTL 600 секунд;
-- purpose-bound `samba-ad-dc-provision`;
-- одноразовый;
-- удаляется после проверки.
-
-## Administrator password
+- one-time;
+- purpose `samba-ad-dc-provision`;
+- в root-only runtime хранится только SHA-256.
 
 Domain Administrator password:
 
-- проверяется на совпадение/длину/сложность в Web API;
-- повторно проверяется privileged worker;
-- не хранится в PostgreSQL;
-- не хранится в `/var/lib/control-center*`;
-- secret pending request существует только в `/run/control-center`;
-- `/run/control-center` доступен только пользователю `control-center` и root;
-- worker удаляет pending request сразу после чтения;
-- пароль не передаётся как `--adminpass` или другой argv parameter;
-- `smbclient` acceptance использует временный root-only credentials file в `/run/control-center-root`, который удаляется после проверки.
+- валидируется Web API и root worker;
+- не сохраняется в PostgreSQL/persistent state;
+- request живёт только в `/run/control-center`;
+- worker удаляет его сразу после чтения;
+- пароль не передаётся как `--adminpass` argv.
 
-Runtime directories создаются через systemd-tmpfiles:
+## Domain removal approval
 
-```text
-/run/control-center       control-center:control-center 0700
-/run/control-center-root  root:root                     0700
+Destruction использует отдельный purpose-bound код:
+
+```bash
+sudo control-center-samba-approve --remove
 ```
 
-Они очищаются после reboot как tmpfs runtime state.
+UI дополнительно требует фразу подтверждения. Provision approval нельзя использовать для удаления и наоборот.
 
-## Privileged revalidation
+Удаление блокируется, если невозможно доказать, что контроллер в домене единственный. Перед destruction создаётся root-only recovery bundle.
 
-`control-center-samba-apply` не доверяет данным Web validation. Перед mutation он повторно проверяет:
+## External takeover
 
-- job ID;
-- Realm/NetBIOS syntax;
-- сетевую роль;
-- interface name;
-- IPv4/prefix/network consistency;
-- DNS forwarder;
-- password policy;
-- WAN confirmation;
-- approval code;
-- фактическое наличие requested Static IPv4 на interface.
+Первоначальный мастер не захватывает внешний AD-DC. Если обнаружен неуправляемый Samba Active Directory Domain Controller, readiness/root preflight блокируют provisioning.
 
-## Backup boundary
-
-Samba rollback backups находятся вне Web-writable state:
-
-```text
-/var/lib/control-center-root/samba-backups
-```
-
-Пользователь `control-center` не имеет доступа к этому каталогу. Backup может содержать существующую Samba database и поэтому должен рассматриваться как секретный материал.
-
-## APT/service cutover
-
-Samba package installation защищена общим APT lock. Временный `policy-rc.d` запрещает автоматический старт Samba/Winbind/Chrony до управляемого cutover. Existing `policy-rc.d`, если он был, восстанавливается.
+Управляемое Control Center standalone-хранилище — отдельный случай: оно может быть автоматически переведено в доменный режим после backup.
 
 ## Active DC invariants
 
-После provisioning backend блокирует обычными настройками:
+После Domain activation запрещены обычными endpoints:
 
-- rename hostname активного DC;
-- disable/change interface DC;
-- change IPv4/prefix DC;
-- выдачу внешнего DNS через Control Center DHCP на DC interface.
+- hostname rename;
+- выключение роли DC;
+- DHCP вместо Static на DC interface;
+- изменение interface/IP/prefix;
+- удаление DNS;
+- удаление Storage;
+- выдача внешнего DNS доменным DHCP-клиентам;
+- reservation на IPv4 самого DC.
 
-Это предотвращает случайное разрушение DNS/Kerberos identity домена.
+## Backup / cleanup boundary
 
-## Domain destruction
+Root-only:
 
-1.0.11 не реализует автоматическое удаление/уничтожение AD domain. Uninstall Control Center не удаляет Samba domain database/SYSVOL. Если managed DC активен, uninstall с очисткой application data блокируется.
+```text
+/var/lib/control-center-root/samba-backups
+/var/lib/control-center-root/domain-destroy-backups
+/var/lib/control-center-root/domain-install-context*
+```
+
+После Domain removal cleanup-audit сравнивает deterministic pre-state fingerprints и отдельно проверяет generated AD database/SYSVOL. Recovery backup разрешён как единственный намеренно сохраняемый Domain artifact.
+
+DNS/Storage также выполняют собственные cleanup audits.
+
+## Uninstall
+
+Uninstall панели не используется как shortcut для удаления серверных ролей. Полное удаление application state блокируется, пока Domain/DNS/Storage установлены. Службы сначала удаляются через lifecycle Маркета с cleanup-audit.
+
+`--keep-data` сохраняет service metadata/data/recovery state.
 
 ## PostgreSQL
 
-PostgreSQL использует локальный Unix socket + peer authentication. В lifecycle tables сохраняются только публичные параметры domain plan/job и health results. Administrator password и one-time approval code не должны попадать в DB.
+DB использует Unix socket + peer authentication. Migration 005 создаёт RBAC/service dependency/DHCP reservation/cleanup history schema. Passwords, approval codes и session secret в DB не хранятся.
 
 ## Professional license
 
-Professional license проверяется RSA/SHA-256. Client/server Control Center содержит только vendor public key. Vendor private signing key не должен храниться в GitHub, installer или пользовательском сервере.
+Professional license продолжает проверяться RSA/SHA-256 только с vendor public key на сервере. Private signing key не должен попадать в GitHub или клиентскую систему.
