@@ -24,23 +24,79 @@ PY
 chmod 0755 "$TMP"
 CONTROL_CENTER_RELEASE_ROOT="$ROOT_DIR" bash "$TMP" "$@"
 
+# Portal authentication runtime. PAM is used only for local Linux users; domain
+# authentication is enabled automatically after Samba AD-DC provisioning.
+export DEBIAN_FRONTEND=noninteractive
+exec 9>/run/control-center-apt.lock
+flock -w 900 9 || { echo 'Менеджер пакетов занят.' >&2; exit 75; }
+apt-get update
+apt-get install -y pamtester
+flock -u 9
+
+groupadd -f control-center-admins
+# Grant portal admin rights to existing human sudo/wheel users. Never enable root
+# as a Web identity and never create a default password.
+while IFS=: read -r user _ uid _; do
+  [[ "$uid" =~ ^[0-9]+$ ]] || continue
+  (( uid >= 1000 )) || continue
+  groups="$(id -nG "$user" 2>/dev/null || true)"
+  if grep -qwE '(sudo|wheel)' <<<"$groups"; then usermod -aG control-center-admins "$user"; fi
+done </etc/passwd
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-root}" != root ]] && id "$SUDO_USER" >/dev/null 2>&1; then
+  uid="$(id -u "$SUDO_USER")"; (( uid >= 1000 )) && usermod -aG control-center-admins "$SUDO_USER" || true
+fi
+cat >/etc/pam.d/control-center-web <<'PAM'
+# Control Center local portal authentication.
+auth    include common-auth
+account include common-account
+PAM
+chmod 0644 /etc/pam.d/control-center-web
+
+install -d -o root -g root -m 0755 /etc/control-center
+AUTH_ENV=/etc/control-center/auth.env
+if [[ ! -s "$AUTH_ENV" ]] || ! grep -Eq '^CONTROL_CENTER_SESSION_SECRET=[0-9a-f]{64}$' "$AUTH_ENV"; then
+  SECRET="$(openssl rand -hex 32)"
+  printf 'CONTROL_CENTER_SESSION_SECRET=%s\n' "$SECRET" >"$AUTH_ENV"
+  unset SECRET
+fi
+chown root:control-center "$AUTH_ENV"; chmod 0640 "$AUTH_ENV"
+
+# Privileged helpers.
 install -m 0755 "$ROOT_DIR/system/control-center-web-run" /usr/local/sbin/control-center-web-run
 install -m 0755 "$ROOT_DIR/system/control-center-web-apply" /usr/local/sbin/control-center-web-apply
 install -m 0755 "$ROOT_DIR/system/control-center-hostname-apply" /usr/local/sbin/control-center-hostname-apply
-install -m 0755 "$ROOT_DIR/system/control-center-samba-apply" /usr/local/sbin/control-center-samba-apply
+install -m 0755 "$ROOT_DIR/system/control-center-samba-apply" /usr/local/sbin/control-center-samba-apply-core
+install -m 0755 "$ROOT_DIR/system/control-center-domain-pre" /usr/local/sbin/control-center-domain-pre
+install -m 0755 "$ROOT_DIR/system/control-center-domain-post" /usr/local/sbin/control-center-domain-post
+install -m 0755 "$ROOT_DIR/system/control-center-domain-restore-prestate" /usr/local/sbin/control-center-domain-restore-prestate
+install -m 0755 "$ROOT_DIR/system/control-center-domain-orchestrate" /usr/local/sbin/control-center-domain-orchestrate
+# Compatibility command name: this is the orchestrator, not the destructive core.
+install -m 0755 "$ROOT_DIR/system/control-center-domain-orchestrate" /usr/local/sbin/control-center-samba-apply
+install -m 0755 "$ROOT_DIR/system/control-center-domain-destroy" /usr/local/sbin/control-center-domain-destroy
 install -m 0755 "$ROOT_DIR/system/control-center-samba-approve" /usr/local/sbin/control-center-samba-approve
 install -m 0755 "$ROOT_DIR/system/control-center-samba-package-guard" /usr/local/sbin/control-center-samba-package-guard
 install -m 0755 "$ROOT_DIR/network/control-center-network-apply" /usr/local/sbin/control-center-network-apply
 install -m 0755 "$ROOT_DIR/market/control-center-dhcp-apply" /usr/local/sbin/control-center-dhcp-apply
+install -m 0755 "$ROOT_DIR/market/control-center-dns-apply" /usr/local/sbin/control-center-dns-apply
+install -m 0755 "$ROOT_DIR/market/control-center-storage-apply" /usr/local/sbin/control-center-storage-apply
+install -m 0755 "$ROOT_DIR/market/control-center-dhcp-reservations-apply" /usr/local/sbin/control-center-dhcp-reservations-apply
 
-# Samba secrets and the temporary package snapshot live only under /run.
+# Runtime secrets live only under /run (tmpfs).
 cat >/etc/tmpfiles.d/control-center.conf <<'TMPFILES'
 d /run/control-center 0700 control-center control-center -
 d /run/control-center-root 0700 root root -
 TMPFILES
 chmod 0644 /etc/tmpfiles.d/control-center.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/control-center.conf
-rm -f /run/control-center/samba-provision.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* /run/control-center-root/samba-packages-before.tsv 2>/dev/null || true
+rm -f /run/control-center/samba-provision.json /run/control-center/domain-remove.json /run/control-center-root/samba-approval.json /run/control-center-root/samba-auth-* /run/control-center-root/samba-packages-before.tsv /run/control-center-root/samba-time-services-before.tsv 2>/dev/null || true
+
+# DHCP reservations have their own generated file so lease configuration and
+# reservations can be validated/rolled back independently.
+install -d -m 0755 /etc/dnsmasq.d
+if [[ ! -e /etc/dnsmasq.d/control-center-dhcp-reservations.conf ]]; then
+  printf '# Managed by Control Center DHCP reservations\n' >/etc/dnsmasq.d/control-center-dhcp-reservations.conf
+fi
+chmod 0644 /etc/dnsmasq.d/control-center-dhcp-reservations.conf
 
 OLD_PORT="$(printf '%s\n' "$OLD_WEB_ENV" | sed -n 's/^CONTROL_CENTER_PORT=//p' | head -1)"
 PORT="${OLD_PORT:-$(sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env 2>/dev/null | head -1)}"; PORT="${PORT:-8080}"
@@ -70,6 +126,7 @@ WorkingDirectory=/opt/control-center/app
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=-/etc/control-center/database.env
 EnvironmentFile=-/etc/control-center/web.env
+EnvironmentFile=-/etc/control-center/auth.env
 ExecStart=/usr/local/sbin/control-center-web-run
 Restart=on-failure
 RestartSec=3
@@ -85,7 +142,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/control-center /run/control-center
-ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf
+ReadOnlyPaths=/var/lib/control-center-system /var/lib/control-center-license /etc/netplan/90-control-center.yaml /etc/dnsmasq.d/control-center-dhcp.conf /etc/dnsmasq.d/control-center-dhcp-reservations.conf
 InaccessiblePaths=/var/lib/control-center-root /run/control-center-root
 [Install]
 WantedBy=multi-user.target
@@ -109,24 +166,115 @@ WantedBy=multi-user.target
 UNIT
 cat >/etc/systemd/system/control-center-samba-apply.service <<'UNIT'
 [Unit]
-Description=Control Center Samba AD-DC provisioning worker
-After=network-online.target postgresql.service
+Description=Control Center Domain provisioning orchestrator
+After=network-online.target postgresql.service control-center-dns-apply.service control-center-storage-apply.service
 Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/control-center/database.env
 ExecStartPre=/usr/local/sbin/control-center-samba-package-guard snapshot
-ExecStart=/usr/local/sbin/control-center-samba-apply
+ExecStart=/usr/local/sbin/control-center-domain-orchestrate
 ExecStartPost=/usr/local/sbin/control-center-samba-package-guard commit
 ExecStopPost=/usr/local/sbin/control-center-samba-package-guard restore
 TimeoutStartSec=45min
 UNIT
 cat >/etc/systemd/system/control-center-samba-apply.path <<'UNIT'
 [Unit]
-Description=Control Center Samba AD-DC provisioning request watcher
+Description=Control Center Domain provisioning request watcher
 [Path]
 PathExists=/run/control-center/samba-provision.json
 Unit=control-center-samba-apply.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-domain-destroy.service <<'UNIT'
+[Unit]
+Description=Control Center guarded Domain destruction and cleanup
+After=network-online.target postgresql.service
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/control-center/database.env
+ExecStart=/usr/local/sbin/control-center-domain-destroy
+TimeoutStartSec=30min
+UNIT
+cat >/etc/systemd/system/control-center-domain-destroy.path <<'UNIT'
+[Unit]
+Description=Control Center Domain removal request watcher
+[Path]
+PathExists=/run/control-center/domain-remove.json
+Unit=control-center-domain-destroy.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-dns-apply.service <<'UNIT'
+[Unit]
+Description=Control Center DNS lifecycle
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/control-center-dns-apply
+TimeoutStartSec=20min
+UNIT
+cat >/etc/systemd/system/control-center-dns-apply.path <<'UNIT'
+[Unit]
+Description=Control Center DNS request watcher
+[Path]
+PathExists=/var/lib/control-center/dns-pending.json
+Unit=control-center-dns-apply.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-storage-apply.service <<'UNIT'
+[Unit]
+Description=Control Center Network Storage lifecycle
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/control-center-storage-apply
+TimeoutStartSec=20min
+UNIT
+cat >/etc/systemd/system/control-center-storage-apply.path <<'UNIT'
+[Unit]
+Description=Control Center Network Storage request watcher
+[Path]
+PathExists=/var/lib/control-center/storage-pending.json
+Unit=control-center-storage-apply.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-dhcp-reservations-apply.service <<'UNIT'
+[Unit]
+Description=Control Center DHCP reservation apply
+After=control-center-dhcp-server.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/control-center-dhcp-reservations-apply
+UNIT
+cat >/etc/systemd/system/control-center-dhcp-reservations-apply.path <<'UNIT'
+[Unit]
+Description=Control Center DHCP reservation request watcher
+[Path]
+PathExists=/var/lib/control-center/dhcp-reservations-pending.json
+Unit=control-center-dhcp-reservations-apply.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat >/etc/systemd/system/control-center-dhcp-server.service <<'UNIT'
+[Unit]
+Description=Control Center DHCP Server
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/dnsmasq.d/control-center-dhcp.conf
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq.d/control-center-dhcp.conf --conf-file=/etc/dnsmasq.d/control-center-dhcp-reservations.conf
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -150,19 +298,40 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now control-center-hostname-apply.path
 systemctl enable --now control-center-samba-apply.path
+systemctl enable --now control-center-domain-destroy.path
+systemctl enable --now control-center-dns-apply.path
+systemctl enable --now control-center-storage-apply.path
+systemctl enable --now control-center-dhcp-reservations-apply.path
 systemctl enable control-center-db-migrate.service
 systemctl restart control-center-db-migrate.service || true
+# Restart existing DHCP so reservation file becomes part of its runtime config.
+if systemctl is-active --quiet control-center-dhcp-server.service; then systemctl restart control-center-dhcp-server.service; fi
 systemctl restart control-center
+
 SCHEME=http; CURL=(-fsS --max-time 3)
 if [[ "$SSL" == 1 || "$SSL" == true ]]; then SCHEME=https; CURL=(-kfsS --max-time 3); fi
-for _ in $(seq 1 20); do if curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi; sleep 1; done
+for _ in $(seq 1 25); do if curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi; sleep 1; done
 curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null
 
 # Privileged runtime must be syntactically valid before declaring installer success.
-bash -n /usr/local/sbin/control-center-samba-apply
-bash -n /usr/local/sbin/control-center-samba-approve
-bash -n /usr/local/sbin/control-center-samba-package-guard
+for f in \
+  /usr/local/sbin/control-center-samba-apply-core \
+  /usr/local/sbin/control-center-samba-apply \
+  /usr/local/sbin/control-center-domain-pre \
+  /usr/local/sbin/control-center-domain-post \
+  /usr/local/sbin/control-center-domain-restore-prestate \
+  /usr/local/sbin/control-center-domain-destroy \
+  /usr/local/sbin/control-center-samba-approve \
+  /usr/local/sbin/control-center-samba-package-guard \
+  /usr/local/sbin/control-center-dns-apply \
+  /usr/local/sbin/control-center-storage-apply \
+  /usr/local/sbin/control-center-dhcp-reservations-apply; do
+  bash -n "$f"
+done
 
 echo 'Control Center 1.0.11 build 20260819.5 установлен.'
 echo "Web UI: $SCHEME://SERVER:$PORT"
-echo 'Samba AD-DC production lifecycle активирован. Перед созданием домена выполните: sudo control-center-samba-approve'
+echo 'Авторизация: локальные PAM-пользователи; после создания Домена — Local + Domain.'
+echo 'Маркет: Домен, DNS и Сетевое хранилище активированы; DHCP поддерживает список клиентов и IP-бронирования.'
+echo 'Перед созданием Домена: sudo control-center-samba-approve'
+echo 'Перед удалением Домена: sudo control-center-samba-approve --remove'
