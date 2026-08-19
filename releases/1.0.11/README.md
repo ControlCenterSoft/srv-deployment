@@ -1,111 +1,90 @@
 # Control Center 1.0.11
 
-Статус: **production candidate** до завершения финального CI, build **20260819.5**.
+Build **20260819.5**. Статус до финальной публикации: **production candidate**.
 
-## Samba AD-DC активирован
+## Состав релиза
 
-В 1.0.11 подготовительный слой 1.0.10 переведён в рабочий production lifecycle для создания **нового первичного Samba Active Directory Domain Controller**.
+1. **Домен** добавлен в Маркет и переведён в production lifecycle Samba AD-DC.
+2. **DNS** добавлен как самостоятельная служба: standalone Unbound; вместе с Доменом — Samba Internal DNS.
+3. **Сетевое хранилище** добавлено как самостоятельная служба: standalone Samba; вместе с Доменом — domain SMB.
+4. Домен имеет обязательные зависимости DNS + Storage и автоматически активирует их.
+5. Local/Domain авторизация портала включена через isolated root auth daemon.
+6. Создан первоначальный Domain wizard.
+7. После activation защищены hostname/interface/IP/prefix DC и обязательные зависимости.
+8. Поддерживается guarded Domain removal для единственного DC с recovery и cleanup fingerprint audit.
+9. DNS/Storage выполняют cleanup-audit при удалении; Storage сохраняет пользовательские файлы.
+10. DHCP показывает clients и управляет IP reservations.
+11. Migration **005** создаёт RBAC bootstrap, service dependencies, DHCP reservations и cleanup history.
 
-Поддерживается:
+## Domain wizard
 
-- проверка Realm и NetBIOS domain;
-- выбор активной статической LAN/WAN роли;
-- Samba Internal DNS и внешний DNS forwarder;
-- установка Samba/Kerberos/Winbind/Chrony и сопутствующих пакетов;
-- создание домена;
-- Kerberos configuration;
-- локальный resolver на AD DNS;
-- LDAP/Kerberos/DNS/SMB/SYSVOL/NETLOGON;
-- signed NTP через chrony + `ntp_signd`;
-- интеграция с Control Center DHCP;
-- PostgreSQL lifecycle/health history;
-- Market status и события в колокольчике.
+Этапы:
 
-## Безопасное подтверждение
+```text
+Readiness / Static network
+Realm + NetBIOS
+DNS + Storage dependencies
+Administrator password + one-time approval
+Final plan / create
+```
 
-Пока встроенная Web-аутентификация панели не завершена, destructive provisioning не разрешается только по Web-запросу.
-
-Перед созданием домена на самом сервере выполняется:
+Provision approval:
 
 ```bash
 sudo control-center-samba-approve
 ```
 
-Команда выдаёт одноразовый 8-символьный код. Код:
+Removal approval:
 
-- действует 10 минут;
-- используется один раз;
-- хранится только как SHA-256 в root-only `/run/control-center-root`;
-- после проверки удаляется.
-
-Пароль Domain Administrator:
-
-- не записывается в PostgreSQL;
-- не записывается в persistent Control Center state;
-- не передаётся в argv `samba-tool`;
-- передаётся root worker только через `/run/control-center` и удаляется сразу после чтения;
-- временный файл авторизации `smbclient`, используемый acceptance, создаётся root-only в `/run` и удаляется.
-
-## Backup и rollback
-
-До изменения Samba/DNS/Kerberos создаётся root-only backup в:
-
-```text
-/var/lib/control-center-root/samba-backups/<job-id>/
+```bash
+sudo control-center-samba-approve --remove
 ```
 
-В backup входят существующие Samba state/config, Kerberos, resolver, hosts, chrony и управляемая DHCP-конфигурация. Также сохраняются состояния затрагиваемых systemd services.
+Оба кода one-time, TTL 10 минут и имеют разные purpose.
 
-При ошибке provisioning worker:
+## Portal authentication
 
-1. останавливает созданный Samba runtime;
-2. удаляет незавершённое generated state;
-3. возвращает backup;
-4. восстанавливает прежние service states;
-5. восстанавливает DHCP state;
-6. публикует `rollback` в Samba status и колокольчик.
+Local identities проверяются PAM, Domain identities — Samba `ntlm_auth`. Проверка выполняется `control-center-authd`; Web process остаётся непривилегированным.
 
-## Acceptance после provisioning
+Root через Web запрещён. Bootstrap roles: `admin`, `viewer`. Domain group `Control Center Admins` даёт `admin`. Migration 005 уже содержит schema для будущего granular RBAC.
 
-Provisioning считается успешным только после:
+## Domain dependencies
 
 ```text
-samba-tool testparm
-samba-tool ntacl sysvolcheck
-samba-tool domain info
-samba-tool drs showrepl --summary
-DNS A record
-LDAP SRV record
-Kerberos SRV record
-kinit Administrator
-smbclient
+Domain requires DNS
+Domain requires Network Storage
 ```
 
-## Сеть
+Standalone DNS/Storage могут существовать без Domain. При Domain transition их исходные state/config сохраняются; после Domain removal они восстанавливаются.
 
-AD-DC разрешён только на активной роли со **Static IPv4**. LAN является предпочтительной ролью. WAN требует отдельного подтверждения в UI.
+## Cleanup / recovery
 
-После успешного создания домена Control Center блокирует:
+Перед Domain destruction создаётся root-only recovery bundle. Removal разрешён только когда доказано, что это единственный DC.
 
-- переименование DC;
-- выключение его WAN/LAN роли;
-- смену интерфейса;
-- смену IPv4/prefix.
+Cleanup audit проверяет:
 
-Для таких операций позднее будет отдельный AD migration lifecycle.
+- отсутствие active AD dependency state;
+- возврат DNS/Storage к pre-domain providers;
+- deterministic pre-state fingerprints;
+- удаление generated `sam.ldb`/SYSVOL, если их не было до Domain;
+- наличие recovery backup.
 
-## DHCP
+## DHCP 1.0.11
 
-Если Control Center DHCP обслуживает тот же интерфейс, после provisioning DNS автоматически меняется на IP контроллера домена. Последующие попытки раздать доменным клиентам внешний DNS напрямую блокируются: внешнее разрешение выполняет Samba DNS forwarder.
+Client inventory объединяет leases и reservations. Можно бронировать/менять/освобождать IP. Проверяются subnet, gateway/network/broadcast, duplicate, active lease conflicts и DC IP.
 
-## Удаление
-
-1.0.11 **не содержит автоматического уничтожения домена**. Обычный uninstall Control Center не удаляет `/etc/samba`, `/var/lib/samba`, SYSVOL или AD database. Если управляемый AD-DC активен, uninstall с очисткой application data блокируется; допускается `--keep-data`.
-
-## Проверка релиза
+## Acceptance
 
 ```bash
 sudo bash scripts/acceptance-1.0.11.sh
 ```
 
-Финальная публикация разрешена только после static/integration CI и отдельного disposable runtime provisioning test.
+Disposable CI дополнительно запускает:
+
+```bash
+sudo -E bash scripts/runtime-acceptance-1.0.11.sh
+```
+
+Runtime acceptance выполняет настоящий цикл standalone DNS/Storage → Domain → Domain auth/DHCP → Domain removal/restore → standalone DNS/Storage removal.
+
+Финальный `deployment.json audit=passed` допускается только после зелёных release + runtime workflows на publication head.
