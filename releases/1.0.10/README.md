@@ -1,6 +1,6 @@
 # Control Center 1.0.10
 
-Статус: `production candidate` до завершения финального CI.
+Статус: **Production**, build **20260819.4**, audit `passed`.
 
 ## 1. Samba AD-DC — подготовка к Production
 
@@ -14,7 +14,7 @@
 - блокеры и предупреждения по hostname/FQDN, статическому IPv4, времени, APT-пакетам, свободному месту, портам 53/88/389/445 и существующей Samba-конфигурации;
 - модель backup/cutover/rollback/acceptance для будущего provisioning;
 - сохранение readiness runs и change plans в PostgreSQL;
-- статус Samba в Маркете без кнопки установки.
+- status Samba в Маркете без кнопки установки.
 
 Целевой production-релиз provisioning: **1.0.11**.
 
@@ -41,6 +41,7 @@
 - Web runtime и `/etc/control-center/web.env` являются источником фактической конфигурации;
 - PostgreSQL синхронизируется best-effort и не блокирует смену порта/SSL;
 - при недоступной БД Web runtime всё равно меняется и проходит HTTP/HTTPS health-check;
+- после восстановления PostgreSQL фактические Web-настройки автоматически синхронизируются обратно в БД;
 - self-signed сертификат создаётся root-helper и назначается Gunicorn;
 - при runtime failure выполняется rollback.
 
@@ -85,4 +86,16 @@ Dashboard автоматически показывает:
 sudo bash scripts/acceptance-1.0.10.sh
 ```
 
-Production будет опубликован только после успешных static, PostgreSQL migration, Flask API, installer/runtime, HTTP/HTTPS 80/443 и regression checks.
+Production validation успешно проверил:
+
+- Python/JavaScript/Bash syntax;
+- PostgreSQL migrations `001 → 002 → 003`;
+- Flask API и single-role network validation;
+- чистую установку release installer;
+- `8080 HTTP → 8443 HTTPS → 80 HTTP → 443 HTTPS` через реальный API/root-helper;
+- смену Web-порта при остановленной и замаскированной PostgreSQL;
+- автоматическую DB reconciliation после восстановления PostgreSQL;
+- реальное переименование hostname и возврат исходного имени;
+- Samba readiness + dry-run plan без provisioning;
+- DHCP install/remove regression;
+- package integrity (`dpkg --audit`).
