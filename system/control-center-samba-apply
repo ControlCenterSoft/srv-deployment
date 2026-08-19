@@ -270,7 +270,7 @@ PY
 getent hosts "$FQDN" | grep -Fq "$AD_IP"
 
 status provisioning "Provisioning домена $REALM…" "DC $FQDN / $AD_IP"
-printf '%s\n%s\n' "$ADMINPASS" "$ADMINPASS" | samba-tool domain provision --realm="$REALM" --domain="$DOMAIN" --server-role=dc --dns-backend=SAMBA_INTERNAL --dns-forwarder="$FORWARDER" --host-ip="$AD_IP" --use-rfc2307 --interactive --option="interfaces=lo $IFACE" --option="bind interfaces only=yes"
+printf '%s\n%s\n' "$ADMINPASS" "$ADMINPASS" | samba-tool domain provision --realm="$REALM" --domain="$DOMAIN" --server-role=dc --dns-backend=SAMBA_INTERNAL --host-ip="$AD_IP" --use-rfc2307 --interactive --option="dns forwarder = $FORWARDER" --option="interfaces=lo $IFACE" --option="bind interfaces only=yes"
 test -s /etc/samba/smb.conf; test -s /var/lib/samba/private/krb5.conf; install -o root -g root -m 0644 /var/lib/samba/private/krb5.conf /etc/krb5.conf
 rm -f /etc/resolv.conf; cat >/etc/resolv.conf <<EOF
 # Managed by Control Center Samba AD-DC.
