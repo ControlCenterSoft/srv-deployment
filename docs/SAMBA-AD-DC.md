@@ -62,11 +62,13 @@ control-center-samba-apply-core
 control-center-domain-post
 ```
 
-`domain-pre` сохраняет DNS/Storage snapshots, package topology, deterministic fingerprints и останавливает standalone DNS для port-53 cutover.
+`domain-pre` сохраняет DNS/Storage snapshots, deterministic fingerprints и останавливает standalone DNS для port-53 cutover.
+
+До пакетных изменений `control-center-samba-package-guard` моделирует реальную APT-транзакцию Domain provisioning. Для всех затрагиваемых пакетов фиксируются исходные presence/version и manual/auto mark. Для уже установленных пакетов заранее сохраняются точные rollback `.deb`. Если точную обратимость обеспечить нельзя, provisioning не начинается.
 
 Core создаёт root-only Samba backup, устанавливает packages, выполняет `samba-tool domain provision`, Kerberos/resolver/NTP cutover и acceptance.
 
-`domain-post` активирует обязательные DNS/Storage dependencies и bootstrap-группу `Control Center Admins`.
+`domain-post` активирует обязательные DNS/Storage dependencies и bootstrap-группу `Control Center Admins`. Группа, membership `Administrator` и SID resolution являются обязательными: ошибка на этом этапе считается ошибкой provisioning и вызывает полный rollback.
 
 При любой ошибке pre-domain state восстанавливается.
 
@@ -83,11 +85,15 @@ DNS A
 LDAP SRV
 Kerberos SRV
 kinit Administrator
+Administrator SID -> UID 0
 smbclient
+Control Center Admins -> Administrator membership
 DNS dependency health
 Storage dependency health
 portal auth daemon health
 ```
+
+Provisioning использует RFC2307 schema extension. На самом AD-DC системное SID→Unix сопоставление остаётся функцией локального `idmap.ldb`. Перед SMB acceptance Control Center отдельно доказывает, что встроенный `Administrator` (RID 500) преобразуется в UID 0. Если конкретная Samba-сборка не выполняет built-in mapping при локальном RFC2307 lookup, Control Center отключает только `idmap_ldb:use rfc2307` lookup на DC, сохраняя NIS schema, перезапускает AD-DC и повторно требует корректное SID→UID 0 перед продолжением.
 
 ## DHCP
 
@@ -129,17 +135,27 @@ sudo control-center-samba-approve --remove
 /var/lib/control-center-root/domain-destroy-backups/<timestamp>/
 ```
 
-После этого:
+После успешного provisioning точный пакетный pre-state до удаления хранится root-only в:
+
+```text
+/var/lib/control-center-root/domain-package-prestate/
+```
+
+После этого удаление Домена:
 
 1. generated AD runtime удаляется;
-2. восстанавливается pre-domain Samba/DNS/Kerberos/resolver/chrony/DHCP state;
-3. standalone DNS/Storage возвращаются, если существовали до Домена;
-4. portal session secret ротируется;
-5. выполняется cleanup-audit;
-6. deterministic config fingerprints сравниваются с состоянием до provisioning;
-7. generated `sam.ldb` и SYSVOL должны отсутствовать, если их не было до Домена.
+2. восстанавливает точные версии пакетов, их исходное наличие/отсутствие и APT manual/auto marks;
+3. восстанавливает pre-domain Samba/DNS/Kerberos/resolver/chrony/DHCP state;
+4. возвращает standalone DNS/Storage, если они существовали до Домена;
+5. ротирует portal session secret;
+6. выполняет cleanup-audit;
+7. сравнивает deterministic config fingerprints с состоянием до provisioning;
+8. требует отсутствия generated `sam.ldb` и SYSVOL, если их не было до Домена;
+9. удаляет пакетный recovery pre-state только после успешного его применения.
 
-Recovery bundle сохраняется намеренно как root-only аварийная копия.
+Пакетный rollback намеренно не выполняет `autoremove`, чтобы не удалить зависимости, которые могут использоваться посторонним ПО.
+
+Recovery bundle destruction сохраняется намеренно как root-only аварийная копия.
 
 ## PostgreSQL
 
