@@ -1,10 +1,10 @@
 {
   "product": "Control Center",
-  "release": "1.0.10",
-  "build": "20260819.4",
+  "release": "1.0.11",
+  "build": "20260819.5",
   "channel": "production",
   "published_at": "2026-08-19",
-  "release_branch": "release/1.0.10",
-  "audit": "passed",
-  "audit_date": "2026-08-19"
+  "release_branch": "release/1.0.11",
+  "audit": "pending",
+  "audit_date": null
 }
