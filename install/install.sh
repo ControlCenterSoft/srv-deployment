@@ -5,7 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE="$ROOT_DIR/install/install-base-1.0.8.sh"
 TMP="$(mktemp /tmp/control-center-install-1.0.11.XXXXXX)"
 OLD_WEB_ENV="$(cat /etc/control-center/web.env 2>/dev/null || true)"
-trap 'rm -f "$TMP"' EXIT
+BOOTSTRAP_USER=""
+BOOTSTRAP_PASSWORD=""
+trap 'rm -f "$TMP"; unset BOOTSTRAP_PASSWORD' EXIT
 [[ -f "$BASE" ]] || { echo 'Отсутствует install/install-base-1.0.8.sh' >&2; exit 1; }
 
 python3 - "$BASE" "$TMP" <<'PY'
@@ -25,8 +27,8 @@ chmod 0755 "$TMP"
 CONTROL_CENTER_RELEASE_ROOT="$ROOT_DIR" bash "$TMP" "$@"
 
 # Portal authentication runtime. The Web process never reads /etc/shadow and
-# never joins winbindd_priv: password verification is delegated over a local
-# root-owned Unix socket to control-center-authd.
+# never receives direct Winbind privilege: verification is delegated over a
+# root-owned local Unix socket to control-center-authd.
 export DEBIAN_FRONTEND=noninteractive
 exec 9>/run/control-center-apt.lock
 flock -w 900 9 || { echo 'Менеджер пакетов занят.' >&2; exit 75; }
@@ -44,6 +46,29 @@ done </etc/passwd
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-root}" != root ]] && id "$SUDO_USER" >/dev/null 2>&1; then
   uid="$(id -u "$SUDO_USER")"; (( uid >= 1000 )) && usermod -aG control-center-admins "$SUDO_USER" || true
 fi
+
+# A root-only VPS may have no password-authenticating human account. Never allow
+# root through the portal; instead create a dedicated non-SSH portal identity
+# only when no existing Control Center administrator has a usable password.
+HAS_PORTAL_ADMIN=0
+IFS=',' read -ra CC_ADMINS <<<"$(getent group control-center-admins | awk -F: '{print $4}')"
+for user in "${CC_ADMINS[@]}"; do
+  [[ -n "$user" ]] || continue
+  status="$(passwd -S "$user" 2>/dev/null | awk '{print $2}' || true)"
+  if [[ "$status" == P ]]; then HAS_PORTAL_ADMIN=1; break; fi
+done
+if [[ "$HAS_PORTAL_ADMIN" == 0 ]]; then
+  BOOTSTRAP_USER=controladmin
+  if ! id "$BOOTSTRAP_USER" >/dev/null 2>&1; then
+    useradd --create-home --shell /usr/sbin/nologin "$BOOTSTRAP_USER"
+  fi
+  uid="$(id -u "$BOOTSTRAP_USER")"
+  (( uid >= 1000 )) || { echo 'controladmin должен быть обычным локальным пользователем (UID >= 1000).' >&2; exit 1; }
+  usermod -aG control-center-admins "$BOOTSTRAP_USER"
+  BOOTSTRAP_PASSWORD="$(openssl rand -base64 24 | tr -d '\n')"
+  printf '%s:%s\n' "$BOOTSTRAP_USER" "$BOOTSTRAP_PASSWORD" | chpasswd
+fi
+
 cat >/etc/pam.d/control-center-web <<'PAM'
 # Control Center local portal authentication.
 auth    include common-auth
@@ -337,6 +362,8 @@ curl "${CURL[@]}" "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null
 systemctl is-active --quiet control-center-authd.service
 test -S /run/control-center-auth/auth.sock
 test "$(stat -c '%U:%G %a' /run/control-center-auth/auth.sock)" = 'root:control-center 660'
+LATEST_MIGRATION="$(runuser -u control-center -- psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" 2>/dev/null || true)"
+[[ "$LATEST_MIGRATION" == 005 ]] || { echo "Ожидалась PostgreSQL migration 005, получено: ${LATEST_MIGRATION:-none}" >&2; exit 1; }
 
 for f in \
   /usr/local/sbin/control-center-samba-apply-core \
@@ -354,10 +381,17 @@ for f in \
 done
 python3 -m py_compile /usr/local/sbin/control-center-authd
 
-echo 'Control Center 1.0.11 build 20260819.5 установлен.'
+printf '\nControl Center 1.0.11 build 20260819.5 установлен.\n'
 echo "Web UI: $SCHEME://SERVER:$PORT"
-echo 'Авторизация: локальные PAM-пользователи через изолированный auth daemon; после создания Домена — Local + Domain.'
+echo 'Авторизация: локальная через PAM/authd; после создания Домена доступна Local + Domain.'
 echo 'Локальные администраторы портала: группа control-center-admins. Root через Web запрещён.'
+if [[ -n "$BOOTSTRAP_USER" && -n "$BOOTSTRAP_PASSWORD" ]]; then
+  printf '\nВАЖНО: на сервере не было локального администратора с паролем.\n'
+  printf 'Создан отдельный Web-пользователь без SSH-доступа:\n'
+  printf '  Логин:  %s\n' "$BOOTSTRAP_USER"
+  printf '  Пароль: %s\n' "$BOOTSTRAP_PASSWORD"
+  printf 'Сохраните пароль сейчас. Изменить его позднее: sudo passwd %s\n\n' "$BOOTSTRAP_USER"
+fi
 echo 'Маркет: Домен, DNS и Сетевое хранилище активированы; DHCP поддерживает список клиентов и IP-бронирования.'
 echo 'Перед созданием Домена: sudo control-center-samba-approve'
 echo 'Перед удалением Домена: sudo control-center-samba-approve --remove'
