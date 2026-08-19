@@ -11,8 +11,11 @@ PERSISTENT_SNAPSHOT="$PERSISTENT_ROOT/packages-before.tsv"
 PERSISTENT_SERVICE_SNAPSHOT="$PERSISTENT_ROOT/time-services-before.tsv"
 PERSISTENT_DEBS="$PERSISTENT_ROOT/debs"
 APT_LOCK=/run/control-center-apt.lock
+# This is the exact direct package list used by the Domain provisioning core.
+# Packages removed or upgraded as dependencies are discovered from apt's
+# simulated transaction below and are therefore covered as well.
 DIRECT_PACKAGES=(
-  samba samba-dsdb-modules samba-vfs-modules winbind krb5-user dnsutils acl attr smbclient chrony systemd-timesyncd
+  samba samba-dsdb-modules samba-vfs-modules winbind krb5-user dnsutils acl attr smbclient chrony
 )
 TIME_SERVICES=(chrony.service systemd-timesyncd.service)
 
@@ -25,18 +28,38 @@ service_value(){
 }
 
 package_mark(){
-  if apt-mark showmanual 2>/dev/null | grep -Fxq "$1"; then printf 'manual\n'; else printf 'auto\n'; fi
+  local pkg="$1" base="${1%%:*}"
+  if apt-mark showmanual 2>/dev/null | grep -Fxq "$pkg" || apt-mark showmanual 2>/dev/null | grep -Fxq "$base"; then
+    printf 'manual\n'
+  else
+    printf 'auto\n'
+  fi
 }
 
 capture_deb(){
   local pkg="$1" version="$2" dir="$3"
   install -d -o root -g root -m 0700 "$dir"
-  if compgen -G "$dir/${pkg//:/_}_*.deb" >/dev/null; then return 0; fi
   (
     cd "$dir"
     apt-get download "$pkg=$version" >/dev/null
   )
   find "$dir" -maxdepth 1 -type f -name '*.deb' -exec chmod 0600 {} +
+}
+
+find_cached_deb(){
+  local pkg="$1" version="$2" dir="$3" base="${1%%:*}" cand cpkg cver carch wanted_arch=""
+  [[ "$pkg" == *:* ]] && wanted_arch="${pkg##*:}"
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    cpkg="$(dpkg-deb -f "$cand" Package 2>/dev/null || true)"
+    cver="$(dpkg-deb -f "$cand" Version 2>/dev/null || true)"
+    carch="$(dpkg-deb -f "$cand" Architecture 2>/dev/null || true)"
+    if [[ "$cpkg" == "$base" && "$cver" == "$version" && ( -z "$wanted_arch" || "$carch" == "$wanted_arch" ) ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.deb' -print 2>/dev/null | sort)
+  return 1
 }
 
 restore_from(){
@@ -47,7 +70,7 @@ restore_from(){
   flock -w 900 8 || { echo 'Samba package rollback: APT lock timeout' >&2; exit 75; }
   export DEBIAN_FRONTEND=noninteractive
 
-  local remove=() debs=() missing_deb=0
+  local remove=() debs=() missing_deb=0 pkg was_installed version mark current file
   while IFS=$'\t' read -r pkg was_installed version mark; do
     [[ -n "$pkg" ]] || continue
     if [[ "$was_installed" == 0 ]]; then
@@ -55,14 +78,13 @@ restore_from(){
     else
       current="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
       if [[ "$current" != "$version" ]]; then
-        match="$(find "$deb_dir" -maxdepth 1 -type f -name '*.deb' -print0 2>/dev/null | xargs -0 -r dpkg-deb -f 2>/dev/null | awk -v p="$pkg" -v v="$version" 'BEGIN{RS="\n\n"} $0~("Package: "p"\n") && $0~("Version: "v"\n") {print; exit}' || true)"
-        file=""
-        while IFS= read -r cand; do
-          [[ -n "$cand" ]] || continue
-          cpkg="$(dpkg-deb -f "$cand" Package 2>/dev/null || true)"; cver="$(dpkg-deb -f "$cand" Version 2>/dev/null || true)"
-          if [[ "$cpkg" == "$pkg" && "$cver" == "$version" ]]; then file="$cand"; break; fi
-        done < <(find "$deb_dir" -maxdepth 1 -type f -name '*.deb' -print 2>/dev/null || true)
-        if [[ -z "$file" ]]; then echo "Missing cached rollback package: $pkg=$version" >&2; missing_deb=1; else debs+=("$file"); fi
+        file="$(find_cached_deb "$pkg" "$version" "$deb_dir" || true)"
+        if [[ -z "$file" ]]; then
+          echo "Missing cached rollback package: $pkg=$version" >&2
+          missing_deb=1
+        else
+          debs+=("$file")
+        fi
       fi
     fi
   done <"$snapshot"
@@ -72,6 +94,7 @@ restore_from(){
     apt-get install -y --allow-downgrades "${debs[@]}"
   fi
   if (( ${#remove[@]} )); then
+    # Do not autoremove: unrelated applications may share dependencies.
     apt-get purge -y "${remove[@]}"
   fi
   apt-get -f install -y
@@ -111,16 +134,19 @@ case "$MODE" in
     rm -rf "$ROLLBACK_DEBS"
     install -d -o root -g root -m 0700 "$ROLLBACK_DEBS"
 
-    # Freeze the exact transaction plan before Domain provisioning. If an
-    # already-installed package would be upgraded, its exact .deb is cached;
-    # provisioning is rejected if exact rollback bytes cannot be obtained.
+    # Freeze the exact apt transaction before Domain provisioning. If an
+    # already-installed package would be upgraded OR removed, its exact .deb is
+    # cached. Provisioning is rejected if exact rollback bytes cannot be secured.
     exec 8>"$APT_LOCK"
     flock -w 900 8 || { echo 'Samba package snapshot: APT lock timeout' >&2; exit 75; }
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     PLAN="$(mktemp "$ROOT_RUN/.samba-apt-plan.XXXXXX")"
     apt-get -s install -y "${DIRECT_PACKAGES[@]}" >"$PLAN"
-    mapfile -t TOUCHED < <({ printf '%s\n' "${DIRECT_PACKAGES[@]}"; sed -n 's/^Inst \([^ ]*\).*/\1/p' "$PLAN"; } | awk 'NF&&!seen[$0]++')
+    mapfile -t TOUCHED < <({
+      printf '%s\n' "${DIRECT_PACKAGES[@]}"
+      sed -n -e 's/^Inst \([^ ]*\).*/\1/p' -e 's/^Remv \([^ ]*\).*/\1/p' "$PLAN"
+    } | awk 'NF&&!seen[$0]++')
     rm -f "$PLAN"
 
     TMP="$(mktemp "$ROOT_RUN/.samba-packages.XXXXXX")"
