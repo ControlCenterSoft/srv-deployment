@@ -2,6 +2,20 @@
 
 Авторитетное production-состояние определяется `../deployment.json`; подробности каждого релиза — каталогом `../releases/<version>/`.
 
+## 1.0.10 — 19.08.2026
+
+- Samba AD-DC readiness расширен до production preparation: migration `003`, package/disk/port/config checks и dry-run change plan;
+- реальный Samba provisioning намеренно отключён; целевой релиз включения — 1.0.11;
+- добавлено переименование компьютера через root-helper с backup/rollback `/etc/hostname` и `/etc/hosts`;
+- исправлена смена Web-порта/SSL при недоступной PostgreSQL;
+- фактический Web runtime хранится независимо от БД и reconciled после её восстановления;
+- standard HTTP `80`, standard HTTPS `443`, custom `1024–65535` проверены end-to-end;
+- operational alerts Web/PostgreSQL/hostname/Samba readiness включены в колокольчик;
+- WAN и LAN можно выключать по отдельности, обе роли одновременно выключить нельзя;
+- поддержаны WAN+LAN, WAN-only и LAN-only;
+- dashboard показывает только активные WAN/LAN traffic cards;
+- runtime CI проверяет DB outage, hostname rename/restore, Samba dry-run и `dpkg --audit`.
+
 ## 1.0.9 — 19.08.2026
 
 - единый pager для сетевых интерфейсов, DHCP options, RBAC, уведомлений и Маркета;
