@@ -13,6 +13,7 @@ POLICY_BACKUP="/run/control-center-policy-rc.d.install.$$"
 POLICY_HAD=0
 POLICY_ACTIVE=0
 APT_LOCK=/run/control-center-apt.lock
+APT_RESILIENCE=/etc/apt/apt.conf.d/90-control-center-resilience
 
 cleanup(){ rm -f "$TMP"; if [[ "$POLICY_ACTIVE" == 1 ]]; then rm -f "$POLICY"; if [[ "$POLICY_HAD" == 1 && ( -e "$POLICY_BACKUP" || -L "$POLICY_BACKUP" ) ]]; then cp -a "$POLICY_BACKUP" "$POLICY"; fi; rm -f "$POLICY_BACKUP"; POLICY_ACTIVE=0; fi; }
 trap cleanup EXIT
@@ -28,7 +29,19 @@ exit 0
 EOF
 fi; chmod 0755 "$POLICY"; POLICY_ACTIVE=1; }
 restore_policy(){ [[ "$POLICY_ACTIVE" == 1 ]] || return 0; rm -f "$POLICY"; if [[ "$POLICY_HAD" == 1 && ( -e "$POLICY_BACKUP" || -L "$POLICY_BACKUP" ) ]]; then cp -a "$POLICY_BACKUP" "$POLICY"; fi; rm -f "$POLICY_BACKUP"; POLICY_ACTIVE=0; }
-repair_package_database(){ install -d -o root -g root -m 0700 /var/lib/control-center-root; local log=/var/lib/control-center-root/upgrade-preflight-1.0.8.log; exec 7>"$APT_LOCK"; flock -w 900 7 || { echo 'Менеджер пакетов занят более 15 минут.' >&2; return 75; }; export DEBIAN_FRONTEND=noninteractive; prepare_policy; { echo "[$(date -Is)] Control Center 1.0.8 build 20260819.2 package preflight"; dpkg --audit || true; dpkg --configure -a || true; apt-get -f install -y; dpkg --configure -a; dpkg --audit || true; } 2>&1 | tee -a "$log"; restore_policy; flock -u 7; }
+prepare_apt_resilience(){
+  cat >"$APT_RESILIENCE" <<'APT'
+Acquire::Retries "3";
+Acquire::http::Timeout "15";
+Acquire::https::Timeout "15";
+Acquire::ftp::Timeout "15";
+Acquire::Queue-Mode "access";
+DPkg::Lock::Timeout "900";
+APT::Get::Assume-Yes "true";
+APT
+  chmod 0644 "$APT_RESILIENCE"
+}
+repair_package_database(){ install -d -o root -g root -m 0700 /var/lib/control-center-root; local log=/var/lib/control-center-root/upgrade-preflight-1.0.8.log; exec 7>"$APT_LOCK"; flock -w 900 7 || { echo 'Менеджер пакетов занят более 15 минут.' >&2; return 75; }; export DEBIAN_FRONTEND=noninteractive; prepare_apt_resilience; prepare_policy; { echo "[$(date -Is)] Control Center 1.0.8 build 20260819.2 package preflight"; dpkg --audit || true; dpkg --configure -a || true; apt-get -f install -y; dpkg --configure -a; dpkg --audit || true; } 2>&1 | tee -a "$log"; restore_policy; flock -u 7; }
 
 [[ -f "$BASE" ]] || { echo 'Отсутствует install/install-base-1.0.7.sh' >&2; exit 1; }
 [[ -f "$BASE_UPDATER" ]] || { echo 'Отсутствует update/control-center-update-base-1.0.7' >&2; exit 1; }
