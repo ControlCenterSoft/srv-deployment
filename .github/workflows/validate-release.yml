@@ -52,12 +52,24 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json,pathlib,re
+          import json,pathlib
           r=pathlib.Path('.')
           for p in r.rglob('*.json'): json.loads(p.read_text())
           assert json.loads((r/'app/release.json').read_text())=={'version':'1.0.11','build':'20260819.5'}
           dep=json.loads((r/'deployment.json').read_text());assert dep['release']=='1.0.11' and dep['build']=='20260819.5' and dep['audit'] in {'pending','passed'}
-          man=json.loads((r/'releases/1.0.11/manifest.json').read_text());assert man['database']['schema_migration']=='005'
+          man=json.loads((r/'releases/1.0.11/manifest.json').read_text())
+          assert man['database']['schema_migration']=='005'
+          assert man['authentication']['clean_install_bootstrap_user']=='controladmin'
+          assert man['authentication']['clean_install_bootstrap_shell']=='/usr/sbin/nologin'
+          assert man['authentication']['bootstrap_password_one_time_output'] is True
+          assert man['authentication']['bootstrap_password_plaintext_persisted'] is False
+          assert man['services']['domain']['administrator_sid_uid0_acceptance'] is True
+          assert man['services']['domain']['portal_admin_group_required']=='Control Center Admins'
+          assert man['services']['domain']['exact_package_prestate_restore'] is True
+          assert man['services']['dhcp']['reservation_pagination'] is True
+          assert man['services']['dhcp']['reservation_pagination_page_size']==10
+          assert man['samba_ad_dc']['exact_package_prestate_restore'] is True
+          assert man['samba_ad_dc']['administrator_sid_uid0_acceptance'] is True
 
           w=(r/'app/wsgi.py').read_text()
           for x in ['release_111_services.register','release_111_dependencies.register','release_111_dhcp.register','release_111_auth.register']:assert x in w,x
@@ -77,9 +89,6 @@ jobs:
           mig=(r/'app/migrations/005_rbac_services_dhcp.sql').read_text()
           for x in ['rbac_roles','rbac_bindings','service_dependencies','dhcp_reservations','service_cleanup_audits']:assert x in mig,x
 
-          # AUTHENTICATION.md contract: on a clean root-only installation the
-          # dedicated nologin controladmin receives a random password which is
-          # printed exactly from the installer process and not persisted.
           installer=(r/'install/install.sh').read_text()
           for x in [
               'control-center-authd.service','control-center-domain-destroy.path','control-center-dns-apply.path',
@@ -89,16 +98,12 @@ jobs:
           ]: assert x in installer,x
           assert 'passwd -l "$candidate"' not in installer
 
-          # DHCP.md contract: client table is paginated exactly by ten rows.
           compliance=(r/'app/static/release-111-compliance.js').read_text()
           assert 'DHCP_CLIENTS_PAGE_SIZE_COMPLIANCE111 = 10' in compliance
           assert 'dhcpClientsPager111' in compliance
           assets=(r/'app/release_111_services_assets.py').read_text()
           assert "'release-111-compliance.js'" in assets
 
-          # Domain/RBAC contract: the bootstrap group is mandatory, not a
-          # best-effort post-step, and built-in Administrator SID mapping must
-          # be proven before authenticated SMB acceptance.
           post=(r/'system/control-center-domain-post').read_text()
           for x in ["group listmembers 'Control Center Admins'",'group addmembers', 'wbinfo --name-to-sid']:
               assert x in post,x
@@ -106,9 +111,6 @@ jobs:
           for x in ['wbinfo --sid-to-uid','Administrator SID maps to UID 0','idmap_ldb:use rfc2307 = no']:
               assert x in orch,x
 
-          # Cleanup contract: capture every apt install/removal transaction
-          # participant, cache exact old .debs, restore versions and apt marks,
-          # and retain that pre-state until guarded Domain removal.
           guard=(r/'system/control-center-samba-package-guard').read_text()
           for x in ['apt-get -s install','s/^Remv','apt-get download','--allow-downgrades','apt-mark manual','apt-mark auto','restore-persistent','domain-package-prestate']:
               assert x in guard,x
@@ -116,7 +118,7 @@ jobs:
           assert 'restore-persistent' in restore
 
           assert '--adminpass=' not in (r/'system/control-center-samba-apply').read_text()
-          print('1.0.11 architecture/document contract OK')
+          print('1.0.11 architecture/document/manifest contract OK')
           PY
 
       - name: Setup PostgreSQL application test
@@ -154,8 +156,7 @@ jobs:
         run: |
           PYTHON="${pythonLocation}/bin/python"
           sudo -u control-center env CONTROL_CENTER_TEST_BYPASS_AUTH=1 CONTROL_CENTER_DB_DSN="$CONTROL_CENTER_DB_DSN" PYTHONPATH=/tmp/control-center-ci-app "$PYTHON" - <<'PY'
-          import pathlib
-          import main,release_111,wsgi
+          import main,wsgi
           roles={'lan':{'enabled':True,'interface':'ccad0','method':'static','ip':'10.77.11.1','mask':24,'gateway':'','dns':['1.1.1.1']},'wan':{'enabled':False,'interface':'','method':'disabled'}}
           ifaces=[{'name':'ccad0','dns':['1.1.1.1'],'state':'up','ipv4':['10.77.11.1/24'],'rx_bytes':0,'tx_bytes':0}]
           main._effective_network_config=lambda:(roles,ifaces,'test');main._interfaces=lambda:ifaces
@@ -196,3 +197,5 @@ jobs:
           for f in README.md docs/INSTALL.md docs/SAMBA-AD-DC.md docs/NETWORK.md docs/DHCP.md docs/AUTHENTICATION.md docs/NOTIFICATIONS.md docs/SECURITY.md docs/POSTGRESQL.md releases/1.0.11/README.md releases/1.0.11/manifest.json; do test -s "$f"; done
           grep -Fq 'Список пагинируется по 10 строк' docs/DHCP.md
           grep -Fq 'Случайный пароль показывается только в выводе установки' docs/AUTHENTICATION.md
+          grep -Fq '/var/lib/control-center-root/domain-package-prestate' docs/SECURITY.md
+          grep -Fq 'Domain/DNS/Storage cleanup-audits' docs/NOTIFICATIONS.md
