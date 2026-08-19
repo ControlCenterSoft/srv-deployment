@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+MODE="${1:-}"
+RESULT="${2:-}"
+ROOT_RUN=/run/control-center-root
+SNAPSHOT="$ROOT_RUN/samba-packages-before.tsv"
+APT_LOCK=/run/control-center-apt.lock
+PACKAGES=(
+  samba samba-dsdb-modules samba-vfs-modules winbind krb5-user dnsutils acl attr smbclient chrony systemd-timesyncd
+)
+
+installed(){
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -qx 'install ok installed'
+}
+
+case "$MODE" in
+  snapshot)
+    install -d -o root -g root -m 0700 "$ROOT_RUN"
+    TMP="$(mktemp "$ROOT_RUN/.samba-packages.XXXXXX")"
+    for pkg in "${PACKAGES[@]}"; do
+      if installed "$pkg"; then
+        version="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
+        printf '%s\t1\t%s\n' "$pkg" "$version" >>"$TMP"
+      else
+        printf '%s\t0\t-\n' "$pkg" >>"$TMP"
+      fi
+    done
+    chmod 0600 "$TMP"
+    mv "$TMP" "$SNAPSHOT"
+    ;;
+
+  restore)
+    [[ -s "$SNAPSHOT" ]] || exit 0
+    if [[ "$RESULT" == success ]]; then
+      rm -f "$SNAPSHOT"
+      exit 0
+    fi
+
+    exec 8>"$APT_LOCK"
+    flock -w 900 8 || { echo 'Samba package rollback: APT lock timeout' >&2; exit 75; }
+    export DEBIAN_FRONTEND=noninteractive
+
+    remove=()
+    restore=()
+    while IFS=$'\t' read -r pkg was_installed version; do
+      [[ -n "$pkg" ]] || continue
+      if [[ "$was_installed" == 0 ]] && installed "$pkg"; then
+        remove+=("$pkg")
+      elif [[ "$was_installed" == 1 ]] && ! installed "$pkg"; then
+        restore+=("$pkg")
+      fi
+    done <"$SNAPSHOT"
+
+    # Do not autoremove: dependencies may be shared with unrelated software.
+    if (( ${#remove[@]} )); then
+      apt-get remove -y "${remove[@]}" || true
+    fi
+    if (( ${#restore[@]} )); then
+      apt-get update || true
+      apt-get install -y "${restore[@]}" || true
+    fi
+
+    # A failed provisioning must not leave the machine without the time daemon
+    # it had before the operation. Verify every originally installed package.
+    missing=()
+    while IFS=$'\t' read -r pkg was_installed version; do
+      if [[ "$was_installed" == 1 ]] && ! installed "$pkg"; then missing+=("$pkg"); fi
+    done <"$SNAPSHOT"
+    rm -f "$SNAPSHOT"
+    if (( ${#missing[@]} )); then
+      printf 'Samba package rollback incomplete; missing:' >&2
+      printf ' %s' "${missing[@]}" >&2
+      printf '\n' >&2
+      exit 1
+    fi
+    ;;
+
+  *)
+    echo 'Usage: control-center-samba-package-guard snapshot | restore <systemd SERVICE_RESULT>' >&2
+    exit 2
+    ;;
+esac
