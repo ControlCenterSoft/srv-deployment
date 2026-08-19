@@ -1,18 +1,8 @@
-# Центр уведомлений — Control Center 1.0.10
+# Центр уведомлений — Control Center 1.0.11
 
-## Правило интерфейса
+Operational alerts отображаются в **колокольчике**. Рабочие карточки показывают состояние и краткий feedback текущего действия, а длительные фоновые/root события сохраняются в notification center.
 
-Operational alerts должны попадать в **колокольчик**, а не постоянно дублироваться длинными сообщениями внутри рабочих карточек.
-
-В карточках остаются:
-
-- фактические значения/статусы;
-- краткий feedback сразу после нажатия кнопки;
-- ошибки валидации пользовательского ввода.
-
-Длительные состояния, предупреждения и результаты фоновых/root-операций идут в центр уведомлений.
-
-## Источники 1.0.10
+## Источники
 
 `/api/notifications` агрегирует:
 
@@ -22,64 +12,41 @@ Operational alerts должны попадать в **колокольчик**, 
 - лицензирование;
 - Control Center updates;
 - OS/package updates;
-- Web runtime: порт, HTTP/HTTPS, certificate apply/rollback;
+- Web runtime и SSL;
 - PostgreSQL unavailable/degraded;
-- переименование компьютера;
-- Samba AD-DC readiness.
+- hostname operations;
+- **Samba AD-DC readiness/provisioning/active/error/rollback**.
 
-Market history дополнительно сохраняется в:
+## Samba AD-DC
 
-```text
-/var/lib/control-center-system/market-events.jsonl
-```
-
-## PostgreSQL unavailable
-
-Если PostgreSQL недоступен, уведомление `PostgreSQL unavailable` всё равно появляется через degraded aggregation.
-
-В этот момент read/unread не может надёжно сохраняться server-side, однако сами operational alerts остаются видимыми. После восстановления PostgreSQL новые события снова синхронизируются в:
+Provisioning публикует события:
 
 ```text
-control_center.notification_events
+started   → создание домена началось
+active    → provisioning и acceptance успешно завершены
+error     → запрос/операция отклонены или завершились ошибкой
+rollback  → предыдущее состояние восстановлено
 ```
 
-## Web runtime
+Market worker history использует `module=samba`, поэтому связанные lifecycle events также видны как `market-samba`.
 
-После применения 80/443/custom port/SSL root helper пишет:
+Основной status-файл:
 
 ```text
-/var/lib/control-center-system/web-status.json
+/var/lib/control-center-system/samba-status.json
 ```
 
-Состояния `applied`, `rollback`, `rejected`, `error` конвертируются в события колокольчика.
-
-При недоступной PostgreSQL Web runtime может успешно примениться; пользователь получает отдельное уведомление о degraded DB sync, а не откат порта.
-
-## Hostname
-
-Результат переименования хранится в:
+Последний root log:
 
 ```text
-/var/lib/control-center-system/hostname-status.json
+/var/lib/control-center-system/samba-last.log
 ```
 
-`applied` создаёт успешное событие, `rollback/rejected/error` — ошибку.
+В уведомления не записываются Administrator password и одноразовый approval code.
 
-## Samba AD-DC readiness
+## PostgreSQL
 
-После проверки readiness:
-
-- blockers → error;
-- только warnings → info;
-- readiness без blocker/warning → ok.
-
-Сам provisioning в 1.0.10 отключён, поэтому уведомление readiness не означает, что домен уже создан.
-
-## Цвет колокольчика
-
-- **красный** — непрочитанный `severity=error`;
-- **зелёный** — непрочитанные события без ошибок;
-- **нейтральный** — всё прочитано или событий нет.
+При доступной БД read/unread и events сохраняются server-side. При DB outage Control Center остаётся в degraded notification mode и не должен скрывать operational failures.
 
 ## API
 
@@ -88,27 +55,13 @@ GET  /api/notifications
 POST /api/notifications/read
 ```
 
-Пример:
-
-```bash
-curl -fsS http://127.0.0.1:PORT/api/notifications | python3 -m json.tool
-```
-
-Отметить все:
-
-```bash
-curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d '{"all":true}' \
-  http://127.0.0.1:PORT/api/notifications/read
-```
-
 ## Диагностика
 
 ```bash
-sudo tail -n 50 /var/lib/control-center-system/market-events.jsonl 2>/dev/null || true
-sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
-sudo cat /var/lib/control-center-system/hostname-status.json 2>/dev/null || true
-sudo cat /var/lib/control-center-system/samba-readiness.json 2>/dev/null || true
+curl -fsS http://127.0.0.1:8080/api/notifications | python3 -m json.tool
+sudo cat /var/lib/control-center-system/samba-status.json 2>/dev/null || true
+sudo tail -n 100 /var/lib/control-center-system/samba-last.log 2>/dev/null || true
+sudo tail -n 100 /var/lib/control-center-system/market-events.jsonl 2>/dev/null || true
 sudo -u control-center psql -d control_center -c \
   'select source,title,state,severity,is_read,last_seen_at,message from control_center.notification_events order by last_seen_at desc limit 50;'
 ```
