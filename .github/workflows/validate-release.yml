@@ -34,7 +34,10 @@ jobs:
             app/release_111_safety.py app/release_111_notifications.py app/release_111_services.py \
             app/release_111_dependencies.py app/release_111_dhcp.py app/release_111_services_assets.py \
             app/release_111_auth.py system/control-center-authd
-          for f in app/static/app.js app/static/release-108.js app/static/release-110.js app/static/release-110-fix.js app/static/release-111.js app/static/release-111-services.js app/static/release-111-ui-fix.js app/static/release-111-login.js; do node --check "$f"; done
+          for f in \
+            app/static/app.js app/static/release-108.js app/static/release-110.js app/static/release-110-fix.js \
+            app/static/release-111.js app/static/release-111-services.js app/static/release-111-ui-fix.js \
+            app/static/release-111-login.js app/static/release-111-compliance.js; do node --check "$f"; done
           for f in \
             install/install.sh install/uninstall.sh \
             system/control-center-web-run system/control-center-web-apply system/control-center-hostname-apply \
@@ -43,9 +46,9 @@ jobs:
             system/control-center-domain-restore-prestate system/control-center-domain-destroy \
             network/control-center-network-apply market/control-center-market-apply market/control-center-dhcp-apply \
             market/control-center-dns-apply market/control-center-storage-apply market/control-center-dhcp-reservations-apply \
-            scripts/acceptance-1.0.11.sh; do bash -n "$f"; done
+            scripts/acceptance-1.0.11.sh scripts/runtime-acceptance-1.0.11.sh; do bash -n "$f"; done
 
-      - name: Validate release architecture
+      - name: Validate release architecture and document contract
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -55,13 +58,16 @@ jobs:
           assert json.loads((r/'app/release.json').read_text())=={'version':'1.0.11','build':'20260819.5'}
           dep=json.loads((r/'deployment.json').read_text());assert dep['release']=='1.0.11' and dep['build']=='20260819.5' and dep['audit'] in {'pending','passed'}
           man=json.loads((r/'releases/1.0.11/manifest.json').read_text());assert man['database']['schema_migration']=='005'
+
           w=(r/'app/wsgi.py').read_text()
           for x in ['release_111_services.register','release_111_dependencies.register','release_111_dhcp.register','release_111_auth.register']:assert x in w,x
           svc=(r/'app/release_111_services.py').read_text()
           for x in ["'domain'", "'dns'", "'storage'", '/api/dhcp/clients','/api/domain/remove','/api/services/cleanup/audits']:assert x in svc,x
+
           auth=(r/'app/release_111_auth.py').read_text();daemon=(r/'system/control-center-authd').read_text()
           for x in ['/api/auth/login','SESSION_COOKIE_HTTPONLY','rbac_mode']:assert x in auth,x
           for x in ['SO_PEERCRED','pamtester','ntlm_auth','wbinfo','control-center-admins']:assert x in daemon,x
+
           pre=(r/'system/control-center-domain-pre').read_text();destroy=(r/'system/control-center-domain-destroy').read_text()
           assert 'prestate_fingerprints' in pre and 'prestate_fingerprints_match' in destroy and 'nTDSDSA' in destroy
           dns=(r/'market/control-center-dns-apply').read_text();storage=(r/'market/control-center-storage-apply').read_text()
@@ -70,10 +76,47 @@ jobs:
           dhcp=(r/'market/control-center-dhcp-reservations-apply').read_text();assert 'dhcp-host=' in dhcp and 'dhcp_reservations' in dhcp
           mig=(r/'app/migrations/005_rbac_services_dhcp.sql').read_text()
           for x in ['rbac_roles','rbac_bindings','service_dependencies','dhcp_reservations','service_cleanup_audits']:assert x in mig,x
+
+          # AUTHENTICATION.md contract: on a clean root-only installation the
+          # dedicated nologin controladmin receives a random password which is
+          # printed exactly from the installer process and not persisted.
           installer=(r/'install/install.sh').read_text()
-          for x in ['control-center-authd.service','control-center-domain-destroy.path','control-center-dns-apply.path','control-center-storage-apply.path','control-center-dhcp-reservations-apply.path','migration 005']:assert x in installer,x
+          for x in [
+              'control-center-authd.service','control-center-domain-destroy.path','control-center-dns-apply.path',
+              'control-center-storage-apply.path','control-center-dhcp-reservations-apply.path','migration 005',
+              'candidate=controladmin','--shell /usr/sbin/nologin','BOOTSTRAP_PASSWORD=',
+              "openssl rand -base64 27",'| chpasswd',"printf '  Пароль: %s\\n'"
+          ]: assert x in installer,x
+          assert 'passwd -l "$candidate"' not in installer
+
+          # DHCP.md contract: client table is paginated exactly by ten rows.
+          compliance=(r/'app/static/release-111-compliance.js').read_text()
+          assert 'DHCP_CLIENTS_PAGE_SIZE_COMPLIANCE111 = 10' in compliance
+          assert 'dhcpClientsPager111' in compliance
+          assets=(r/'app/release_111_services_assets.py').read_text()
+          assert "'release-111-compliance.js'" in assets
+
+          # Domain/RBAC contract: the bootstrap group is mandatory, not a
+          # best-effort post-step, and built-in Administrator SID mapping must
+          # be proven before authenticated SMB acceptance.
+          post=(r/'system/control-center-domain-post').read_text()
+          for x in ["group listmembers 'Control Center Admins'",'group addmembers', 'wbinfo --name-to-sid']:
+              assert x in post,x
+          orch=(r/'system/control-center-domain-orchestrate').read_text()
+          for x in ['wbinfo --sid-to-uid','Administrator SID maps to UID 0','idmap_ldb:use rfc2307 = no']:
+              assert x in orch,x
+
+          # Cleanup contract: capture every apt install/removal transaction
+          # participant, cache exact old .debs, restore versions and apt marks,
+          # and retain that pre-state until guarded Domain removal.
+          guard=(r/'system/control-center-samba-package-guard').read_text()
+          for x in ['apt-get -s install','s/^Remv','apt-get download','--allow-downgrades','apt-mark manual','apt-mark auto','restore-persistent','domain-package-prestate']:
+              assert x in guard,x
+          restore=(r/'system/control-center-domain-restore-prestate').read_text()
+          assert 'restore-persistent' in restore
+
           assert '--adminpass=' not in (r/'system/control-center-samba-apply').read_text()
-          print('1.0.11 architecture OK')
+          print('1.0.11 architecture/document contract OK')
           PY
 
       - name: Setup PostgreSQL application test
@@ -123,7 +166,9 @@ jobs:
           r=c.post('/api/samba/readiness',json={'realm':'ci.example.test','netbios_domain':'CITEST','network_role':'lan','dns_forwarder':'1.1.1.1'});assert r.status_code==200
           j=r.get_json();assert j['details']['dependencies']['domain_requires_dns'] and j['details']['dependencies']['domain_requires_storage']
           assert c.get('/api/dhcp/clients').status_code==200
-          assets=c.get('/static/app.js').get_data(as_text=True);assert 'dhcpClientsPager111' in assets and 'data-domain-remove-open' in assets
+          assets=c.get('/static/app.js').get_data(as_text=True)
+          assert 'dhcpClientsPager111' in assets and 'DHCP_CLIENTS_PAGE_SIZE_COMPLIANCE111 = 10' in assets
+          assert 'data-domain-remove-open' in assets
           print('API architecture OK')
           PY
 
@@ -144,7 +189,10 @@ jobs:
 
       - name: Security and docs policy
         run: |
+          set -euo pipefail
           openssl pkey -pubin -in license/vendor-public.pem -noout
           ! git ls-files | grep -Eai '(^|/)(private|secret|signing)[^/]*(\.pem|\.key)$'
           ! grep -RIl --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' 'BEGIN PRIVATE KEY\|BEGIN RSA PRIVATE KEY' .
-          for f in README.md docs/INSTALL.md docs/SAMBA-AD-DC.md docs/NETWORK.md docs/NOTIFICATIONS.md docs/SECURITY.md docs/POSTGRESQL.md releases/1.0.11/README.md releases/1.0.11/manifest.json; do test -s "$f"; done
+          for f in README.md docs/INSTALL.md docs/SAMBA-AD-DC.md docs/NETWORK.md docs/DHCP.md docs/AUTHENTICATION.md docs/NOTIFICATIONS.md docs/SECURITY.md docs/POSTGRESQL.md releases/1.0.11/README.md releases/1.0.11/manifest.json; do test -s "$f"; done
+          grep -Fq 'Список пагинируется по 10 строк' docs/DHCP.md
+          grep -Fq 'случайный пароль показывается только в выводе установки' docs/AUTHENTICATION.md
