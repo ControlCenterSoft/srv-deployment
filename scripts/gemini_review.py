@@ -40,8 +40,11 @@ Head SHA: {sha}
 Focus on defects that can be demonstrated from the changed code: correctness, security,
 authentication/authorization, data integrity, concurrency, deployment safety, backward
 compatibility, error handling, resource leaks, and missing tests. Avoid style-only findings.
-Do not invent files, APIs, behavior, or line numbers. If a precise new-file line is not clear,
-use null for line. Return at most 20 findings.
+Do not invent files, APIs, behavior, or line numbers. Do not make claims that require external
+version/catalog knowledge you cannot verify from the supplied diff. In particular, never claim
+that a dependency, package, model, or GitHub Action version does not exist merely because it
+may be newer than your training data. If evidence is insufficient, omit the finding.
+If a precise new-file line is not clear, use null for line. Return at most 20 findings.
 
 Severity meanings:
 - BLOCKER: likely catastrophic, security-critical, destructive, or release must not proceed.
@@ -73,10 +76,30 @@ Return ONLY one JSON object, with no Markdown fences, using exactly this shape:
 """
 
 
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
-    return match.group(1).strip() if match else text
+def _decode_json_from_text(text: str) -> Any:
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("Gemini response was empty")
+
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError as direct_error:
+        fenced = re.search(
+            r"```(?:json)?\s*(.*?)\s*```",
+            stripped,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            return json.loads(fenced.group(1).strip())
+
+        start = stripped.find("{")
+        if start >= 0:
+            try:
+                value, _ = json.JSONDecoder().raw_decode(stripped[start:])
+                return value
+            except json.JSONDecodeError:
+                pass
+        raise direct_error
 
 
 def normalize_review(payload: Any) -> dict[str, Any]:
@@ -103,17 +126,18 @@ def normalize_review(payload: Any) -> dict[str, Any]:
         if severity not in SEVERITIES:
             continue
         line = raw.get("line")
-        if not isinstance(line, int) or line <= 0:
+        if isinstance(line, bool) or not isinstance(line, int) or line <= 0:
             line = None
-        finding = {
-            "severity": severity,
-            "path": str(raw.get("path", "")).strip() or "(unknown)",
-            "line": line,
-            "title": str(raw.get("title", "")).strip() or "Untitled finding",
-            "description": str(raw.get("description", "")).strip(),
-            "recommendation": str(raw.get("recommendation", "")).strip(),
-        }
-        findings.append(finding)
+        findings.append(
+            {
+                "severity": severity,
+                "path": str(raw.get("path", "")).strip() or "(unknown)",
+                "line": line,
+                "title": str(raw.get("title", "")).strip() or "Untitled finding",
+                "description": str(raw.get("description", "")).strip(),
+                "recommendation": str(raw.get("recommendation", "")).strip(),
+            }
+        )
 
     def string_list(name: str) -> list[str]:
         value = payload.get(name, [])
@@ -131,7 +155,7 @@ def normalize_review(payload: Any) -> dict[str, Any]:
 
 
 def parse_response_text(text: str) -> dict[str, Any]:
-    return normalize_review(json.loads(_strip_code_fence(text)))
+    return normalize_review(_decode_json_from_text(text))
 
 
 def extract_candidate_text(response: dict[str, Any]) -> str:
