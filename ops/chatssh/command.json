@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "enabled": true,
-  "id": "repair-result-channel-v1",
-  "script_sha": "9e3096494ec8a87bee45956a45357f512eb73dea",
-  "script_path": "ops/chatssh/jobs/repair-result-channel-v1.sh",
-  "sha256": "4ec1e6c0f41bee43ad66f437ac004b8cecc4ccc1c8670261bc3747d58e5a1678",
-  "timeout_seconds": 180
+  "id": "repair-result-channel-v2",
+  "script_sha": "937806f3ae47ed6094a07483efac11a00232c583",
+  "script_path": "ops/chatssh/jobs/repair-result-channel-v2.sh",
+  "sha256": "2f99f3355a81bd9354b91cda3802dad82749d423b17b49126df9008d5763ba46",
+  "timeout_seconds": 240
 }
