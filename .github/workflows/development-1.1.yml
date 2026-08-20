@@ -145,7 +145,7 @@ jobs:
   fast-build:
     name: Fast build linux/amd64
     if: needs.scope.outputs.runtime == 'true'
-    needs: [scope, go-checks]
+    needs: [scope]
     runs-on: ubuntu-24.04
     timeout-minutes: 7
     steps:
