@@ -46,6 +46,11 @@ STAGING_PORT="${CONTROL_CENTER_STAGING_PORT:-22}"
 [[ -f "$CONTROL_CENTER_STAGING_SSH_KEY_FILE" ]] || { echo "SSH key file is missing" >&2; exit 2; }
 [[ -f "$CONTROL_CENTER_STAGING_KNOWN_HOSTS_FILE" ]] || { echo "known_hosts file is missing" >&2; exit 2; }
 
+# Validate that the public key artifact is structurally valid. It is evidence only;
+# remote trust is pinned by bootstrap at /etc/control-center/staging-update-public.pem.
+openssl pkey -pubin -in "$PUBLIC_KEY" -noout >/dev/null 2>&1 \
+  || { echo "staging public key is malformed" >&2; exit 2; }
+
 remote="${CONTROL_CENTER_STAGING_USER}@${CONTROL_CENTER_STAGING_HOST}"
 remote_dir="/tmp/control-center-staging-${CANDIDATE_SHA}"
 ssh_opts=(
@@ -73,15 +78,10 @@ cleanup_remote() {
 trap cleanup_remote EXIT
 
 ssh "${ssh_opts[@]}" "$remote" "install -d -m 0700 '$remote_dir'"
-scp "${scp_opts[@]}" "$PACKAGE" "$PUBLIC_KEY" "$remote:$remote_dir/"
-
-package_name="$(basename "$PACKAGE")"
-key_name="$(basename "$PUBLIC_KEY")"
-[[ "$package_name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid package basename" >&2; exit 2; }
-[[ "$key_name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid key basename" >&2; exit 2; }
+scp "${scp_opts[@]}" "$PACKAGE" "$remote:$remote_dir/control-center-staging.tar.gz"
 
 ssh "${ssh_opts[@]}" "$remote" \
-  "sudo /usr/local/sbin/control-center-update --package '$remote_dir/$package_name' --public-key '$remote_dir/$key_name' && \
+  "sudo -n /usr/local/sbin/control-center-staging-update --package '$remote_dir/control-center-staging.tar.gz' && \
    curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null && \
    curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '\"ready\":true' && \
    curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '\"version\":\"${CANDIDATE_VERSION}\"'"
