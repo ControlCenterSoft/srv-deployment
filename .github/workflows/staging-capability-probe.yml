@@ -1,0 +1,83 @@
+name: Staging capability probe
+
+on:
+  push:
+    branches: ['ops/staging-capability-probe']
+    paths: ['.github/workflows/staging-capability-probe.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+      STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+      STAGING_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+      STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+      STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Resolve staging configuration
+        id: config
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          configured=true
+          for value in "$STAGING_HOST" "$STAGING_USER" "$STAGING_KEY" "$STAGING_KNOWN_HOSTS"; do
+            [[ -n "$value" ]] || configured=false
+          done
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+      - name: Probe restricted SSH account
+        if: steps.config.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ~/.ssh evidence
+          chmod 700 ~/.ssh
+          printf '%s\n' "$STAGING_KEY" > ~/.ssh/id_staging
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_staging ~/.ssh/known_hosts
+          port="${STAGING_PORT:-22}"
+          {
+            echo 'STAGING_CONFIGURED=true'
+            ssh -i ~/.ssh/id_staging -p "$port" \
+              -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/known_hosts -o ConnectTimeout=8 \
+              "$STAGING_USER@$STAGING_HOST" '
+                set -eu
+                printf "REMOTE_USER=%s\n" "$(id -un)"
+                printf "REMOTE_UID=%s\n" "$(id -u)"
+                if test -r /etc/control-center-diagnostics-agent/github-token; then
+                  echo TOKEN_READABLE_BY_STAGING=true
+                else
+                  echo TOKEN_READABLE_BY_STAGING=false
+                fi
+                if sudo -n /usr/local/sbin/control-center-staging-update --self-test >/dev/null 2>&1; then
+                  echo RESTRICTED_UPDATER_SUDO=true
+                else
+                  echo RESTRICTED_UPDATER_SUDO=false
+                fi
+                echo SUDO_POLICY_BEGIN
+                sudo -n -l 2>&1 || true
+                echo SUDO_POLICY_END
+              '
+          } > evidence/staging-capability-probe.txt
+      - name: Record missing configuration
+        if: steps.config.outputs.configured != 'true'
+        run: |
+          mkdir -p evidence
+          printf 'STAGING_CONFIGURED=false\n' > evidence/staging-capability-probe.txt
+      - name: Publish sanitized probe evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- evidence/staging-capability-probe.txt
+          git commit -m 'Record staging capability probe' || exit 0
+          git push origin "HEAD:${GITHUB_REF_NAME}"
