@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+PRODUCT_REPO="https://github.com/ControlCenterSoft/srv-deployment.git"
+PRODUCT_COMMIT="26a099e36aa543faf6953e47f31ec0178095e00b"
+PRODUCT_VERSION="1.0.0-beta.1"
+DIAG_SSH="git@github.com:ControlCenterSoft/control-center-server-diagnostics..git"
+WORK="/opt/control-center-beta1-acceptance"
+SRC="$WORK/source"
+REPORT_DIR="$WORK/report"
+REPORT="$REPORT_DIR/report.txt"
+FULL_LOG="$REPORT_DIR/full.log"
+DIAG_BUNDLE="$REPORT_DIR/control-center-diagnostics.tar.gz"
+CREDS="/root/control-center-admin-credentials.txt"
+ENV_FILE="/etc/control-center/control-center.env"
+NGINX_CONF="/etc/nginx/conf.d/control-center-test-http.conf"
+BACKEND_URL="http://127.0.0.1:8877"
+PROXY_URL="http://127.0.0.1:8876"
+CURRENT_LINK="/usr/local/lib/control-center/current"
+TRUST_KEY="/etc/control-center/update-public-key.pem"
+KEY_DIR="$WORK/test-update-trust"
+PRIVATE_KEY="$KEY_DIR/update-private.pem"
+PUBLIC_KEY="$KEY_DIR/update-public.pem"
+BETA1_PACKAGE="$WORK/control-center-1.0.0-beta.1-signed-test.tar.gz"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+HOST="$(hostname -s 2>/dev/null || hostname)"
+HOST_SAFE="$(printf '%s' "$HOST" | tr -cs 'A-Za-z0-9._-' '-')"
+REPORT_BRANCH="reports/${HOST_SAFE}/${TS}-beta1"
+STATUS="FAILED"
+STEP="preflight"
+SIGNED_UPDATE="not-run"
+RESTORE_BETA1="not-run"
+PRESERVE_REINSTALL="not-run"
+BROWSER_PROXY="not-run"
+
+[[ $EUID -eq 0 ]] || { echo "Run as root" >&2; exit 1; }
+mkdir -p "$REPORT_DIR"
+chmod 0700 "$WORK" "$REPORT_DIR"
+: > "$FULL_LOG"
+exec > >(tee -a "$FULL_LOG") 2>&1
+
+wait_url() {
+  local url="$1" needle="${2:-}"
+  local body
+  for _ in {1..60}; do
+    if body="$(curl -fsS --max-time 2 "$url" 2>/dev/null)"; then
+      if [[ -z "$needle" ]] || grep -Fq "$needle" <<<"$body"; then
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+public_ip() {
+  local ip
+  ip="$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  [[ -n "$ip" ]] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf '%s' "$ip"
+}
+
+push_report() {
+  command -v git >/dev/null 2>&1 || return 0
+  local tmp
+  if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8' git ls-remote "$DIAG_SSH" >/dev/null 2>&1; then
+    echo "REPORT_SENT=NO"
+    return 0
+  fi
+  tmp="$(mktemp -d /tmp/control-center-beta1-report.XXXXXX)"
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8' git clone -q "$DIAG_SSH" "$tmp/repo" || { rm -rf "$tmp"; echo "REPORT_SENT=NO"; return 0; }
+  cd "$tmp/repo"
+  git checkout -q -b "$REPORT_BRANCH"
+  mkdir -p "reports/$HOST_SAFE/$TS"
+  cp "$REPORT" "reports/$HOST_SAFE/$TS/report.txt"
+  [[ ! -f "$DIAG_BUNDLE" ]] || cp "$DIAG_BUNDLE" "reports/$HOST_SAFE/$TS/control-center-diagnostics.tar.gz"
+  git add "reports/$HOST_SAFE/$TS"
+  git -c user.name='Control Center Test Host' -c user.email='control-center-test-host@localhost' commit -q -m "Beta1 real-host acceptance: $HOST_SAFE $TS"
+  if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8' git push -q origin "$REPORT_BRANCH"; then
+    echo "REPORT_SENT=YES"
+    echo "REPORT_BRANCH=$REPORT_BRANCH"
+  else
+    echo "REPORT_SENT=NO"
+  fi
+  cd /
+  rm -rf "$tmp"
+}
+
+finalize() {
+  local rc=$?
+  trap - EXIT
+  local public="$(public_ip)"
+  local panel="http://${public}:8876"
+  local private_key_was_present=false
+  [[ -f "$PRIVATE_KEY" ]] && private_key_was_present=true
+  # Ephemeral signing material must never survive an acceptance run, including failures.
+  rm -f -- "$PRIVATE_KEY" 2>/dev/null || true
+  # If beta.1 already moved the service to the loopback backend, keep the temporary
+  # browser endpoint reachable even when a later acceptance step fails.
+  if grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8877' "$ENV_FILE" 2>/dev/null && nginx -t >/dev/null 2>&1; then
+    systemctl restart nginx.service >/dev/null 2>&1 || true
+  fi
+  mkdir -p "$REPORT_DIR"
+  {
+    echo "CONTROL CENTER BETA1 REAL-HOST ACCEPTANCE"
+    echo "started_at=$STARTED_AT"
+    echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "host=$HOST"
+    echo "status=$STATUS"
+    echo "last_step=$STEP"
+    echo "product_version=$PRODUCT_VERSION"
+    echo "product_commit=$PRODUCT_COMMIT"
+    echo "signed_update_acceptance=$SIGNED_UPDATE"
+    echo "restored_beta1_after_update_test=$RESTORE_BETA1"
+    echo "preserve_state_reinstall=$PRESERVE_REINSTALL"
+    echo "browser_http_proxy=$BROWSER_PROXY"
+    echo "panel_url=$panel"
+    echo "service_active=$(systemctl is-active control-center.service 2>/dev/null || true)"
