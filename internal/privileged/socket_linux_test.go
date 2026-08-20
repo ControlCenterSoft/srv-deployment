@@ -64,6 +64,76 @@ func TestSocketBoundaryExecutesAuthorizedTypedRequest(t *testing.T) {
 	}
 }
 
+func TestSocketBoundaryAuditsSuccessfulExecutionCorrelation(t *testing.T) {
+	runner := &fakeRunner{result: CommandResult{ExitCode: 0, Output: "sensitive output is not copied to audit"}}
+	server, err := NewSocketServer(newTestEngine(t, runner), []uint32{uint32(os.Getuid())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []AuditEvent
+	server.Audit = AuditSinkFunc(func(event AuditEvent) { events = append(events, event) })
+	path, stop := startOneShotSocketServer(t, server)
+	defer stop()
+
+	client := SocketClient{Path: path, Timeout: time.Second}
+	_, err = client.Execute(context.Background(), Request{
+		ID:      "op-audit-success",
+		Type:    OperationServiceRestart,
+		ActorID: "actor-admin-42",
+		Args:    map[string]string{"service": "nginx.service"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("audit events=%d", len(events))
+	}
+	event := events[0]
+	if event.OperationID != "op-audit-success" || event.ActorID != "actor-admin-42" {
+		t.Fatalf("unexpected correlation: %+v", event)
+	}
+	if event.Type != OperationServiceRestart || event.Status != "succeeded" || event.ExitCode != 0 || event.ErrorCode != "" {
+		t.Fatalf("unexpected audit event: %+v", event)
+	}
+	if event.StartedAt.IsZero() || event.FinishedAt.Before(event.StartedAt) || event.DurationMS < 0 {
+		t.Fatalf("invalid audit timing: %+v", event)
+	}
+}
+
+func TestSocketBoundaryAuditsRejectedTypedExecution(t *testing.T) {
+	runner := &fakeRunner{}
+	server, err := NewSocketServer(newTestEngine(t, runner), []uint32{uint32(os.Getuid())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []AuditEvent
+	server.Audit = AuditSinkFunc(func(event AuditEvent) { events = append(events, event) })
+	path, stop := startOneShotSocketServer(t, server)
+	defer stop()
+
+	client := SocketClient{Path: path, Timeout: time.Second}
+	_, err = client.Execute(context.Background(), Request{
+		ID:      "op-audit-denied",
+		Type:    OperationServiceRestart,
+		ActorID: "actor-viewer",
+		Args:    map[string]string{"service": "ssh.service"},
+	})
+	var remoteErr *RemoteError
+	if !errors.As(err, &remoteErr) || remoteErr.Code != ErrorCodePermissionDenied {
+		t.Fatalf("error=%v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner called %d times", runner.calls)
+	}
+	if len(events) != 1 {
+		t.Fatalf("audit events=%d", len(events))
+	}
+	event := events[0]
+	if event.OperationID != "op-audit-denied" || event.ActorID != "actor-viewer" || event.ErrorCode != ErrorCodePermissionDenied || event.Status != "failed" {
+		t.Fatalf("unexpected audit event: %+v", event)
+	}
+}
+
 func TestSocketBoundaryRejectsUnauthorizedPeerBeforeExecution(t *testing.T) {
 	runner := &fakeRunner{}
 	server, err := NewSocketServer(newTestEngine(t, runner), []uint32{uint32(os.Getuid() + 1)})
