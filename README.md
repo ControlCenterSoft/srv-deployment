@@ -17,7 +17,19 @@ The local server console is now available as a server-rendered, read-only shell:
 
 The current UI intentionally contains no JavaScript, forms or privileged actions. It reads the same validated `deployment.json` as Platform API v1, escapes manifest data before HTML output, uses CSP/frame protections and fails closed with HTTP 503 if release metadata is invalid.
 
-Privileged controls will be introduced only after session, server-side RBAC, CSRF/origin and audit contracts are implemented and tested.
+Privileged controls will be introduced only after the reachable login/session flow, CSRF/origin policy and persistent audit path are implemented and tested.
+
+### RBAC / session security foundation
+Security primitives are implemented and tested before any login endpoint becomes reachable:
+
+- server-side roles `viewer` and `admin`
+- stable permission policy and fail-closed `require_permission`
+- scrypt password hashing with bounded parameters
+- cryptographically random session tokens; only SHA-256 token digests are intended for storage
+- `__Host-cc_session` cookie contract with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute
+- bounded audit envelope with recursive redaction of password/token/cookie/API-key fields
+
+This is a **foundation**, not a completed authentication system. Persistent accounts/sessions, login/logout endpoints, CSRF/origin checks, rate limits and privileged authorization are not enabled yet.
 
 ### Platform API v1
 The first server contour is intentionally read-only and dependency-free:
@@ -45,7 +57,7 @@ The API process contains no root execution path and does not expose arbitrary co
 - post-switch readiness verification
 - automatic restoration after a failed switch
 - explicit rollback to the previous healthy release
-- Web UI and Platform API installed as one versioned release payload
+- Web UI, API and security foundation installed as one versioned release payload
 
 Commands from a complete checkout:
 
@@ -79,6 +91,9 @@ GitHub Actions validates:
 - deployment manifest schema
 - API unit/contract tests
 - Web UI navigation/security/fail-closed tests
+- RBAC permission boundaries
+- password/session security primitives
+- audit secret redaction
 - live API smoke test
 - negative write-method behavior
 
