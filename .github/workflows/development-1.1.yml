@@ -129,7 +129,7 @@ jobs:
       - name: Shell syntax
         run: bash -n install/*.sh scripts/*.sh
       - name: Privileged worker packaging contract
-        run: ./scripts/privileged-worker-packaging-contract.sh
+        run: bash scripts/privileged-worker-packaging-contract.sh
 
   ai-checks:
     name: AI integration checks
