@@ -1,0 +1,122 @@
+name: Control Center Baseline CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'ops/**'
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Show Python runtime
+        run: python3 --version
+      - name: Syntax checks
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q api scripts tests
+          bash -n install/install.sh
+      - name: Validate deployment metadata
+        run: python3 scripts/validate_deployment.py deployment.json
+      - name: Unit and contract tests
+        run: python3 -m unittest discover -s tests -v
+      - name: API smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 api/server.py --host 127.0.0.1 --port 18876 &
+          API_PID=$!
+          trap 'kill "${API_PID}" >/dev/null 2>&1 || true' EXIT
+          python3 - <<'PY'
+          import json
+          import time
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          base = "http://127.0.0.1:18876"
+          for _ in range(40):
+              try:
+                  with urlopen(base + "/api/v1/readiness", timeout=1) as response:
+                      payload = json.load(response)
+                      if response.status == 200 and payload.get("status") == "ready":
+                          break
+              except (OSError, URLError, ValueError):
+                  time.sleep(0.1)
+          else:
+              raise SystemExit("API did not become ready")
+
+          with urlopen(base + "/api/v1/health", timeout=1) as response:
+              payload = json.load(response)
+              assert response.status == 200
+              assert payload == {
+                  "status": "ok",
+                  "service": "control-center-api",
+                  "api_version": 1,
+              }
+              assert response.headers["Cache-Control"] == "no-store"
+              assert response.headers["X-Correlation-ID"]
+
+          with urlopen(base + "/api/v1/version", timeout=1) as response:
+              payload = json.load(response)
+              assert response.status == 200
+              assert payload["product"] == "control-center"
+              assert payload["version"] == "1.0.0"
+
+          request = Request(base + "/api/v1/release", data=b"{}", method="POST")
+          try:
+              urlopen(request, timeout=1)
+          except HTTPError as exc:
+              assert exc.code == 405
+              payload = json.load(exc)
+              assert payload["error"]["code"] == "method_not_allowed"
+          else:
+              raise AssertionError("POST unexpectedly succeeded")
+          PY
+
+  record-result:
+    if: ${{ always() && github.event_name == 'push' }}
+    needs: [validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Record CI result
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ops
+          python3 - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+
+          payload = {
+              "schema": 1,
+              "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "source_sha": os.environ["SOURCE_SHA"],
+              "run_id": os.environ["RUN_ID"],
+              "validate": os.environ["VALIDATE_RESULT"],
+          }
+          with open("ops/ci-status.json", "w", encoding="utf-8") as fh:
+              json.dump(payload, fh, indent=2)
+              fh.write("\n")
+          PY
+          git config user.name 'control-center-ci'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -- ops/ci-status.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Record Control Center CI result'
+          git pull --rebase origin main
+          git push origin HEAD:main
