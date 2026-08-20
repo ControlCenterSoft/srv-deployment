@@ -1,0 +1,177 @@
+ames" == "audit.json manifest.json operations.json runtime.json users.json version.json" ]] || die "diagnostics whitelist mismatch"
+  rm -rf "$work/diag-expanded"; mkdir "$work/diag-expanded"; tar -xzf "$work/diagnostics.tar.gz" -C "$work/diag-expanded"
+  ! grep -RqiE 'pbkdf2-sha256|bootstrap-admin\.secret|cc_session|BEGIN .*PRIVATE KEY' "$work/diag-expanded" || die "secret material leaked into diagnostics"
+  cp "$work/diagnostics.tar.gz" "$DIAG_BUNDLE"
+  chmod 0600 "$DIAG_BUNDLE"
+}
+
+write_state_file() {
+  cat > "$STATE_FILE" <<EOF
+PHASE=post-reboot
+START_TS=$START_TS
+HOST_SAFE=$HOST_SAFE
+PUBLIC_IP=$PUBLIC_IP
+BACKEND_URL=$BACKEND_URL
+PANEL_URL=$PANEL_URL
+OLD_BOOT_ID=$OLD_BOOT_ID
+GOARCH=$GOARCH
+EXPECTED_RC_SHA=$EXPECTED_RC_SHA
+STATE_HASH_BEFORE=$STATE_HASH_BEFORE
+SECRETS_HASH_BEFORE=$SECRETS_HASH_BEFORE
+PRODUCT_CHANGED=1
+EOF
+  chmod 0600 "$STATE_FILE"
+}
+
+load_state_file() {
+  [[ -f "$STATE_FILE" ]] || die "resume state missing"
+  # shellcheck disable=SC1090
+  source "$STATE_FILE"
+}
+
+install_resume_unit() {
+  install -m 0700 "$0" "$RESUME_SCRIPT"
+  cat > "$RESUME_UNIT" <<EOF
+[Unit]
+Description=Control Center rc.1 acceptance resume after reboot
+Wants=network-online.target
+After=network-online.target control-center.service nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=$RESUME_SCRIPT --resume
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "$RESUME_UNIT"
+  systemctl daemon-reload
+  systemctl enable "$RESUME_UNIT_NAME" >/dev/null
+}
+
+remove_resume_unit() {
+  systemctl disable "$RESUME_UNIT_NAME" >/dev/null 2>&1 || true
+  rm -f "$RESUME_UNIT" "$RESUME_SCRIPT"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+write_report() {
+  mkdir -p "$REPORT_DIR"
+  local private_removed=false
+  [[ ! -e "$PRIVATE_KEY" ]] && private_removed=true
+  {
+    echo "CONTROL CENTER RC1 REAL-HOST ACCEPTANCE"
+    echo "started_at=$START_TS"
+    echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "host=$HOST_SAFE"
+    echo "status=$FINAL_STATUS"
+    echo "last_step=$STEP"
+    echo "candidate_version=$RC_VERSION"
+    echo "candidate_commit=$RC_COMMIT"
+    echo "candidate_arch=$GOARCH"
+    echo "candidate_expected_sha256=$EXPECTED_RC_SHA"
+    echo "go_version=$GO_VERSION"
+    echo "beta_upgrade=$BETA_UPGRADE"
+    echo "pre_reboot_auth_security=$PRE_REBOOT_AUTH"
+    echo "reboot_acceptance=$REBOOT_ACCEPTANCE"
+    echo "post_reboot_auth_security=$POST_REBOOT_AUTH"
+    echo "rc_update_rollback=$RC_UPDATE_ROLLBACK"
+    echo "repair_reinstall=$REPAIR_REINSTALL"
+    echo "preserve_state_reinstall=$PRESERVE_STATE_REINSTALL"
+    echo "state_preserved=$STATE_PRESERVED"
+    echo "diagnostics=$DIAGNOSTICS"
+    echo "trust_restored=$TRUST_RESTORED"
+    echo "test_private_key_removed=$private_removed"
+    echo "current_version=$(current_version)"
+    echo "current_commit=$(current_commit)"
+    echo "current_target=$(readlink /usr/local/lib/control-center/current 2>/dev/null || true)"
+    echo "service_active=$(systemctl is-active control-center.service 2>/dev/null || true)"
+    echo "service_enabled=$(systemctl is-enabled control-center.service 2>/dev/null || true)"
+    echo "service_result=$(systemctl show control-center.service -p Result --value 2>/dev/null || true)"
+    echo "service_restarts=$(systemctl show control-center.service -p NRestarts --value 2>/dev/null || true)"
+    echo "nginx_active=$(systemctl is-active nginx.service 2>/dev/null || true)"
+    echo "config_mode=$(stat -c %a /etc/control-center 2>/dev/null || true)"
+    echo "state_mode=$(stat -c %a /var/lib/control-center 2>/dev/null || true)"
+    echo "log_mode=$(stat -c %a /var/log/control-center 2>/dev/null || true)"
+    echo "state_sha256_before=$STATE_HASH_BEFORE"
+    echo "state_sha256_after=$(safe_hash /var/lib/control-center/state.json)"
+    echo "secrets_sha256_before=$SECRETS_HASH_BEFORE"
+    echo "secrets_sha256_after=$(safe_hash /var/lib/control-center/secrets.json)"
+    echo "panel_url=$PANEL_URL"
+    echo
+    echo "--- BACKEND VERSION ---"
+    curl -fsS "$BACKEND_URL/api/v1/version" 2>/dev/null || true
+    echo
+    echo "--- BACKEND READINESS ---"
+    curl -fsS "$BACKEND_URL/api/v1/readiness" 2>/dev/null || true
+    echo
+    echo "--- PROXY HEALTH ---"
+    curl -fsS -H "Host: $PUBLIC_IP:8876" "http://127.0.0.1:8876/api/v1/health" 2>/dev/null || true
+    echo
+    echo "--- SYSTEMD STATUS ---"
+    systemctl status control-center.service --no-pager -l 2>&1 | tail -n 100 || true
+    echo
+    echo "--- JOURNAL TAIL ---"
+    journalctl -u control-center.service --no-pager -n 160 2>&1 || true
+    echo
+    echo "NOTE: no passwords, password hashes, session cookies, CSRF tokens, request bodies or private signing keys are included intentionally."
+  } > "$REPORT_FILE"
+  chmod 0600 "$REPORT_FILE"
+}
+
+push_report() {
+  local repo="$BASE/diagnostics-repo" report_branch="reports/$HOST_SAFE/${START_TS}-rc1"
+  rm -rf "$repo"
+  git clone -q "$DIAG_SSH" "$repo" || return 1
+  git -C "$repo" checkout -q -b "$report_branch"
+  mkdir -p "$repo/reports/$HOST_SAFE/$START_TS"
+  cp "$REPORT_FILE" "$repo/reports/$HOST_SAFE/$START_TS/report.txt"
+  [[ -f "$DIAG_BUNDLE" ]] && cp "$DIAG_BUNDLE" "$repo/reports/$HOST_SAFE/$START_TS/control-center-diagnostics.tar.gz"
+  git -C "$repo" config user.name 'control-center-acceptance'
+  git -C "$repo" config user.email 'acceptance@control-center.invalid'
+  git -C "$repo" add "reports/$HOST_SAFE/$START_TS"
+  git -C "$repo" commit -q -m "Record rc.1 acceptance on $HOST_SAFE"
+  git -C "$repo" push -q origin "$report_branch" || return 1
+  REPORT_SENT="YES"
+  REPORT_BRANCH="$report_branch"
+  printf 'REPORT_SENT=YES\nREPORT_BRANCH=%s\n' "$report_branch"
+}
+
+recover_exact_rc() {
+  set +e
+  if [[ -f "$PUBLIC_KEY" ]]; then install_test_trust >/dev/null 2>&1 || true; fi
+  if [[ -f "$RC_PACKAGE" && -x /usr/local/sbin/control-center-update ]]; then
+    CONTROL_CENTER_UPDATE_HEALTH_URL="$BACKEND_URL" /usr/local/sbin/control-center-update --package "$RC_PACKAGE" --allow-downgrade >/dev/null 2>&1 || true
+  elif [[ -x "$SOURCE_DIR/install/install.sh" && -f "$SOURCE_DIR/dist/control-center-linux-$GOARCH" ]]; then
+    CONTROL_CENTER_BINARY="$SOURCE_DIR/dist/control-center-linux-$GOARCH" CONTROL_CENTER_UPDATE_PUBLIC_KEY="$PUBLIC_KEY" CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" \
+      "$SOURCE_DIR/install/install.sh" --reinstall >/dev/null 2>&1 || true
+  fi
+  systemctl reset-failed control-center.service >/dev/null 2>&1 || true
+  systemctl start control-center.service >/dev/null 2>&1 || true
+  set -e
+}
+
+on_error() {
+  local rc="$1" line="$2"
+  [[ "$FAILURE_ACTIVE" == 0 ]] || exit "$rc"
+  FAILURE_ACTIVE=1
+  trap - ERR
+  set +e
+  printf 'ACCEPTANCE FAILURE: step=%s line=%s rc=%s\n' "$STEP" "$line" "$rc" >&2
+  FINAL_STATUS="FAILED"
+  recover_exact_rc
+  restore_original_trust
+  rm -f "$PRIVATE_KEY" "$PUBLIC_KEY"
+  write_report
+  push_report || true
+  remove_resume_unit
+  printf '\nFINAL_STATUS=FAILED\nLOCAL_REPORT=%s\nPANEL_URL=%s\n' "$REPORT_FILE" "$PANEL_URL"
+  exit "$rc"
+}
+trap 'on_error $? $LINENO' ERR
+
+phase_initial() {
+  START_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+  HOST_SAFE="$(hostname | tr -cd 'A-Za-z0-9._-' | head -c 80)"
+  PUBLI

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+PRODUCT_REPO="https://github.com/ControlCenterSoft/srv-deployment.git"
+RC_VERSION="1.0.0-rc.1"
+RC_COMMIT="9759cc339c24fd0405c5132b2ff4fc22d38c8a66"
+BETA_VERSION="1.0.0-beta.1"
+BETA_COMMIT="b3b7cd7d3a1985bbe02b392bce5e26d5bf0cf39c"
+GO_VERSION="1.23.2"
+GO_AMD64_SHA256="542d3c1705f1c6a1c5a80d5dc62e2e45171af291e755d591c5e6531ef63b454e"
+GO_ARM64_SHA256="f626cdd92fc21a88b31c1251f419c17782933a42903db87a174ce74eeecc66a9"
+RC_AMD64_SHA256="5c8873648e77d5ee75a3c1856ab677c602081db2766db9e4b2fbff8fdfb20c3a"
+RC_ARM64_SHA256="8ebc8735c50f27177278bf75c1b2a468d724069236fe8134e3d19fee4d9d93c4"
+DIAG_SSH="git@github.com:ControlCenterSoft/control-center-server-diagnostics..git"
+
+BASE="/opt/control-center-rc1-acceptance"
+STATE_FILE="$BASE/state.env"
+LOG_FILE="$BASE/acceptance.log"
+REPORT_DIR="$BASE/report"
+REPORT_FILE="$REPORT_DIR/report.txt"
+DIAG_BUNDLE="$REPORT_DIR/control-center-diagnostics.tar.gz"
+SOURCE_DIR="$BASE/source"
+TOOLCHAIN_ROOT="$BASE/toolchain"
+PRIVATE_KEY="$BASE/rc1-test-private.pem"
+PUBLIC_KEY="$BASE/rc1-test-public.pem"
+TRUST_KEY="/etc/control-center/update-public-key.pem"
+ORIGINAL_TRUST="$BASE/original-update-public-key.pem"
+HAD_TRUST_FILE="$BASE/had-original-trust"
+RC_PACKAGE="$BASE/control-center-1.0.0-rc.1.tar.gz"
+RESUME_SCRIPT="/usr/local/sbin/control-center-rc1-acceptance-resume"
+RESUME_UNIT="/etc/systemd/system/control-center-rc1-acceptance-resume.service"
+RESUME_UNIT_NAME="control-center-rc1-acceptance-resume.service"
+CREDENTIALS_FILE="/root/control-center-admin-credentials.txt"
+
+STEP="startup"
+START_TS=""
+HOST_SAFE=""
+PUBLIC_IP=""
+BACKEND_URL=""
+PANEL_URL=""
+OLD_BOOT_ID=""
+GOARCH=""
+EXPECTED_RC_SHA=""
+STATE_HASH_BEFORE=""
+SECRETS_HASH_BEFORE=""
+BETA_UPGRADE="pending"
+PRE_REBOOT_AUTH="pending"
+REBOOT_ACCEPTANCE="pending"
+POST_REBOOT_AUTH="pending"
+RC_UPDATE_ROLLBACK="pending"
+REPAIR_REINSTALL="pending"
+PRESERVE_STATE_REINSTALL="pending"
+STATE_PRESERVED="pending"
+DIAGNOSTICS="pending"
+TRUST_RESTORED="pending"
+REPORT_SENT="NO"
+FINAL_STATUS="RUNNING"
+PRODUCT_CHANGED="0"
+FAILURE_ACTIVE="0"
+
+mkdir -p "$BASE" "$REPORT_DIR"
+chmod 0700 "$BASE" "$REPORT_DIR"
+touch "$LOG_FILE"
+chmod 0600 "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+log() { printf '=== %s ===\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
+
+safe_hash() {
+  local path="$1"
+  if [[ -f "$path" ]]; then sha256sum "$path" | awk '{print $1}'; else printf 'missing'; fi
+}
+
+current_version() {
+  /usr/local/lib/control-center/current/control-center build-info --field version 2>/dev/null || true
+}
+current_commit() {
+  /usr/local/lib/control-center/current/control-center build-info --field commit 2>/dev/null || true
+}
+
+wait_ready() {
+  local url="$1"
+  for _ in {1..80}; do
+    if curl -fsS --max-time 2 "$url/api/v1/readiness" 2>/dev/null | grep -Fq '"ready":true'; then return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+
+load_backend_url() {
+  local listen host port
+  listen="$(sed -n 's/^CONTROL_CENTER_LISTEN=//p' /etc/control-center/control-center.env | tail -1)"
+  [[ -n "$listen" ]] || die "CONTROL_CENTER_LISTEN missing"
+  host="${listen%:*}"; port="${listen##*:}"
+  case "$host" in 0.0.0.0|'') host=127.0.0.1 ;; esac
+  BACKEND_URL="http://$host:$port"
+}
+
+ensure_dependencies() {
+  local cmd
+  for cmd in curl git tar sha256sum openssl python3 systemctl install sed awk grep find stat ss; do
+    command -v "$cmd" >/dev/null || die "$cmd is required"
+  done
+  [[ -d /run/systemd/system ]] || die "systemd is not running"
+}
+
+setup_arch() {
+  case "$(uname -m)" in
+    x86_64) GOARCH=amd64; EXPECTED_RC_SHA="$RC_AMD64_SHA256"; GO_ARCHIVE_SHA="$GO_AMD64_SHA256" ;;
+    aarch64|arm64) GOARCH=arm64; EXPECTED_RC_SHA="$RC_ARM64_SHA256"; GO_ARCHIVE_SHA="$GO_ARM64_SHA256" ;;
+    *) die "unsupported host architecture: $(uname -m)" ;;
+  esac
+}
+
+ensure_pinned_go() {
+  setup_arch
+  local archive="$BASE/go${GO_VERSION}.linux-${GOARCH}.tar.gz"
+  if [[ ! -x "$TOOLCHAIN_ROOT/go/bin/go" ]]; then
+    rm -rf "$TOOLCHAIN_ROOT"
+    mkdir -p "$TOOLCHAIN_ROOT"
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" -o "$archive"
+    printf '%s  %s\n' "$GO_ARCHIVE_SHA" "$archive" | sha256sum -c -
+    tar -C "$TOOLCHAIN_ROOT" -xzf "$archive"
+    rm -f "$archive"
+  fi
+  export GOROOT="$TOOLCHAIN_ROOT/go"
+  export PATH="$GOROOT/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  export GOTOOLCHAIN=local
+  [[ "$(go env GOVERSION)" == "go$GO_VERSION" ]] || die "pinned Go toolchain mismatch"
+}
+
+build_exact_candidate() {
+  STEP="build-exact-candidate"
+  log "Fetch and build exact rc.1 with pinned Go $GO_VERSION"
+  rm -rf "$SOURCE_DIR"
+  git clone -q "$PRODUCT_REPO" "$SOURCE_DIR"
+  git -C "$SOURCE_DIR" checkout -q --detach "$RC_COMMIT"
+  [[ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" == "$RC_COMMIT" ]] || die "source commit mismatch"
+  [[ -z "$(git -C "$SOURCE_DIR" status --porcelain)" ]] || die "source checkout is not clean"
+  (cd "$SOURCE_DIR" && ./scripts/secret-scan.sh && go test ./... && go vet ./...)
+  bash -n "$SOURCE_DIR"/install/install.sh "$SOURCE_DIR"/install/uninstall.sh "$SOURCE_DIR"/install/update.sh \
+    "$SOURCE_DIR"/scripts/build.sh "$SOURCE_DIR"/scripts/build-release.sh "$SOURCE_DIR"/scripts/rc1-update-acceptance.sh
+  (cd "$SOURCE_DIR" && ./scripts/build-release.sh)
+  printf '%s  %s\n' "$EXPECTED_RC_SHA" "$SOURCE_DIR/dist/control-center-linux-$GOARCH" | sha256sum -c -
+  [[ "$($SOURCE_DIR/dist/control-center-linux-$GOARCH build-info --field version)" == "$RC_VERSION" ]] || die "built version mismatch"
+  [[ "$($SOURCE_DIR/dist/control-center-linux-$GOARCH build-info --field commit)" == "$RC_COMMIT" ]] || die "built commit mismatch"
+
+  cp "$SOURCE_DIR/dist/SHA256SUMS" "$BASE/first-SHA256SUMS"
+  cp "$SOURCE_DIR/dist/BUILDINFO.env" "$BASE/first-BUILDINFO.env"
+  rm -rf "$SOURCE_DIR/dist"
+  (cd "$SOURCE_DIR" && ./scripts/build-release.sh)
+  cmp "$BASE/first-SHA256SUMS" "$SOURCE_DIR/dist/SHA256SUMS"
+  cmp "$BASE/first-BUILDINFO.env" "$SOURCE_DIR/dist/BUILDINFO.env"
+  printf '%s  %s\n' "$EXPECTED_RC_SHA" "$SOURCE_DIR/dist/control-center-linux-$GOARCH" | sha256sum -c -
+}
+
+package_exact_candidate() {
+  STEP="package-exact-candidate"
+  log "Package exact signed rc.1 candidate"
+  openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY" >/dev/null 2>&1
+  chmod 0600 "$PRIVATE_KEY"
+  openssl pkey -in "$PRIVATE_KEY" -pubout -out "$PUBLIC_KEY" >/dev/null 2>&1
+  chmod 0644 "$PUBLIC_KEY"
+  # shellcheck disable=SC1090
+  source "$SOURCE_DIR/dist/BUILDINFO.env"
+  (cd "$SOURCE_DIR" && go run ./cmd/release-tool package \
+    --binary "$SOURCE_DIR/dist/control-center-linux-$GOARCH" \
+    --version "$VERSION" --commit "$COMMIT" --built-at "$BUILT_AT" --arch "$GOARCH" \
+    --private-key "$PRIVATE_KEY" --output "$RC_PACKAGE" >/dev/null)
+  local check="$BASE/package-check"
+  rm -rf "$check"; mkdir -p "$check"
+  tar -xzf "$RC_PACKAGE" -C "$check"
+  [[ "$(find "$check" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ' -)" == "control-center manifest.json manifest.sig" ]] || die "package whitelist mismatch"
+  "$SOURCE_DIR/dist/control-center-linux-$GOARCH" verify-release \
+    --manifest "$ch

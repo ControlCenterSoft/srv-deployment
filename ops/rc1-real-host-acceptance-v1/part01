@@ -1,0 +1,141 @@
+eck/manifest.json" --signature "$check/manifest.sig" --public-key "$PUBLIC_KEY" \
+    --artifact "$check/control-center" --field release-id >/dev/null
+  rm -rf "$check"
+}
+
+backup_original_trust() {
+  if [[ ! -f "$HAD_TRUST_FILE" ]]; then
+    if [[ -f "$TRUST_KEY" ]]; then
+      cp -a "$TRUST_KEY" "$ORIGINAL_TRUST"
+      printf '1\n' > "$HAD_TRUST_FILE"
+    else
+      printf '0\n' > "$HAD_TRUST_FILE"
+    fi
+    chmod 0600 "$HAD_TRUST_FILE"
+  fi
+}
+
+install_test_trust() {
+  backup_original_trust
+  install -D -o root -g root -m 0644 "$PUBLIC_KEY" "$TRUST_KEY"
+}
+
+restore_original_trust() {
+  # If acceptance failed before trust backup was created, do not mutate the
+  # host trust configuration during cleanup.
+  if [[ ! -f "$HAD_TRUST_FILE" ]]; then
+    TRUST_RESTORED="not-touched"
+    return 0
+  fi
+  local had
+  had="$(cat "$HAD_TRUST_FILE")"
+  if [[ "$had" == 1 && -f "$ORIGINAL_TRUST" ]]; then
+    install -D -o root -g root -m 0644 "$ORIGINAL_TRUST" "$TRUST_KEY"
+  elif [[ "$had" == 0 ]]; then
+    rm -f "$TRUST_KEY"
+  else
+    return 1
+  fi
+  TRUST_RESTORED="passed"
+}
+
+load_admin_credentials() {
+  [[ -f "$CREDENTIALS_FILE" ]] || die "admin credentials file missing"
+  ADMIN_USER="$(sed -n 's/^username=//p' "$CREDENTIALS_FILE" | head -1)"
+  ADMIN_PASSWORD="$(sed -n 's/^password=//p' "$CREDENTIALS_FILE" | head -1)"
+  [[ -n "$ADMIN_USER" && -n "$ADMIN_PASSWORD" ]] || die "admin credentials file incomplete"
+}
+
+write_login_json() {
+  local path="$1" user="$2" password="$3"
+  CC_LOGIN_USER="$user" CC_LOGIN_PASSWORD="$password" python3 - "$path" <<'PY'
+import json,os,sys
+with open(sys.argv[1],"w",encoding="utf-8") as f:
+    json.dump({"username":os.environ["CC_LOGIN_USER"],"password":os.environ["CC_LOGIN_PASSWORD"]},f)
+PY
+  chmod 0600 "$path"
+}
+
+json_field() {
+  python3 - "$1" "$2" <<'PY'
+import json,sys
+obj=json.load(open(sys.argv[1],encoding='utf-8'))
+for part in sys.argv[2].split('.'):
+    obj=obj[part]
+print(obj)
+PY
+}
+
+api_security_regression() {
+  local label="$1" work="$BASE/api-$label"
+  rm -rf "$work"; mkdir -p "$work"; chmod 0700 "$work"
+  load_admin_credentials
+  write_login_json "$work/login.json" "$ADMIN_USER" "$ADMIN_PASSWORD"
+
+  local code direct_token direct_csrf browser_token browser_csrf
+  code="$(curl -sS -D "$work/direct.headers" -o "$work/direct.body" -w '%{http_code}' \
+    -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    --data-binary "@$work/login.json" "$BACKEND_URL/api/v1/auth/login")"
+  [[ "$code" == 200 ]] || die "direct admin login failed: $code"
+  grep -qi '^Set-Cookie: cc_session=.*HttpOnly' "$work/direct.headers" || die "HttpOnly cookie missing"
+  grep -qi '^Set-Cookie: cc_session=.*Secure' "$work/direct.headers" || die "Secure product cookie missing"
+  grep -qi '^Set-Cookie: cc_session=.*SameSite=Strict' "$work/direct.headers" || die "SameSite=Strict cookie missing"
+  direct_token="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$work/direct.headers" | tr -d '\r' | head -1)"
+  direct_csrf="$(json_field "$work/direct.body" csrf_token)"
+  [[ -n "$direct_token" && -n "$direct_csrf" ]] || die "direct session material missing"
+  code="$(curl -sS -o "$work/direct-session.json" -w '%{http_code}' -H "Cookie: cc_session=$direct_token" "$BACKEND_URL/api/v1/auth/session")"
+  [[ "$code" == 200 ]] || die "direct session lookup failed"
+
+  code="$(curl -sS -D "$work/browser.headers" -o "$work/browser.body" -w '%{http_code}' \
+    -H "Host: $PUBLIC_IP:8876" -H "Origin: http://$PUBLIC_IP:8876" -H 'Content-Type: application/json' \
+    --data-binary "@$work/login.json" "http://127.0.0.1:8876/api/v1/auth/login")"
+  [[ "$code" == 200 ]] || die "browser-path admin login failed: $code"
+  browser_token="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$work/browser.headers" | tr -d '\r' | head -1)"
+  browser_csrf="$(json_field "$work/browser.body" csrf_token)"
+  [[ -n "$browser_token" && -n "$browser_csrf" ]] || die "browser session material missing"
+  code="$(curl -sS -o "$work/browser-session.json" -w '%{http_code}' -H "Host: $PUBLIC_IP:8876" -H "Cookie: cc_session=$browser_token" "http://127.0.0.1:8876/api/v1/auth/session")"
+  [[ "$code" == 200 ]] || die "browser-path session lookup failed"
+
+  local endpoint
+  for endpoint in system/status rbac/users operations audit diagnostics/summary; do
+    code="$(curl -sS -o "$work/${endpoint//\//-}.json" -w '%{http_code}' -H "Cookie: cc_session=$direct_token" "$BACKEND_URL/api/v1/$endpoint")"
+    [[ "$code" == 200 ]] || die "protected endpoint $endpoint returned $code"
+  done
+
+  cat > "$work/password.json" <<'JSON'
+{"current_password":"rc1-deliberately-wrong-current-password","new_password":"rc1-deliberately-unused-new-password"}
+JSON
+  code="$(curl -sS -o "$work/no-csrf.json" -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    -H "Cookie: cc_session=$direct_token" --data-binary "@$work/password.json" "$BACKEND_URL/api/v1/auth/password")"
+  [[ "$code" == 403 ]] || die "missing-CSRF mutation was not rejected: $code"
+  code="$(curl -sS -o "$work/bad-origin.json" -w '%{http_code}' -H 'Content-Type: application/json' -H 'Origin: http://invalid.example' \
+    -H "Cookie: cc_session=$direct_token" -H "X-CSRF-Token: $direct_csrf" --data-binary "@$work/password.json" "$BACKEND_URL/api/v1/auth/password")"
+  [[ "$code" == 403 ]] || die "bad-origin mutation was not rejected: $code"
+
+  printf '{"blocked":true}\n' > "$work/self-block.json"
+  code="$(curl -sS -o "$work/self-block-body.json" -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    -H "Cookie: cc_session=$direct_token" -H "X-CSRF-Token: $direct_csrf" --data-binary "@$work/self-block.json" \
+    "$BACKEND_URL/api/v1/rbac/users/$ADMIN_USER/blocked")"
+  [[ "$code" == 409 ]] || die "self-block protection failed: $code"
+
+  write_login_json "$work/rate.json" "rc1-rate-test-${START_TS}" "definitely-wrong-password"
+  local i
+  for i in 1 2 3 4 5; do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+      --data-binary "@$work/rate.json" "$BACKEND_URL/api/v1/auth/login")"
+    [[ "$code" == 401 ]] || die "rate-limit pre-threshold attempt $i returned $code"
+  done
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    --data-binary "@$work/rate.json" "$BACKEND_URL/api/v1/auth/login")"
+  [[ "$code" == 429 ]] || die "auth rate limit did not trigger: $code"
+
+  code="$(curl -sS -D "$work/root.headers" -o /dev/null -w '%{http_code}' "$BACKEND_URL/")"
+  [[ "$code" == 200 ]] || die "root UI failed: $code"
+  grep -qi '^X-Frame-Options: DENY' "$work/root.headers" || die "frame protection missing"
+  grep -qi '^X-Content-Type-Options: nosniff' "$work/root.headers" || die "nosniff header missing"
+
+  code="$(curl -sS -o "$work/diagnostics.tar.gz" -w '%{http_code}' -H "Cookie: cc_session=$direct_token" "$BACKEND_URL/api/v1/diagnostics/export")"
+  [[ "$code" == 200 ]] || die "diagnostics export returned $code"
+  local names
+  names="$(tar -tzf "$work/diagnostics.tar.gz" | sort | paste -sd ' ' -)"
+  [[ "$n
