@@ -25,7 +25,7 @@ func TestSocketClientSuccess(t *testing.T) {
 	serveOneClientResponse(t, path, func(req Envelope) ResponseEnvelope {
 		return ResponseEnvelope{
 			Version: ProtocolVersion,
-			Result: Result{ID: req.Request.ID, Type: req.Request.Type, Status: "succeeded", ExitCode: 0},
+			Result:  Result{ID: req.Request.ID, Type: req.Request.Type, Status: "succeeded", ExitCode: 0},
 		}
 	})
 
@@ -44,7 +44,7 @@ func TestSocketClientRejectsResponseProtocolDrift(t *testing.T) {
 	serveOneClientResponse(t, path, func(req Envelope) ResponseEnvelope {
 		return ResponseEnvelope{
 			Version: ProtocolVersion + 1,
-			Result: Result{ID: req.Request.ID, Type: req.Request.Type, Status: "succeeded", ExitCode: 0},
+			Result:  Result{ID: req.Request.ID, Type: req.Request.Type, Status: "succeeded", ExitCode: 0},
 		}
 	})
 
@@ -61,7 +61,7 @@ func TestSocketClientRejectsResponseIdentityMismatch(t *testing.T) {
 	serveOneClientResponse(t, path, func(req Envelope) ResponseEnvelope {
 		return ResponseEnvelope{
 			Version: ProtocolVersion,
-			Result: Result{ID: req.Request.ID + "-wrong", Type: req.Request.Type, Status: "succeeded", ExitCode: 0},
+			Result:  Result{ID: req.Request.ID + "-wrong", Type: req.Request.Type, Status: "succeeded", ExitCode: 0},
 		}
 	})
 
@@ -78,8 +78,8 @@ func TestSocketClientPreservesRemoteFailureCode(t *testing.T) {
 	serveOneClientResponse(t, path, func(req Envelope) ResponseEnvelope {
 		return ResponseEnvelope{
 			Version: ProtocolVersion,
-			Result: Result{ID: req.Request.ID, Type: req.Request.Type, Status: "failed", ExitCode: -1},
-			Error: &Failure{Code: ErrorCodePermissionDenied, Message: "service is not allowlisted"},
+			Result:  Result{ID: req.Request.ID, Type: req.Request.Type, Status: "failed", ExitCode: -1},
+			Error:   &Failure{Code: ErrorCodePermissionDenied, Message: "service is not allowlisted"},
 		}
 	})
 
