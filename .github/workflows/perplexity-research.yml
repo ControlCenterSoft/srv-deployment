@@ -1,0 +1,164 @@
+name: Perplexity External Research
+
+on:
+  pull_request:
+    branches: ['1.1.x']
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: ['1.1.x']
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: Optional research focus for the current branch head
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: perplexity-research-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  research:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PERPLEXITY_MODEL: ${{ vars.PERPLEXITY_MODEL || 'sonar-pro' }}
+      PERPLEXITY_FOCUS: ${{ github.event.inputs.focus || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Perplexity configuration
+        id: config
+        env:
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${PERPLEXITY_API_KEY}" ]]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            {
+              echo '## Perplexity external research'
+              echo
+              echo 'Skipped: repository secret `PERPLEXITY_API_KEY` is not configured.'
+              echo 'Deterministic CI and Gemini review are unaffected.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Secret scan before external call
+        if: steps.config.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/secret-scan.sh
+
+      - name: Build research diff
+        if: steps.config.outputs.configured == 'true'
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == 'pull_request' ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            CHANGE_ID="PR #${{ github.event.pull_request.number }}"
+          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]]; then
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${GITHUB_SHA}"
+            CHANGE_ID="push ${GITHUB_SHA}"
+            if [[ "${BASE_SHA}" =~ ^0+$ ]]; then
+              BASE_SHA="${GITHUB_SHA}^"
+            fi
+          else
+            HEAD_SHA="${GITHUB_SHA}"
+            BASE_SHA="${GITHUB_SHA}^"
+            CHANGE_ID="manual ${GITHUB_SHA}"
+          fi
+          git diff --no-ext-diff --unified=20 "${BASE_SHA}" "${HEAD_SHA}" -- . \
+            > "$RUNNER_TEMP/perplexity-research.diff"
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "change_id=${CHANGE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Diff bytes: $(wc -c < "$RUNNER_TEMP/perplexity-research.diff")" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run Perplexity research
+        if: steps.config.outputs.configured == 'true'
+        id: perplexity
+        env:
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+        shell: bash
+        run: |
+          set -u
+          set +e
+          python3 scripts/perplexity_research.py \
+            --diff-file "$RUNNER_TEMP/perplexity-research.diff" \
+            --output-json "$RUNNER_TEMP/perplexity-research.json" \
+            --output-md "$RUNNER_TEMP/perplexity-research.md" \
+            --repository "$GITHUB_REPOSITORY" \
+            --change-id "${{ steps.diff.outputs.change_id }}" \
+            --sha "${{ steps.diff.outputs.head_sha }}" \
+            --focus "$PERPLEXITY_FOCUS" \
+            --model "$PERPLEXITY_MODEL"
+          STATUS=$?
+          set -e
+          if [[ "$STATUS" -ne 0 ]]; then
+            echo 'report_ready=true' >> "$GITHUB_OUTPUT"
+            {
+              echo '## Perplexity external research'
+              echo
+              echo "**Model:** \`${PERPLEXITY_MODEL}\`  "
+              echo '**Status:** `UNAVAILABLE`'
+              echo
+              echo 'External research failed or is temporarily unavailable.'
+              echo 'This workflow is advisory and does not replace deterministic CI.'
+            } > "$RUNNER_TEMP/perplexity-research.md"
+          else
+            echo 'report_ready=true' >> "$GITHUB_OUTPUT"
+          fi
+          cat "$RUNNER_TEMP/perplexity-research.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish PR research comment
+        if: steps.config.outputs.configured == 'true' && github.event_name == 'pull_request' && steps.perplexity.outputs.report_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARKER='<!-- control-center-perplexity-research -->'
+          BODY_FILE="$RUNNER_TEMP/perplexity-research-comment.md"
+          {
+            echo "$MARKER"
+            cat "$RUNNER_TEMP/perplexity-research.md"
+          } > "$BODY_FILE"
+
+          COMMENT_ID=''
+          PAGE=1
+          while :; do
+            PAGE_FILE="$RUNNER_TEMP/perplexity-comments-${PAGE}.json"
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100&page=${PAGE}" \
+              > "$PAGE_FILE"
+            COMMENT_ID="$(jq -r --arg marker "$MARKER" \
+              '[.[] | select(.body | contains($marker)) | .id][0] // empty' "$PAGE_FILE")"
+            COUNT="$(jq 'length' "$PAGE_FILE")"
+            if [[ -n "$COMMENT_ID" || "$COUNT" -lt 100 ]]; then
+              break
+            fi
+            PAGE=$((PAGE + 1))
+          done
+
+          if [[ -n "$COMMENT_ID" ]]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" \
+              -F "body=@${BODY_FILE}" >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -F "body=@${BODY_FILE}" >/dev/null
+          fi

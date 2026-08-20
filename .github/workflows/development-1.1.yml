@@ -45,6 +45,10 @@ jobs:
         run: python3 -m py_compile scripts/gemini_review.py
       - name: Gemini reviewer regression
         run: python3 -m unittest discover -s tests -p 'test_gemini_review.py' -v
+      - name: Perplexity researcher syntax
+        run: python3 -m py_compile scripts/perplexity_research.py
+      - name: Perplexity researcher regression
+        run: python3 -m unittest discover -s tests -p 'test_perplexity_research.py' -v
 
   unit-contract:
     name: Unit / Contract
