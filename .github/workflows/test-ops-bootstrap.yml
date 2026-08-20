@@ -1,0 +1,23 @@
+name: Test ops agent bootstrap
+
+on:
+  push:
+    branches:
+      - 'feature/1.1-ops-agent-bootstrap'
+  pull_request:
+    branches: ['1.1.x']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootstrap shell syntax
+        run: bash -n scripts/bootstrap-ops-agent.sh
+      - name: Bootstrap regression tests
+        run: python3 -m unittest discover -s tests -p 'test_ops_bootstrap.py' -v
