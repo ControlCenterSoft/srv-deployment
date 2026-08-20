@@ -1,0 +1,103 @@
+  --data-binary "@$AUTH_WORK/forbidden.json" "$PROXY_URL/api/v1/rbac/users")"
+[[ "$code" == 403 ]]
+printf '{"blocked":true}\n' > "$AUTH_WORK/block-viewer.json"
+code="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' \
+  -H "Cookie: cc_session=$ADMIN_TOKEN" -H "X-CSRF-Token: $ADMIN_CSRF" \
+  --data-binary "@$AUTH_WORK/block-viewer.json" "$PROXY_URL/api/v1/rbac/users/$VIEWER_USER/blocked")"
+[[ "$code" == 200 ]]
+code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$VIEWER_TOKEN" "$PROXY_URL/api/v1/auth/session")"
+[[ "$code" == 401 ]]
+
+STEP="ops-diagnostics"
+echo "=== Operations/Audit/Diagnostics acceptance ==="
+for endpoint in operations audit diagnostics/summary; do
+  code="$(curl -sS -o "$AUTH_WORK/${endpoint//\//-}.json" -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$ADMIN_TOKEN" "$PROXY_URL/api/v1/$endpoint")"
+  [[ "$code" == 200 ]]
+done
+grep -Fq 'rbac.user.create' "$AUTH_WORK/operations.json"
+grep -Fq 'auth.login' "$AUTH_WORK/audit.json"
+grep -Fq '"audit_readable":true' "$AUTH_WORK/diagnostics-summary.json"
+code="$(curl -sS -o "$DIAG_BUNDLE" -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$ADMIN_TOKEN" "$PROXY_URL/api/v1/diagnostics/export")"
+[[ "$code" == 200 ]]
+expected_entries=$'audit.json\nmanifest.json\noperations.json\nruntime.json\nusers.json\nversion.json'
+actual_entries="$(tar -tzf "$DIAG_BUNDLE" | sort)"
+[[ "$actual_entries" == "$expected_entries" ]]
+: > "$AUTH_WORK/diag-expanded"
+while IFS= read -r entry; do tar -xOzf "$DIAG_BUNDLE" "$entry" >> "$AUTH_WORK/diag-expanded"; done < <(tar -tzf "$DIAG_BUNDLE")
+for forbidden in 'pbkdf2-sha256' 'bootstrap-admin.secret' 'cc_session'; do ! grep -q "$forbidden" "$AUTH_WORK/diag-expanded"; done
+rm -rf "$AUTH_WORK"
+
+STEP="signed-update-rollback"
+echo "=== Signed update / rejection / rollback acceptance ==="
+export CONTROL_CENTER_ACCEPTANCE_URL="$PROXY_URL"
+export CONTROL_CENTER_UPDATE_HEALTH_URL="$PROXY_URL"
+CONTROL_CENTER_UPDATE_PRIVATE_KEY="$PRIVATE_KEY" ./scripts/update-acceptance.sh
+SIGNED_UPDATE="passed"
+
+STEP="restore-beta1"
+echo "=== Restore exact beta.1 after synthetic update test ==="
+/usr/local/sbin/control-center-update --package "$BETA1_PACKAGE" --allow-downgrade
+wait_url "$BACKEND_URL/api/v1/version" '"version":"1.0.0-beta.1"'
+[[ "$(/usr/local/lib/control-center/current/control-center build-info --field commit)" == "$PRODUCT_COMMIT" ]]
+RESTORE_BETA1="passed"
+
+STEP="repair-reinstall"
+echo "=== Repair/reinstall trust preservation ==="
+CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" ./install/install.sh --repair
+CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" ./install/install.sh --reinstall
+[[ -f "$TRUST_KEY" ]]
+cmp -s "$PUBLIC_KEY" "$TRUST_KEY"
+wait_url "$BACKEND_URL/api/v1/readiness" '"ready":true'
+
+STEP="preserve-uninstall-reinstall"
+echo "=== Preserve-state uninstall/reinstall ==="
+./install/uninstall.sh
+[[ -f "$ENV_FILE" ]]
+[[ -f "$TRUST_KEY" ]]
+[[ -d /var/lib/control-center ]]
+CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" ./install/install.sh
+wait_url "$BACKEND_URL/api/v1/readiness" '"ready":true'
+[[ -f "$TRUST_KEY" ]]
+cmp -s "$PUBLIC_KEY" "$TRUST_KEY"
+[[ "$(/usr/local/lib/control-center/current/control-center build-info --field version)" == "$PRODUCT_VERSION" ]]
+[[ "$(/usr/local/lib/control-center/current/control-center build-info --field commit)" == "$PRODUCT_COMMIT" ]]
+PRESERVE_REINSTALL="passed"
+
+STEP="final-browser-and-diagnostics"
+echo "=== Final browser path and diagnostics ==="
+systemctl restart control-center.service
+wait_url "$BACKEND_URL/api/v1/readiness" '"ready":true'
+systemctl restart nginx.service
+wait_url "$PROXY_URL/api/v1/health" '"status":"ok"'
+FINAL_AUTH="$(mktemp -d /tmp/control-center-beta1-final-auth.XXXXXX)"
+chmod 0700 "$FINAL_AUTH"
+python3 - "$CREDS" > "$FINAL_AUTH/login.json" <<'PY'
+import json,sys
+vals={}
+for line in open(sys.argv[1],encoding='utf-8'):
+    if '=' in line:
+        k,v=line.rstrip('\n').split('=',1); vals[k]=v
+print(json.dumps({'username':vals['username'],'password':vals['password']}))
+PY
+code="$(curl -sS -D "$FINAL_AUTH/h" -o "$FINAL_AUTH/b" -w '%{http_code}' \
+  -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' \
+  --data-binary "@$FINAL_AUTH/login.json" "$PROXY_URL/api/v1/auth/login")"
+[[ "$code" == 200 ]]
+! grep -qi '^Set-Cookie: cc_session=.*Secure' "$FINAL_AUTH/h"
+FINAL_TOKEN="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$FINAL_AUTH/h" | tr -d '\r' | head -1)"
+[[ -n "$FINAL_TOKEN" ]]
+code="$(curl -sS -o "$DIAG_BUNDLE" -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$FINAL_TOKEN" "$PROXY_URL/api/v1/diagnostics/export")"
+[[ "$code" == 200 ]]
+rm -rf "$FINAL_AUTH"
+
+# Ephemeral test private signing material is no longer needed.
+rm -f "$PRIVATE_KEY"
+[[ ! -f "$PRIVATE_KEY" ]]
+
+STEP="completed"
+STATUS="PASSED"
+echo "=== BETA1 REAL-HOST ACCEPTANCE PASSED ==="
+echo "PANEL_URL=$PUBLIC_ORIGIN"
+echo "LOGIN=admin"
+echo "PASSWORD_FILE=$CREDS"
