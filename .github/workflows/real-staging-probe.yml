@@ -1,0 +1,17 @@
+name: Control Center 1.1.x Real Staging Probe
+
+on:
+  pull_request:
+    branches: ['1.1.x']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: ${{ startsWith(github.head_ref, 'ci/1.1-real-staging-probe') }}
+    uses: ./.github/workflows/acceptance-1.1.yml
+    with:
+      candidate_sha: ${{ github.event.pull_request.head.sha }}
+      candidate_version: 1.1.0-rc.${{ github.run_number }}
+    secrets: inherit
