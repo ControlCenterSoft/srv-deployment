@@ -179,19 +179,19 @@ jobs:
           test -x /usr/local/sbin/control-center-update
       - name: Update trust assertion
         run: |
-          sudo ls -l /etc/control-center/update-public-key.pem || true
-          stat -c '%a %U:%G %n' /etc/control-center/update-public-key.pem || true
-          test -f /etc/control-center/update-public-key.pem
+          sudo ls -l /etc/control-center/update-public-key.pem
+          sudo stat -c '%a %U:%G %n' /etc/control-center/update-public-key.pem
+          sudo test -f /etc/control-center/update-public-key.pem
       - name: Directory modes assertion
         run: |
-          stat -c '%a %U:%G %n' /etc/control-center /var/lib/control-center /var/log/control-center
-          test "$(stat -c %a /etc/control-center)" = 750
-          test "$(stat -c %a /var/lib/control-center)" = 750
-          test "$(stat -c %a /var/log/control-center)" = 750
+          sudo stat -c '%a %U:%G %n' /etc/control-center /var/lib/control-center /var/log/control-center
+          test "$(sudo stat -c %a /etc/control-center)" = 750
+          test "$(sudo stat -c %a /var/lib/control-center)" = 750
+          test "$(sudo stat -c %a /var/log/control-center)" = 750
       - name: Clean install environment assertion
         run: |
           sudo cat /etc/control-center/control-center.env
-          grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
+          sudo grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
       - name: Clean install HTTP assertion
         run: |
           curl -fsS http://127.0.0.1:8876/api/v1/health
@@ -230,13 +230,13 @@ jobs:
           sudo ./install/install.sh --repair
           sudo ./install/install.sh --reinstall
           systemctl is-active --quiet control-center.service
-          test -f /etc/control-center/update-public-key.pem
+          sudo test -f /etc/control-center/update-public-key.pem
       - name: Preserve-state uninstall and reinstall
         run: |
           sudo ./install/uninstall.sh
-          test -f /etc/control-center/control-center.env
-          test -f /etc/control-center/update-public-key.pem
-          test -d /var/lib/control-center
+          sudo test -f /etc/control-center/control-center.env
+          sudo test -f /etc/control-center/update-public-key.pem
+          sudo test -d /var/lib/control-center
           sudo ./install/install.sh
           systemctl is-active --quiet control-center.service
       - name: Purge uninstall
