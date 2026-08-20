@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Control Center read-only Web UI and Platform API v1 baseline.
+"""Базовая реализация read-only Web UI и Platform API v1 Control Center.
 
-The initial service intentionally exposes only bounded, read-only endpoints.
-Privileged operations will be added later behind server-side RBAC and audit.
+Начальный сервис намеренно открывает только ограниченные endpoints для чтения.
+Привилегированные операции будут добавлены позже за server-side RBAC и аудитом.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 try:
     from .ui import UI_PATHS, render_ui
-except ImportError:  # Direct execution: python3 api/server.py
+except ImportError:  # Прямой запуск: python3 api/server.py
     from ui import UI_PATHS, render_ui
 
 API_VERSION = 1
@@ -32,48 +32,48 @@ CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
 
 class ManifestError(ValueError):
-    """Raised when deployment metadata is missing or invalid."""
+    """Ошибка отсутствующих или некорректных deployment metadata."""
 
 
 def validate_manifest(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
-        raise ManifestError("deployment manifest must be an object")
+        raise ManifestError("deployment manifest должен быть объектом")
     if data.get("schema") != 1:
-        raise ManifestError("deployment schema must be 1")
+        raise ManifestError("deployment schema должна быть равна 1")
     if data.get("product") != "control-center":
-        raise ManifestError("deployment product must be control-center")
+        raise ManifestError("deployment product должен быть control-center")
 
     release = data.get("release")
     if not isinstance(release, dict):
-        raise ManifestError("release must be an object")
+        raise ManifestError("release должен быть объектом")
     for field in ("version", "channel", "status", "acceptance"):
         value = release.get(field)
         if not isinstance(value, str) or not value.strip():
-            raise ManifestError(f"release.{field} must be a non-empty string")
+            raise ManifestError(f"release.{field} должен быть непустой строкой")
 
     features = data.get("features")
     if not isinstance(features, list):
-        raise ManifestError("features must be an array")
+        raise ManifestError("features должен быть массивом")
     for index, feature in enumerate(features):
         if not isinstance(feature, dict):
-            raise ManifestError(f"features[{index}] must be an object")
+            raise ManifestError(f"features[{index}] должен быть объектом")
         for field in ("id", "status"):
             value = feature.get(field)
             if not isinstance(value, str) or not value.strip():
-                raise ManifestError(f"features[{index}].{field} must be a non-empty string")
+                raise ManifestError(f"features[{index}].{field} должен быть непустой строкой")
 
     clients = data.get("clients")
     if not isinstance(clients, dict):
-        raise ManifestError("clients must be an object")
+        raise ManifestError("clients должен быть объектом")
     for name, client in clients.items():
         if not isinstance(name, str) or not name:
-            raise ManifestError("client names must be non-empty strings")
+            raise ManifestError("имена clients должны быть непустыми строками")
         if not isinstance(client, dict):
-            raise ManifestError(f"clients.{name} must be an object")
+            raise ManifestError(f"clients.{name} должен быть объектом")
         for field in ("version", "status"):
             value = client.get(field)
             if not isinstance(value, str) or not value.strip():
-                raise ManifestError(f"clients.{name}.{field} must be a non-empty string")
+                raise ManifestError(f"clients.{name}.{field} должен быть непустой строкой")
 
     return data
 
@@ -87,7 +87,7 @@ def load_manifest(path: str | Path | None = None) -> dict[str, Any]:
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ManifestError(f"cannot load deployment manifest: {exc}") from exc
+        raise ManifestError(f"не удалось загрузить deployment manifest: {exc}") from exc
     return validate_manifest(payload)
 
 
@@ -98,7 +98,7 @@ def normalize_correlation_id(value: str | None) -> str:
 
 
 def public_release_payload(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Return only the explicitly public deployment metadata contract."""
+    """Вернуть только явно публичный контракт deployment metadata."""
     return {
         "schema": manifest["schema"],
         "product": manifest["product"],
@@ -129,8 +129,8 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
     manifest_path: str | Path | None = None
 
     def log_message(self, _format: str, *args: object) -> None:
-        # Deliberately suppress BaseHTTPRequestHandler request logging so query
-        # strings cannot accidentally become a secret-bearing log channel.
+        # Намеренно подавляем стандартный журнал запросов BaseHTTPRequestHandler,
+        # чтобы query string случайно не стал каналом утечки секретов в лог.
         return
 
     def _common_headers(self, correlation_id: str) -> None:
@@ -219,7 +219,7 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
                     "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\">"
                     "<title>Control Center недоступен</title>"
                     "<body><h1>Control Center временно недоступен</h1>"
-                    "<p>Deployment metadata не прошли проверку readiness.</p></body></html>",
+                    "<p>Метаданные deployment не прошли проверку готовности.</p></body></html>",
                     correlation_id,
                     send_body=send_body,
                 )
@@ -280,7 +280,7 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
                 self._error(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     "service_not_ready",
-                    "Deployment metadata is unavailable or invalid",
+                    "Метаданные deployment недоступны или некорректны",
                     correlation_id,
                     send_body=send_body,
                 )
@@ -301,15 +301,15 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         self._error(
             HTTPStatus.NOT_FOUND,
             "not_found",
-            "Endpoint not found",
+            "Endpoint не найден",
             correlation_id,
             send_body=send_body,
         )
 
-    def do_GET(self) -> None:  # noqa: N802 - stdlib HTTP handler API
+    def do_GET(self) -> None:  # noqa: N802 — API HTTP-обработчика stdlib
         self._route(send_body=True)
 
-    def do_HEAD(self) -> None:  # noqa: N802 - stdlib HTTP handler API
+    def do_HEAD(self) -> None:  # noqa: N802 — API HTTP-обработчика stdlib
         self._route(send_body=False)
 
     def _method_not_allowed(self) -> None:
@@ -317,7 +317,7 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         self._error(
             HTTPStatus.METHOD_NOT_ALLOWED,
             "method_not_allowed",
-            "Only GET and HEAD are allowed in the current baseline",
+            "В текущей базовой линии разрешены только GET и HEAD",
             correlation_id,
             send_body=True,
             allow="GET, HEAD",
@@ -338,27 +338,27 @@ def make_handler(manifest_path: str | Path | None = None) -> type[ControlCenterR
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Control Center Web UI and Platform API v1")
+    parser = argparse.ArgumentParser(description="Web UI и Platform API v1 Control Center")
     parser.add_argument(
         "--host",
         default=os.environ.get("CONTROL_CENTER_API_HOST", DEFAULT_HOST),
-        help=f"listen address (default: {DEFAULT_HOST})",
+        help=f"адрес прослушивания (по умолчанию: {DEFAULT_HOST})",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=int(os.environ.get("CONTROL_CENTER_API_PORT", DEFAULT_PORT)),
-        help=f"listen port (default: {DEFAULT_PORT})",
+        help=f"порт прослушивания (по умолчанию: {DEFAULT_PORT})",
     )
     parser.add_argument(
         "--manifest",
         default=os.environ.get("CONTROL_CENTER_DEPLOYMENT_MANIFEST"),
-        help="deployment manifest path",
+        help="путь к deployment manifest",
     )
     parser.add_argument(
         "--allow-non-loopback",
         action="store_true",
-        help="explicitly permit binding outside loopback",
+        help="явно разрешить привязку вне loopback",
     )
     return parser
 
@@ -366,9 +366,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.host not in {"127.0.0.1", "localhost"} and not args.allow_non_loopback:
-        raise SystemExit("refusing non-loopback bind without --allow-non-loopback")
+        raise SystemExit("привязка вне loopback запрещена без --allow-non-loopback")
     if not 1 <= args.port <= 65535:
-        raise SystemExit("port must be between 1 and 65535")
+        raise SystemExit("порт должен находиться в диапазоне 1..65535")
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(args.manifest))
     server.daemon_threads = True
