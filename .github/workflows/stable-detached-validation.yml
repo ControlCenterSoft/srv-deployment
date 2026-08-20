@@ -1,0 +1,176 @@
+name: stable-detached-validation
+
+on:
+  push:
+    branches: ["ci/1.0.0-detached-validation"]
+
+permissions:
+  contents: read
+  statuses: write
+
+env:
+  GOTOOLCHAIN: local
+  STABLE_SHA: 18f99e0eda9c95126e37c1810e530f5863bf2bcf
+  STATUS_CONTEXT: control-center/1.0.0-detached-ci
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Mark candidate pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export STATE=pending DESCRIPTION='Detached CI validating exact 1.0.0 candidate'
+          python3 - <<'PY' >/tmp/status.json
+          import json,os
+          print(json.dumps({"state":os.environ["STATE"],"context":os.environ["STATUS_CONTEXT"],"description":os.environ["DESCRIPTION"],"target_url":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"}))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${STABLE_SHA}" --data-binary @/tmp/status.json
+
+  validate:
+    needs: announce
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.STABLE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.2'
+          cache: false
+      - name: Exact source and toolchain
+        run: |
+          test "$(git rev-parse HEAD)" = "$STABLE_SHA"
+          test "$(go env GOVERSION)" = go1.23.2
+      - name: Static validation
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/build-release.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh scripts/rc1-update-acceptance.sh scripts/stable-update-acceptance.sh scripts/secret-scan.sh
+          node --check internal/httpserver/web/app.js
+          ./scripts/secret-scan.sh
+      - name: Exact and reproducible release build
+        run: |
+          ./scripts/build-release.sh
+          test "$(./dist/control-center-linux-amd64 build-info --field version)" = 1.0.0
+          test "$(./dist/control-center-linux-amd64 build-info --field commit)" = "$STABLE_SHA"
+          echo '=== FIRST BUILDINFO ==='
+          cat dist/BUILDINFO.env
+          cp dist/SHA256SUMS /tmp/first-SHA256SUMS
+          cp dist/BUILDINFO.env /tmp/first-BUILDINFO.env
+          rm -rf dist
+          ./scripts/build-release.sh
+          cmp /tmp/first-SHA256SUMS dist/SHA256SUMS
+          cmp /tmp/first-BUILDINFO.env dist/BUILDINFO.env
+          echo '=== REPRODUCIBLE SHA256 ==='
+          cat dist/SHA256SUMS
+      - name: Signed package and runtime smoke
+        run: |
+          set -a; source dist/BUILDINFO.env; set +a
+          openssl genpkey -algorithm ED25519 -out /tmp/private.pem
+          openssl pkey -in /tmp/private.pem -pubout -out /tmp/public.pem
+          go run ./cmd/release-tool package --binary dist/control-center-linux-amd64 --version "$VERSION" --commit "$COMMIT" --arch amd64 --private-key /tmp/private.pem --output /tmp/stable.tar.gz --built-at "$BUILT_AT"
+          mkdir /tmp/pkg
+          tar -xzf /tmp/stable.tar.gz -C /tmp/pkg
+          test "$(find /tmp/pkg -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ' -)" = 'control-center manifest.json manifest.sig'
+          dist/control-center-linux-amd64 verify-release --manifest /tmp/pkg/manifest.json --signature /tmp/pkg/manifest.sig --public-key /tmp/public.pem --artifact /tmp/pkg/control-center --field release-id
+          state_dir=$(mktemp -d); log_dir=$(mktemp -d)
+          CONTROL_CENTER_STATE_DIR="$state_dir" dist/control-center-linux-amd64 bootstrap-admin --username admin
+          CONTROL_CENTER_STATE_DIR="$state_dir" CONTROL_CENTER_LOG_DIR="$log_dir" CONTROL_CENTER_LISTEN=127.0.0.1:18876 dist/control-center-linux-amd64 >/tmp/control-center.log 2>&1 &
+          pid=$!; trap 'kill "$pid" 2>/dev/null || true; rm -rf "$state_dir" "$log_dir"' EXIT
+          for i in {1..20}; do curl -fsS http://127.0.0.1:18876/api/v1/readiness >/dev/null 2>&1 && break; sleep 0.25; done
+          curl -fsS http://127.0.0.1:18876/api/v1/health
+          curl -fsS http://127.0.0.1:18876/api/v1/readiness
+
+  systemd-acceptance:
+    needs: announce
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.STABLE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.2'
+          cache: false
+      - name: Exact source and build
+        run: |
+          test "$(git rev-parse HEAD)" = "$STABLE_SHA"
+          test "$(go env GOVERSION)" = go1.23.2
+          ./scripts/build-release.sh
+      - name: Ephemeral trust and clean install
+        run: |
+          openssl genpkey -algorithm ED25519 -out /tmp/private.pem
+          openssl pkey -in /tmp/private.pem -pubout -out /tmp/public.pem
+          chmod 0600 /tmp/private.pem
+          sudo env CONTROL_CENTER_UPDATE_PUBLIC_KEY=/tmp/public.pem ./install/install.sh
+          systemctl is-active --quiet control-center.service
+          sudo test -f /etc/control-center/update-public-key.pem
+          sudo grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
+          test "$(sudo stat -c %a /etc/control-center)" = 750
+          test "$(sudo stat -c %a /var/lib/control-center)" = 750
+          test "$(sudo stat -c %a /var/log/control-center)" = 750
+          curl -fsS http://127.0.0.1:8876/api/v1/readiness
+      - name: Restart, Auth, Operations
+        run: |
+          sudo systemctl restart control-center.service
+          systemctl is-active --quiet control-center.service
+          sudo ./scripts/auth-acceptance.sh
+          sudo ./scripts/operations-acceptance.sh
+      - name: Stable signed update and rollback
+        run: sudo env CONTROL_CENTER_UPDATE_PRIVATE_KEY=/tmp/private.pem ./scripts/stable-update-acceptance.sh
+      - name: Restore exact stable
+        run: |
+          set -a; source dist/BUILDINFO.env; set +a
+          go run ./cmd/release-tool package --binary dist/control-center-linux-amd64 --version "$VERSION" --commit "$COMMIT" --arch amd64 --private-key /tmp/private.pem --output /tmp/stable.tar.gz --built-at "$BUILT_AT"
+          sudo control-center-update --package /tmp/stable.tar.gz --allow-downgrade
+          test "$(/usr/local/lib/control-center/current/control-center build-info --field version)" = 1.0.0
+          test "$(/usr/local/lib/control-center/current/control-center build-info --field commit)" = "$STABLE_SHA"
+      - name: Repair, preserve-state, purge
+        run: |
+          sudo ./install/install.sh --repair
+          sudo ./install/install.sh --reinstall
+          systemctl is-active --quiet control-center.service
+          sudo test -f /etc/control-center/update-public-key.pem
+          sudo ./install/uninstall.sh
+          sudo test -f /etc/control-center/control-center.env
+          sudo test -f /etc/control-center/update-public-key.pem
+          sudo test -d /var/lib/control-center
+          sudo ./install/install.sh
+          systemctl is-active --quiet control-center.service
+          sudo ./install/uninstall.sh --purge
+          test ! -e /etc/control-center
+          test ! -e /var/lib/control-center
+          test ! -e /var/log/control-center
+          test ! -e /usr/local/lib/control-center
+          test ! -e /usr/local/sbin/control-center-update
+          ! systemctl is-active --quiet control-center.service
+      - name: Remove ephemeral trust
+        if: always()
+        run: sudo rm -f /tmp/private.pem /tmp/public.pem /tmp/stable.tar.gz
+
+  report-status:
+    if: always()
+    needs: [announce, validate, systemd-acceptance]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish exact candidate status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          SYSTEMD_RESULT: ${{ needs.systemd-acceptance.result }}
+        run: |
+          STATE=failure; DESCRIPTION='Detached 1.0.0 CI failed'
+          if [[ "$VALIDATE_RESULT" == success && "$SYSTEMD_RESULT" == success ]]; then STATE=success; DESCRIPTION='Detached CI passed exact 1.0.0 candidate'; fi
+          export STATE DESCRIPTION
+          python3 - <<'PY' >/tmp/status.json
+          import json,os
+          print(json.dumps({"state":os.environ["STATE"],"context":os.environ["STATUS_CONTEXT"],"description":os.environ["DESCRIPTION"],"target_url":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"}))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${STABLE_SHA}" --data-binary @/tmp/status.json
