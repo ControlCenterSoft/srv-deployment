@@ -27,11 +27,11 @@ case "$arch" in
   *) fail "unsupported architecture: $arch" ;;
 esac
 
-target_version="1.0.0-beta.2"
+target_version="${CONTROL_CENTER_UPDATE_TEST_TARGET_VERSION:-1.0.0-beta.2}"
 target_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-broken_version="1.0.0-beta.3"
+broken_version="${CONTROL_CENTER_UPDATE_TEST_BROKEN_VERSION:-1.0.0-beta.3}"
 broken_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-downgrade_version="1.0.0-beta.1"
+downgrade_version="${CONTROL_CENTER_UPDATE_TEST_DOWNGRADE_VERSION:-1.0.0-beta.1}"
 downgrade_commit="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 build_runtime() {
@@ -162,8 +162,8 @@ import (
   "fmt"
   "os"
 )
-var version = "1.0.0-beta.3"
-var commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+var version = "unknown"
+var commit = "unknown"
 func main() {
   if len(os.Args) > 1 && os.Args[1] == "build-info" {
     fs := flag.NewFlagSet("build-info", flag.ExitOnError)
@@ -175,7 +175,9 @@ func main() {
   os.Exit(42)
 }
 GO
-CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath -o "$work/broken" "$work/broken.go"
+CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath \
+  -ldflags "-X main.version=$broken_version -X main.commit=$broken_commit" \
+  -o "$work/broken" "$work/broken.go"
 package_runtime "$work/broken" "$broken_version" "$broken_commit" "$work/broken.tar.gz"
 if "$UPDATER" --package "$work/broken.tar.gz" >"$work/broken.out" 2>"$work/broken.err"; then
   fail "broken signed runtime unexpectedly passed post-update acceptance"
