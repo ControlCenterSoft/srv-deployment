@@ -1,252 +1,138 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PRODUCT="control-center"
-APP_USER="control-center"
-APP_GROUP="control-center"
-BASE_DIR="/opt/control-center"
-RELEASES_DIR="${BASE_DIR}/releases"
-CURRENT_LINK="${BASE_DIR}/current"
-PREVIOUS_LINK="${BASE_DIR}/previous"
-SERVICE_NAME="control-center-api.service"
-SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-MANIFEST="${ROOT_DIR}/deployment.json"
 MODE="install"
-STAGING_DIR=""
+if [[ ${1:-} == "--repair" ]]; then MODE="repair"; shift; fi
+if [[ ${1:-} == "--reinstall" ]]; then MODE="reinstall"; shift; fi
+if [[ $# -ne 0 ]]; then echo "Usage: $0 [--repair|--reinstall]" >&2; exit 2; fi
 
-usage() {
-  cat <<'EOF'
-Usage: install/install.sh [--preflight|--install|--repair|--rollback]
+INSTALL_ROOT="/usr/local/lib/control-center"
+RELEASES_DIR="$INSTALL_ROOT/releases"
+STAGING_DIR="$INSTALL_ROOT/staging"
+CURRENT_LINK="$INSTALL_ROOT/current"
+PREVIOUS_LINK="$INSTALL_ROOT/previous"
+LEGACY_BINARY="$INSTALL_ROOT/control-center"
+UPDATE_SCRIPT="/usr/local/sbin/control-center-update"
+CONFIG_DIR="/etc/control-center"
+STATE_DIR="/var/lib/control-center"
+LOG_DIR="/var/log/control-center"
+UNIT_PATH="/etc/systemd/system/control-center.service"
+ENV_PATH="$CONFIG_DIR/control-center.env"
+TRUST_KEY="$CONFIG_DIR/update-public-key.pem"
+ACCEPTANCE_URL="${CONTROL_CENTER_ACCEPTANCE_URL:-http://127.0.0.1:8876}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
-  --preflight  Validate host prerequisites only.
-  --install    Install/switch to this checkout atomically (default).
-  --repair     Re-apply service configuration and current release safely.
-  --rollback   Switch atomically to the previously active release.
-EOF
-}
+log() { printf '[control-center] %s\n' "$*"; }
+die() { printf '[control-center] ERROR: %s\n' "$*" >&2; exit 1; }
+atomic_link() { local target="$1" link="$2" tmp="${2}.new.$$"; rm -f -- "$tmp"; ln -s -- "$target" "$tmp"; mv -Tf -- "$tmp" "$link"; }
 
-log() {
-  printf '%s\n' "$*"
-}
+[[ $EUID -eq 0 ]] || die "installer must run as root"
+for cmd in systemctl install curl runuser sha256sum; do command -v "$cmd" >/dev/null || die "$cmd is required"; done
+[[ -d /run/systemd/system ]] || die "systemd is not running"
+arch="$(uname -m)"
+case "$arch" in x86_64) artifact_arch="amd64" ;; aarch64|arm64) artifact_arch="arm64" ;; *) die "unsupported architecture: $arch" ;; esac
+binary="${CONTROL_CENTER_BINARY:-$REPO_ROOT/dist/control-center-linux-$artifact_arch}"
+[[ -f "$binary" && ! -L "$binary" ]] || die "binary not found or invalid: $binary"
+[[ -f "$REPO_ROOT/packaging/systemd/control-center.service" ]] || die "systemd unit template is missing"
+[[ -f "$REPO_ROOT/install/update.sh" ]] || die "update script is missing"
 
-die() {
-  printf 'ERROR: %s\n' "$*" >&2
-  exit 1
-}
+version="$("$binary" build-info --field version)" || die "candidate cannot report version"
+commit="$("$binary" build-info --field commit)" || die "candidate cannot report commit"
+"$binary" compare-version --current "$version" --target "$version" >/dev/null || die "invalid candidate version: $version"
+[[ "$commit" =~ ^[0-9a-f]{7,64}$|^unknown$ ]] || die "invalid candidate commit: $commit"
+sha="$(sha256sum "$binary" | awk '{print $1}')"
+commit_id="${commit:0:12}"
+release_id="$version-$commit_id-${sha:0:12}"
+release_rel="releases/$release_id"
+release_dir="$RELEASES_DIR/$release_id"
 
-cleanup() {
-  if [[ -n "${STAGING_DIR}" && -d "${STAGING_DIR}" ]]; then
-    rm -rf -- "${STAGING_DIR}"
-  fi
-}
+backup="$(mktemp -d /tmp/control-center-install.XXXXXX)"
+cleanup() { rm -rf -- "$backup"; }
 trap cleanup EXIT
 
-for arg in "$@"; do
-  case "${arg}" in
-    --preflight) MODE="preflight" ;;
-    --install) MODE="install" ;;
-    --repair) MODE="repair" ;;
-    --rollback) MODE="rollback" ;;
-    -h|--help) usage; exit 0 ;;
-    *) usage >&2; die "unknown argument: ${arg}" ;;
-  esac
+had_unit=0; had_env=0; had_update=0; had_key=0; had_legacy=0
+had_config_dir=0; had_state_dir=0; had_log_dir=0; had_user=0; had_group=0; was_enabled=0; was_active=0
+old_current=""; old_previous=""; created_release=0
+[[ -d "$CONFIG_DIR" ]] && had_config_dir=1; [[ -d "$STATE_DIR" ]] && had_state_dir=1; [[ -d "$LOG_DIR" ]] && had_log_dir=1
+getent group control-center >/dev/null && had_group=1 || true
+id -u control-center >/dev/null 2>&1 && had_user=1 || true
+systemctl is-enabled --quiet control-center.service 2>/dev/null && was_enabled=1 || true
+systemctl is-active --quiet control-center.service 2>/dev/null && was_active=1 || true
+[[ -L "$CURRENT_LINK" ]] && old_current="$(readlink "$CURRENT_LINK")"
+[[ -L "$PREVIOUS_LINK" ]] && old_previous="$(readlink "$PREVIOUS_LINK")"
+if [[ -f "$UNIT_PATH" ]]; then cp -a -- "$UNIT_PATH" "$backup/unit"; had_unit=1; fi
+if [[ -f "$ENV_PATH" ]]; then cp -a -- "$ENV_PATH" "$backup/env"; had_env=1; fi
+if [[ -f "$UPDATE_SCRIPT" ]]; then cp -a -- "$UPDATE_SCRIPT" "$backup/update"; had_update=1; fi
+if [[ -f "$TRUST_KEY" ]]; then cp -a -- "$TRUST_KEY" "$backup/key"; had_key=1; fi
+if [[ -f "$LEGACY_BINARY" ]]; then cp -a -- "$LEGACY_BINARY" "$backup/legacy"; had_legacy=1; fi
+
+rollback() {
+  rc=$?; trap - ERR
+  log "installation failed; restoring previous runtime state"
+  systemctl disable --now control-center.service >/dev/null 2>&1 || true
+  rm -f -- "$CURRENT_LINK" "$PREVIOUS_LINK"
+  [[ -n "$old_current" ]] && atomic_link "$old_current" "$CURRENT_LINK"
+  [[ -n "$old_previous" ]] && atomic_link "$old_previous" "$PREVIOUS_LINK"
+  (( had_unit )) && install -D -m 0644 "$backup/unit" "$UNIT_PATH" || rm -f -- "$UNIT_PATH"
+  (( had_env )) && install -D -m 0640 "$backup/env" "$ENV_PATH" || rm -f -- "$ENV_PATH"
+  (( had_update )) && install -D -m 0755 "$backup/update" "$UPDATE_SCRIPT" || rm -f -- "$UPDATE_SCRIPT"
+  (( had_key )) && install -D -m 0644 "$backup/key" "$TRUST_KEY" || rm -f -- "$TRUST_KEY"
+  (( had_legacy )) && install -D -m 0755 "$backup/legacy" "$LEGACY_BINARY" || rm -f -- "$LEGACY_BINARY"
+  (( created_release )) && rm -rf -- "$release_dir"
+  systemctl daemon-reload || true
+  (( was_enabled )) && systemctl enable control-center.service >/dev/null 2>&1 || true
+  (( was_active )) && systemctl start control-center.service >/dev/null 2>&1 || true
+  (( ! had_config_dir )) && rm -rf -- "$CONFIG_DIR"
+  (( ! had_state_dir )) && rm -rf -- "$STATE_DIR"
+  (( ! had_log_dir )) && rm -rf -- "$LOG_DIR"
+  if (( ! had_user )) && id -u control-center >/dev/null 2>&1; then userdel control-center >/dev/null 2>&1 || true; fi
+  if (( ! had_group )) && getent group control-center >/dev/null; then groupdel control-center >/dev/null 2>&1 || true; fi
+  exit "$rc"
+}
+trap rollback ERR
+
+(( had_group )) || groupadd --system control-center
+if (( ! had_user )); then useradd --system --gid control-center --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin control-center; fi
+install -d -o root -g root -m 0755 "$INSTALL_ROOT" "$RELEASES_DIR" "$STAGING_DIR"
+if [[ ! -d "$release_dir" ]]; then
+  tmp_release="$(mktemp -d "$RELEASES_DIR/.install.XXXXXX")"
+  install -m 0555 "$binary" "$tmp_release/control-center"
+  chmod 0555 "$tmp_release"
+  mv -- "$tmp_release" "$release_dir"
+  created_release=1
+else
+  cmp -s -- "$binary" "$release_dir/control-center" || die "release id collision with different binary"
+fi
+install -m 0644 "$REPO_ROOT/packaging/systemd/control-center.service" "$UNIT_PATH"
+install -m 0755 "$REPO_ROOT/install/update.sh" "$UPDATE_SCRIPT"
+install -d -o root -g control-center -m 0750 "$CONFIG_DIR"
+install -d -o control-center -g control-center -m 0750 "$STATE_DIR" "$LOG_DIR"
+if [[ ! -f "$ENV_PATH" ]]; then printf '%s\n' 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' > "$ENV_PATH"; chown root:control-center "$ENV_PATH"; chmod 0640 "$ENV_PATH"; fi
+if [[ -n ${CONTROL_CENTER_UPDATE_PUBLIC_KEY:-} ]]; then
+  [[ -f "$CONTROL_CENTER_UPDATE_PUBLIC_KEY" ]] || die "configured update public key does not exist"
+  install -o root -g root -m 0644 "$CONTROL_CENTER_UPDATE_PUBLIC_KEY" "$TRUST_KEY"
+fi
+
+bootstrap_output="$(runuser -u control-center -- "$release_dir/control-center" bootstrap-admin --username admin)"
+log "$bootstrap_output"
+if [[ -f "$STATE_DIR/bootstrap-admin.secret" ]]; then chmod 0600 "$STATE_DIR/bootstrap-admin.secret"; log "Initial credentials are root-readable at $STATE_DIR/bootstrap-admin.secret and are deleted after the first password change."; fi
+atomic_link "$release_rel" "$CURRENT_LINK"
+systemctl daemon-reload
+systemctl enable control-center.service >/dev/null
+# A previous intentionally or genuinely broken runtime may have exhausted systemd's
+# start-rate limiter. This is a controlled operator transition to a verified current
+# release, so clear only the unit failure/rate state before starting it.
+systemctl reset-failed control-center.service >/dev/null 2>&1 || true
+systemctl restart control-center.service
+for _ in {1..24}; do
+  if curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/health" >/dev/null 2>&1 && curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/readiness" | grep -Fq '"ready":true'; then
+    trap - ERR
+    rm -f -- "$LEGACY_BINARY"
+    log "$MODE completed; current=$release_rel"
+    [[ -f "$TRUST_KEY" ]] || log "Update trust key is not configured; signed updates remain disabled until $TRUST_KEY is provisioned."
+    exit 0
+  fi
+  sleep 0.25
 done
-
-preflight() {
-  [[ "${EUID}" -eq 0 ]] || die "installer must run as root"
-  [[ -f "${MANIFEST}" ]] || die "deployment.json is missing"
-  local required_file
-  for required_file in server.py ui.py rbac.py security.py audit.py; do
-    [[ -f "${ROOT_DIR}/api/${required_file}" ]] || die "api/${required_file} is missing"
-  done
-  [[ -f "${ROOT_DIR}/install/control-center-api.service" ]] || die "systemd unit template is missing"
-
-  local command
-  for command in python3 systemctl useradd groupadd getent install cp mv ln readlink sha256sum awk mktemp rm chmod chown; do
-    command -v "${command}" >/dev/null 2>&1 || die "required command is missing: ${command}"
-  done
-
-  python3 "${ROOT_DIR}/scripts/validate_deployment.py" "${MANIFEST}" >/dev/null
-  log "Preflight OK."
-}
-
-ensure_identity() {
-  if ! getent group "${APP_GROUP}" >/dev/null 2>&1; then
-    groupadd --system "${APP_GROUP}"
-  fi
-  if ! getent passwd "${APP_USER}" >/dev/null 2>&1; then
-    useradd \
-      --system \
-      --gid "${APP_GROUP}" \
-      --home-dir "${BASE_DIR}" \
-      --shell /usr/sbin/nologin \
-      "${APP_USER}"
-  fi
-}
-
-manifest_version() {
-  python3 - "${MANIFEST}" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    data = json.load(fh)
-print(data["release"]["version"])
-PY
-}
-
-source_id() {
-  if command -v git >/dev/null 2>&1 && git -C "${ROOT_DIR}" rev-parse --verify HEAD >/dev/null 2>&1; then
-    git -C "${ROOT_DIR}" rev-parse HEAD
-    return
-  fi
-  {
-    sha256sum "${ROOT_DIR}/deployment.json"
-    sha256sum "${ROOT_DIR}"/api/*.py
-    sha256sum "${ROOT_DIR}/install/control-center-api.service"
-  } | sha256sum | awk '{print $1}'
-}
-
-safe_release_id() {
-  local version sha
-  version="$(manifest_version)"
-  sha="$(source_id)"
-  [[ "${version}" =~ ^[0-9A-Za-z._+-]+$ ]] || die "unsafe release version"
-  [[ "${sha}" =~ ^[0-9a-fA-F]{12,}$ ]] || die "unsafe source id"
-  printf '%s-%s\n' "${version}" "${sha:0:12}"
-}
-
-atomic_link() {
-  local target="$1" link="$2" temporary="${link}.new"
-  rm -f -- "${temporary}"
-  ln -s -- "${target}" "${temporary}"
-  mv -Tf -- "${temporary}" "${link}"
-}
-
-health_check() {
-  python3 - <<'PY'
-import json
-import time
-from urllib.error import URLError
-from urllib.request import urlopen
-
-for _ in range(40):
-    try:
-        with urlopen("http://127.0.0.1:8876/api/v1/readiness", timeout=1.0) as response:
-            data = json.load(response)
-            if response.status == 200 and data.get("status") == "ready":
-                raise SystemExit(0)
-    except (OSError, URLError, ValueError):
-        pass
-    time.sleep(0.25)
-raise SystemExit(1)
-PY
-}
-
-install_service_file() {
-  install -o root -g root -m 0644 \
-    "${ROOT_DIR}/install/control-center-api.service" \
-    "${SERVICE_PATH}"
-  systemctl daemon-reload
-}
-
-restore_after_failed_switch() {
-  local old_target="$1"
-  log "New release failed readiness; restoring previous state."
-  if [[ -n "${old_target}" && -d "${old_target}" ]]; then
-    atomic_link "${old_target}" "${CURRENT_LINK}"
-    systemctl restart "${SERVICE_NAME}" || true
-  else
-    rm -f -- "${CURRENT_LINK}"
-    systemctl disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
-  fi
-}
-
-install_or_repair() {
-  ensure_identity
-  install -d -o root -g "${APP_GROUP}" -m 0750 "${BASE_DIR}" "${RELEASES_DIR}"
-
-  local release_id release_dir old_target=""
-  release_id="$(safe_release_id)"
-  release_dir="${RELEASES_DIR}/${release_id}"
-  if [[ -L "${CURRENT_LINK}" ]]; then
-    old_target="$(readlink -f -- "${CURRENT_LINK}" || true)"
-  fi
-
-  if [[ ! -d "${release_dir}" ]]; then
-    STAGING_DIR="$(mktemp -d "${BASE_DIR}/.staging.XXXXXX")"
-    chown root:"${APP_GROUP}" "${STAGING_DIR}"
-    chmod 0750 "${STAGING_DIR}"
-    install -d -o root -g "${APP_GROUP}" -m 0750 "${STAGING_DIR}/api"
-    install -o root -g "${APP_GROUP}" -m 0640 \
-      "${ROOT_DIR}"/api/*.py \
-      "${STAGING_DIR}/api/"
-    install -o root -g "${APP_GROUP}" -m 0640 \
-      "${ROOT_DIR}/deployment.json" \
-      "${STAGING_DIR}/deployment.json"
-    if [[ -f "${ROOT_DIR}/README.md" ]]; then
-      install -o root -g "${APP_GROUP}" -m 0640 \
-        "${ROOT_DIR}/README.md" \
-        "${STAGING_DIR}/README.md"
-    fi
-    mv -- "${STAGING_DIR}" "${release_dir}"
-    STAGING_DIR=""
-  fi
-
-  install_service_file
-
-  if [[ -n "${old_target}" && "${old_target}" != "${release_dir}" && -d "${old_target}" ]]; then
-    atomic_link "${old_target}" "${PREVIOUS_LINK}"
-  fi
-  atomic_link "${release_dir}" "${CURRENT_LINK}"
-
-  if ! systemctl enable --now "${SERVICE_NAME}"; then
-    restore_after_failed_switch "${old_target}"
-    die "systemd could not start ${SERVICE_NAME}"
-  fi
-  if ! health_check; then
-    restore_after_failed_switch "${old_target}"
-    die "readiness check failed"
-  fi
-
-  log "Control Center installed successfully."
-  log "Release: ${release_id}"
-  log "Current: ${release_dir}"
-  log "Web UI: http://127.0.0.1:8876/overview"
-  log "API: http://127.0.0.1:8876/api/v1/health"
-}
-
-rollback_release() {
-  ensure_identity
-  [[ -L "${PREVIOUS_LINK}" ]] || die "previous release is not available"
-  local previous_target current_target=""
-  previous_target="$(readlink -f -- "${PREVIOUS_LINK}" || true)"
-  [[ -n "${previous_target}" && -d "${previous_target}" ]] || die "previous release target is invalid"
-  if [[ -L "${CURRENT_LINK}" ]]; then
-    current_target="$(readlink -f -- "${CURRENT_LINK}" || true)"
-  fi
-
-  atomic_link "${previous_target}" "${CURRENT_LINK}"
-  if [[ -n "${current_target}" && -d "${current_target}" ]]; then
-    atomic_link "${current_target}" "${PREVIOUS_LINK}"
-  fi
-
-  install_service_file
-  if ! systemctl enable --now "${SERVICE_NAME}" || ! health_check; then
-    if [[ -n "${current_target}" && -d "${current_target}" ]]; then
-      atomic_link "${current_target}" "${CURRENT_LINK}"
-      atomic_link "${previous_target}" "${PREVIOUS_LINK}"
-      systemctl restart "${SERVICE_NAME}" || true
-    fi
-    die "rollback target failed readiness; original release restored"
-  fi
-
-  log "Rollback successful."
-  log "Current: ${previous_target}"
-}
-
-preflight
-case "${MODE}" in
-  preflight) exit 0 ;;
-  install|repair) install_or_repair ;;
-  rollback) rollback_release ;;
-esac
+die "runtime did not become ready"

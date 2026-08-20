@@ -1,56 +1,56 @@
 {
   "schema": 1,
   "product": "control-center",
-  "updated_at": "2026-08-20T16:17:00Z",
+  "updated_at": "2026-08-20T18:50:00Z",
   "release": {
     "version": "1.0.0",
-    "channel": "development",
-    "status": "development",
-    "acceptance": "not_run",
-    "release_date": null
+    "channel": "stable",
+    "status": "production-ready",
+    "acceptance": "passed",
+    "release_date": "2026-08-20"
   },
   "features": [
     {
       "id": "installer-foundation",
       "title_ru": "Фундамент установщика",
-      "summary_ru": "Предварительная проверка, атомарная установка и восстановление, проверка готовности и безопасный откат для новой линии 1.0.0.",
-      "status": "development"
+      "summary_ru": "Предварительная проверка, атомарная установка, repair/reinstall, проверка готовности и безопасный rollback подтверждены production acceptance.",
+      "status": "production-ready"
     },
     {
       "id": "web-ui-shell",
       "title_ru": "Web-интерфейс",
-      "summary_ru": "Серверный каркас «Обзор / Маркет / RBAC / Система» развивается в безопасном режиме чтения без JavaScript и привилегированных действий.",
-      "status": "development"
+      "summary_ru": "Интерфейс «Обзор / Маркет / RBAC / Система» работает поверх принятого Auth/RBAC/API-контракта.",
+      "status": "production-ready"
     },
     {
       "id": "api-contracts",
       "title_ru": "Контракты API платформы",
-      "summary_ru": "Версионированные API, единый формат ошибок, проверки health/readiness и идентификатор корреляции.",
-      "status": "development"
+      "summary_ru": "Versioned API v1, health/readiness, Auth/RBAC, operations, audit и diagnostics прошли release regression.",
+      "status": "production-ready"
     },
     {
       "id": "rbac-foundation",
       "title_ru": "Фундамент RBAC",
-      "summary_ru": "Серверные роли viewer/admin, политика разрешений, scrypt-хеширование паролей, хешированные токены сессий и аудит с маскированием секретов реализуются до включения доступного потока аутентификации.",
-      "status": "development"
+      "summary_ru": "Server-side authorization, sessions, password flow, CSRF/origin, auth rate limits и audit прошли production acceptance.",
+      "status": "production-ready"
     },
     {
       "id": "config-store",
       "title_ru": "Хранилище конфигурации и состояния",
-      "summary_ru": "SQLite schema v1 с миграциями только вперёд, accounts/sessions/settings/audit, отдельной границей для секретов и миграцией до запуска HTTP.",
-      "status": "development"
+      "summary_ru": "SQLite schema v1 и state/secrets preservation подтверждены upgrade/reinstall acceptance.",
+      "status": "production-ready"
     },
     {
       "id": "diagnostics-foundation",
       "title_ru": "Фундамент диагностики",
-      "summary_ru": "Состояние системы и служб, безопасные журналы и диагностические пакеты без секретов.",
-      "status": "development"
+      "summary_ru": "Bounded diagnostics и secret-free evidence прошли production acceptance.",
+      "status": "production-ready"
     },
     {
       "id": "update-foundation",
       "title_ru": "Фундамент обновлений",
-      "summary_ru": "Проверяемые метаданные, staging, безопасное переключение, post-update acceptance и откат.",
-      "status": "planned"
+      "summary_ru": "Ed25519 verified updates, fail-closed validation, synthetic forward update, automatic rollback и exact restore прошли acceptance.",
+      "status": "production-ready"
     }
   ],
   "clients": {

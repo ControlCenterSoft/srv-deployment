@@ -1,124 +1,123 @@
 # Control Center
 
-Базовая линия: **1.0.0**
+Baseline: **1.0.0**  
+Current development milestone: **1.0.0 — Stable Production Candidate**
 
-Язык проектной документации: **русский**. Технические идентификаторы, имена API, путей, команд и стандартов сохраняются в исходном виде.
+Control Center is being rebuilt from a clean baseline. Previous implementation, release history and architecture are not part of the active product unless explicitly re-adopted through the new governance process.
 
-Этот репозиторий является чистой линией реализации нового продукта Control Center. Предыдущая реализация, история релизов и архитектура не наследуются, если они не приняты заново отдельным решением.
+## 1.0.0 stable
 
-## Текущая реализация
+`1.0.0-rc.1` is accepted. Stable 1.0.0 promotes the accepted RC code line without adding end-user features or changing runtime API, state schema, operations schema, Auth/RBAC semantics, update trust, or privileged architecture.
 
-### Каркас Web UI
+### Release layout
 
-Локальная серверная консоль уже доступна как server-rendered интерфейс только для чтения:
-
-- `/overview` — **Обзор**
-- `/market` — **Маркет**
-- `/rbac` — **RBAC**
-- `/system` — **Система**
-- `/` открывает раздел «Обзор»
-
-Текущий интерфейс намеренно не содержит JavaScript, форм и привилегированных действий. Он читает тот же проверенный `deployment.json`, что и Platform API v1, экранирует данные manifest перед выводом в HTML, использует CSP и защиту от встраивания во frame и переходит в безопасный fail-closed режим с HTTP 503, если метаданные релиза повреждены или недоступны.
-
-Привилегированные элементы управления будут добавлены только после реализации и проверки доступного login/session flow, политики CSRF/origin и постоянного audit-контура.
-
-### Основа безопасности RBAC и сессий
-
-Примитивы безопасности реализуются и тестируются до того, как какой-либо endpoint входа станет доступен извне:
-
-- server-side роли `viewer` и `admin`;
-- стабильная permission policy и fail-closed проверка `require_permission`;
-- хеширование паролей через scrypt с ограниченными параметрами;
-- криптографически случайные session tokens; для хранения предназначены только SHA-256 digest;
-- cookie-контракт `__Host-cc_session` с `Secure`, `HttpOnly`, `SameSite=Strict` и без атрибута Domain;
-- ограниченный audit envelope с рекурсивной маскировкой полей password/token/cookie/API-key.
-
-Это **основа**, а не завершённая система аутентификации. Доступные login/logout endpoints, проверки CSRF/origin, rate limits и привилегированная авторизация пока не включены.
-
-### Хранилище состояния и конфигурации — schema v1
-
-Сервис имеет базовое SQLite-хранилище состояния по пути `/var/lib/control-center/state.db` в production:
-
-- отдельная таблица миграций схемы; разрешены только миграции вперёд;
-- запуск блокируется, если база использует более новую неподдерживаемую схему;
-- локальная таблица `accounts` хранит утверждённые хеши паролей, а не открытые учётные данные;
-- `sessions` принимает только SHA-256 digest токенов, но не исходные session tokens;
-- обычное хранилище `settings` запрещает secret-like ключи; секреты будут храниться отдельным механизмом;
-- `audit_events` хранит ограниченные и очищенные audit details;
-- systemd unit предоставляет непривилегированному сервису только `StateDirectory=control-center`, сохраняя `ProtectSystem=strict`;
-- entrypoint сервиса выполняет миграцию и проверку state до запуска HTTP.
-
-### Platform API v1
-
-Первый серверный API-контур намеренно работает только на чтение и не требует внешних Python-зависимостей:
-
-- `GET /api/v1/health`
-- `GET /api/v1/readiness`
-- `GET /api/v1/version`
-- `GET /api/v1/release`
-- для тех же endpoint поддерживается `HEAD`;
-- все write-методы в текущей базовой линии отклоняются;
-- каждый ответ содержит `X-Correlation-ID`;
-- при некорректных deployment metadata сервис работает в fail-closed режиме;
-- по умолчанию сервис слушает только `127.0.0.1:8876`.
-
-API-процесс не содержит пути выполнения команд от root и не предоставляет произвольное выполнение команд.
-
-### Основа установщика
-
-`install/install.sh` реализует:
-
-- preflight-проверку системы;
-- атомарную подготовку релизов в `/opt/control-center/releases/`;
-- ссылки `current` / `previous`;
-- усиленный `control-center-api.service`;
-- отдельного непривилегированного системного пользователя `control-center`;
-- readiness-проверку после переключения;
-- автоматическое восстановление после неудачного переключения;
-- явный rollback на предыдущий рабочий релиз;
-- установку Web UI, API, security foundation и state foundation как единого версионированного payload.
-
-Команды из полного checkout:
-
-```bash
-bash install/install.sh --preflight
-bash install/install.sh --install
-bash install/install.sh --repair
-bash install/install.sh --rollback
+```text
+/usr/local/lib/control-center/releases/<release-id>/
+/usr/local/lib/control-center/current -> releases/<release-id>
+/usr/local/lib/control-center/previous -> releases/<release-id>
+/usr/local/lib/control-center/staging/
+/usr/local/sbin/control-center-update
+/etc/control-center/update-public-key.pem
 ```
 
-Для install/repair/rollback установщик должен запускаться от root, поскольку он управляет системным пользователем, `/opt/control-center`, systemd и атомарными ссылками релизов.
+The systemd service executes `/usr/local/lib/control-center/current/control-center`. Release binaries are stored root-owned and non-writable during normal operation.
 
-## Метаданные релиза
+### Reproducible release build
 
-`deployment.json` — канонический машиночитаемый источник состояния продукта для публичного сайта, локального Web UI и Platform API. Функция или клиент не должны отображаться как выпущенные, пока это не подтверждено release metadata и acceptance evidence.
+Stable release artifacts are built with the exact Go `1.23.2` toolchain declared in `go.mod` and `release/1.0.0.env`. Release builds use the full Git commit SHA and that commit's immutable timestamp, canonicalized to UTC, as build metadata.
 
-## Параллельные клиенты
+From a clean checkout of the candidate commit:
 
-Текущие независимые линии разработки:
+```bash
+./scripts/build-release.sh
+```
 
-- Website — публичный портал, отображающий фактическое состояние релиза;
-- Android Client — `0.1.0`;
-- Android Admin — `0.1.0`;
-- Android SDK — `0.1.0`, общие модели и контракты API v1, а также ограниченный GET transport.
+The command fails on a compiler mismatch or dirty source tree and writes `dist/BUILDINFO.env` plus `dist/SHA256SUMS`. A repeated build from the same commit/toolchain must be byte-identical.
 
-Вся привилегированная авторизация остаётся на стороне сервера; видимость элементов интерфейса на клиенте никогда не считается границей авторизации.
+### Signed update model
 
-## Контроль качества
+Update packages contain exactly:
 
-GitHub Actions проверяет:
+```text
+manifest.json
+manifest.sig
+control-center
+```
 
-- синтаксис Python;
-- синтаксис shell-скриптов;
-- схему deployment manifest;
-- unit/contract tests API;
-- навигацию, безопасность и fail-closed поведение Web UI;
-- границы RBAC permissions;
-- password/session security primitives;
-- маскировку секретов в audit;
-- инварианты SQLite schema migrations, accounts, sessions, settings и audit;
-- реальный entrypoint сервиса с временной базой schema v1;
-- smoke tests Web UI и API;
-- негативные сценарии write-методов.
+`manifest.json` is signed with Ed25519 and binds the release version, commit, platform, state-schema compatibility, artifact byte size and SHA-256. The currently installed trusted runtime verifies the signature and artifact before candidate code is executed.
 
-Результат CI записывается в `ops/ci-status.json` и используется как машиночитаемое evidence для release gating.
+Only an update **public** key is installed on the managed host. A production private signing key must never be committed, shipped inside release artifacts or installed on the server.
+
+### Create a signed package
+
+After an exact release build, source `dist/BUILDINFO.env` and use those exact values when packaging:
+
+```bash
+set -a
+source dist/BUILDINFO.env
+set +a
+go run ./cmd/release-tool package \
+  --binary ./dist/control-center-linux-amd64 \
+  --version "$VERSION" \
+  --commit "$COMMIT" \
+  --built-at "$BUILT_AT" \
+  --arch amd64 \
+  --private-key /secure/path/update-private.pem \
+  --output /tmp/control-center-release.tar.gz
+```
+
+### Apply an update
+
+After provisioning the matching public key at `/etc/control-center/update-public-key.pem`:
+
+```bash
+sudo control-center-update --package /path/to/control-center-release.tar.gz
+```
+
+Same-version and downgrade attempts are rejected by default. `--allow-downgrade` is reserved for an explicit controlled rollback and does not bypass signature, digest, platform or state-schema checks.
+
+### First administrator
+
+The installer bootstraps a local `admin` only when state contains no users. The generated credential is stored root-readable at:
+
+```text
+/var/lib/control-center/bootstrap-admin.secret
+```
+
+It is removed after the first successful password change.
+
+### Local development
+
+```bash
+go test ./...
+CONTROL_CENTER_STATE_DIR=$(mktemp -d) go run ./cmd/control-center bootstrap-admin
+CONTROL_CENTER_STATE_DIR=<same-dir> CONTROL_CENTER_LOG_DIR=$(mktemp -d) go run ./cmd/control-center
+```
+
+The secure product default remains `127.0.0.1:8876` with `Secure` browser session cookies. HTTP/IP exposure used on the temporary test host is an ops-only test configuration and is not the production default.
+
+### Validation
+
+```bash
+./scripts/secret-scan.sh
+./scripts/auth-acceptance.sh           # disposable/clean installed host
+./scripts/operations-acceptance.sh     # after Auth/RBAC acceptance
+./scripts/stable-update-acceptance.sh  # root/systemd host with ephemeral test signing key
+```
+
+Release binaries are built statically for linux/amd64 and linux/arm64.
+
+### Install / repair / uninstall
+
+```bash
+sudo ./install/install.sh
+sudo ./install/install.sh --repair
+sudo ./install/install.sh --reinstall
+sudo ./install/uninstall.sh
+```
+
+Provide an update public key during install with `CONTROL_CENTER_UPDATE_PUBLIC_KEY=/path/public.pem`. Non-purge uninstall preserves configuration/state/trust; `--purge` is explicitly destructive.
+
+## Architecture decisions
+
+See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0006 defines signed metadata, trusted verification, immutable releases, atomic activation and rollback.
