@@ -1,13 +1,27 @@
 {
   "schema": 1,
   "product": "control-center",
-  "updated_at": "2026-08-20T18:50:00Z",
+  "updated_at": "2026-08-20T19:56:00Z",
   "release": {
     "version": "1.0.0",
     "channel": "stable",
     "status": "production-ready",
     "acceptance": "passed",
     "release_date": "2026-08-20",
+    "title_ru": "Control Center 1.0.0",
+    "summary_ru": "Первая стабильная линия нового Control Center: безопасный установщик, Web-интерфейс, API v1, Auth/RBAC, состояние, диагностика и проверяемые обновления.",
+    "highlights_ru": [
+      "Установщик, repair/reinstall и безопасный rollback прошли production acceptance",
+      "Web-интерфейс «Обзор / Маркет / RBAC / Система» работает поверх принятого Auth/RBAC/API-контракта",
+      "API v1, операции, аудит и диагностика прошли release regression",
+      "Сессии, CSRF/origin, auth rate limits и серверная авторизация прошли production acceptance",
+      "Ed25519-проверяемые обновления, fail-closed validation и автоматический rollback прошли acceptance"
+    ],
+    "known_limitations_ru": [
+      "Безопасный стандартный режим сервиса остаётся loopback-only; внешний ingress настраивается отдельно",
+      "Android Client, Android Admin и Android SDK продолжают независимую линию разработки 0.1.0",
+      "Расширенный Маркет и прикладные модули относятся к последующим релизам"
+    ],
     "source_commit": "1b364ae88789696bf98537d21544de8a259d086d",
     "built_at": "2026-08-20T16:07:56Z",
     "artifacts": {
@@ -15,66 +29,82 @@
       "linux_arm64_sha256": "5e6e959f39bd4cb554e902908863c92eb5c697f4d99b55ca97fa4735ec9419fe"
     }
   },
+  "history": [],
   "features": [
     {
       "id": "installer-foundation",
       "title_ru": "Фундамент установщика",
       "summary_ru": "Предварительная проверка, атомарная установка, repair/reinstall, проверка готовности и безопасный rollback подтверждены production acceptance.",
-      "status": "production-ready"
+      "status": "production-ready",
+      "docs_path": "/docs/releases"
     },
     {
       "id": "web-ui-shell",
       "title_ru": "Web-интерфейс",
       "summary_ru": "Интерфейс «Обзор / Маркет / RBAC / Система» работает поверх принятого Auth/RBAC/API-контракта.",
-      "status": "production-ready"
+      "status": "production-ready",
+      "docs_path": "/docs"
     },
     {
       "id": "api-contracts",
       "title_ru": "Контракты API платформы",
       "summary_ru": "Versioned API v1, health/readiness, Auth/RBAC, operations, audit и diagnostics прошли release regression.",
-      "status": "production-ready"
+      "status": "production-ready",
+      "docs_path": "/docs/api"
     },
     {
       "id": "rbac-foundation",
       "title_ru": "Фундамент RBAC",
       "summary_ru": "Server-side authorization, sessions, password flow, CSRF/origin, auth rate limits и audit прошли production acceptance.",
-      "status": "production-ready"
+      "status": "production-ready",
+      "docs_path": "/docs/security"
     },
     {
       "id": "config-store",
       "title_ru": "Хранилище конфигурации и состояния",
       "summary_ru": "SQLite schema v1 и state/secrets preservation подтверждены upgrade/reinstall acceptance.",
-      "status": "production-ready"
+      "status": "production-ready",
+      "docs_path": "/docs/releases"
     },
     {
       "id": "diagnostics-foundation",
       "title_ru": "Фундамент диагностики",
       "summary_ru": "Bounded diagnostics и secret-free evidence прошли production acceptance.",
-      "status": "production-ready"
+      "status": "production-ready",
+      "docs_path": "/docs/security"
     },
     {
       "id": "update-foundation",
       "title_ru": "Фундамент обновлений",
       "summary_ru": "Ed25519 verified updates, fail-closed validation, synthetic forward update, automatic rollback и exact restore прошли acceptance.",
-      "status": "production-ready"
+      "status": "production-ready",
+      "docs_path": "/docs/releases"
     }
   ],
   "clients": {
     "website": {
       "version": "1.1.0-dev.1",
-      "status": "development"
+      "status": "development",
+      "api_major": 1,
+      "platform_range": ">=1.0.0 <2.0.0"
     },
     "android_client": {
       "version": "0.1.0",
-      "status": "development"
+      "status": "development",
+      "api_major": 1,
+      "platform_range": ">=1.0.0 <2.0.0"
     },
     "android_admin": {
       "version": "0.1.0",
-      "status": "development"
+      "status": "development",
+      "api_major": 1,
+      "platform_range": ">=1.0.0 <2.0.0"
     },
     "android_sdk": {
       "version": "0.1.0",
-      "status": "development"
+      "status": "development",
+      "api_major": 1,
+      "platform_range": ">=1.0.0 <2.0.0"
     }
   }
 }
