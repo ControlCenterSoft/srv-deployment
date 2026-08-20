@@ -193,6 +193,7 @@ echo "=== Generate ephemeral test update trust ==="
 rm -rf "$KEY_DIR"
 mkdir -p "$KEY_DIR"
 chmod 0700 "$KEY_DIR"
+rm -f -- "$WORK/trust.before" "$WORK/trust.was-absent"
 if [[ -f "$TRUST_KEY" ]]; then cp -a "$TRUST_KEY" "$WORK/trust.before"; else : > "$WORK/trust.was-absent"; fi
 openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY"
 openssl pkey -in "$PRIVATE_KEY" -pubout -out "$PUBLIC_KEY"
@@ -282,6 +283,10 @@ ADMIN_TOKEN="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$AUTH_WORK/p
 [[ -n "$ADMIN_TOKEN" ]]
 session_code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$ADMIN_TOKEN" "$PROXY_URL/api/v1/auth/session")"
 [[ "$session_code" == 200 ]]
+for endpoint in /api/v1/system/status /api/v1/rbac/users /api/v1/operations?limit=5 /api/v1/audit?limit=5 /api/v1/diagnostics/summary; do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$ADMIN_TOKEN" "$PROXY_URL$endpoint")"
+  [[ "$code" == 200 ]] || { echo "Authenticated regression endpoint failed: $endpoint HTTP $code" >&2; exit 1; }
+done
 BROWSER_PROXY="passed"
 rm -rf "$AUTH_WORK"
 
