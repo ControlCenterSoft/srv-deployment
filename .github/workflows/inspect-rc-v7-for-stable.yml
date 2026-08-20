@@ -27,7 +27,8 @@ jobs:
           url='https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/fe579e3f38e18bf1fc56a93699489b762206427d/ops/rc1-real-host-acceptance-v7/run-verified.sh'
           curl -fsSL "$url" -o /tmp/v7-launcher.sh
           chmod 0700 /tmp/v7-launcher.sh
-          RC1_V7_BUILD_ONLY=1 OUTPUT_V7=/tmp/v7.sh bash /tmp/v7-launcher.sh
+          sudo env RC1_V7_BUILD_ONLY=1 OUTPUT_V7=/tmp/v7.sh bash /tmp/v7-launcher.sh
+          sudo chown "$USER:$USER" /tmp/v7.sh
           printf 'V7_SHA256='; sha256sum /tmp/v7.sh | awk '{print $1}'
           bash -n /tmp/v7.sh
       - name: Inspect stable transformation anchors
