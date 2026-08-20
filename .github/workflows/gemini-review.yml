@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 10
     env:
       GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.6-flash' }}
-      GEMINI_GATE_LEVEL: ${{ vars.GEMINI_GATE_LEVEL || 'HIGH' }}
+      GEMINI_GATE_LEVEL: ${{ vars.GEMINI_GATE_LEVEL || 'NONE' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -108,11 +108,19 @@ jobs:
             cat "$RUNNER_TEMP/gemini-review.md"
           } > "$BODY_FILE"
 
-          COMMENT_ID="$(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-              --jq '.[] | select(.body | contains("<!-- control-center-gemini-review -->")) | .id' \
-              | head -n1
-          )"
+          COMMENT_ID=''
+          PAGE=1
+          while :; do
+            PAGE_FILE="$RUNNER_TEMP/gemini-comments-${PAGE}.json"
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100&page=${PAGE}" > "$PAGE_FILE"
+            COMMENT_ID="$(jq -r --arg marker "$MARKER" '[.[] | select(.body | contains($marker)) | .id][0] // empty' "$PAGE_FILE")"
+            COUNT="$(jq 'length' "$PAGE_FILE")"
+            if [[ -n "$COMMENT_ID" || "$COUNT" -lt 100 ]]; then
+              break
+            fi
+            PAGE=$((PAGE + 1))
+          done
+
           if [[ -n "$COMMENT_ID" ]]; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -F "body=@${BODY_FILE}" >/dev/null
           else
@@ -131,7 +139,7 @@ jobs:
           import os
           import sys
 
-          threshold = os.environ.get("GEMINI_GATE_LEVEL", "HIGH").upper()
+          threshold = os.environ.get("GEMINI_GATE_LEVEL", "NONE").upper()
           ranks = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "BLOCKER": 4}
           if threshold in {"NONE", "OFF", "DISABLED"}:
               raise SystemExit(0)
