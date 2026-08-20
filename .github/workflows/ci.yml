@@ -24,12 +24,14 @@ jobs:
       - name: Unit and API tests
         run: go test ./...
       - name: Installer and acceptance syntax
-        run: bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh scripts/rc1-update-acceptance.sh
+        run: bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh scripts/rc1-update-acceptance.sh scripts/secret-scan.sh
       - name: Build release binaries
         env:
           VERSION: 1.0.0-rc.1+ci
           COMMIT: ${{ github.sha }}
         run: ./scripts/build.sh
+      - name: Secret scan
+        run: ./scripts/secret-scan.sh
       - name: Release signature smoke
         run: |
           openssl genpkey -algorithm ED25519 -out /tmp/control-center-update-private.pem
