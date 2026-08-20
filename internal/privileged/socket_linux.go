@@ -22,6 +22,7 @@ type SocketServer struct {
 	Engine          *Engine
 	AllowedUIDs     []uint32
 	MaxRequestBytes int64
+	Audit           AuditSink
 }
 
 func NewSocketServer(engine *Engine, allowedUIDs []uint32) (*SocketServer, error) {
@@ -110,9 +111,43 @@ func (s *SocketServer) HandleConn(ctx context.Context, conn *net.UnixConn) error
 		return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeProtocol, "unsupported protocol version")
 	}
 
+	startedAt := time.Now().UTC()
 	result, execErr := s.Engine.Execute(ctx, envelope.Request)
-	response := ResponseEnvelope{Version: ProtocolVersion, Result: result, Error: failureFor(execErr)}
+	finishedAt := time.Now().UTC()
+	failure := failureFor(execErr)
+	s.recordAudit(envelope.Request, result, failure, startedAt, finishedAt)
+
+	response := ResponseEnvelope{Version: ProtocolVersion, Result: result, Error: failure}
 	return json.NewEncoder(conn).Encode(response)
+}
+
+func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure, startedAt, finishedAt time.Time) {
+	if s.Audit == nil {
+		return
+	}
+	errorCode := ""
+	if failure != nil {
+		errorCode = failure.Code
+	}
+	status := result.Status
+	if status == "" {
+		status = "failed"
+	}
+	duration := finishedAt.Sub(startedAt)
+	if duration < 0 {
+		duration = 0
+	}
+	s.Audit.Record(AuditEvent{
+		OperationID: req.ID,
+		ActorID:     req.ActorID,
+		Type:        req.Type,
+		Status:      status,
+		ExitCode:    result.ExitCode,
+		ErrorCode:   errorCode,
+		StartedAt:   startedAt,
+		FinishedAt:  finishedAt,
+		DurationMS:  duration.Milliseconds(),
+	})
 }
 
 func (s *SocketServer) writeFailure(conn *net.UnixConn, result Result, code, message string) error {
