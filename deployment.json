@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "product": "control-center",
+  "updated_at": "2026-08-20T08:55:00Z",
+  "release": {
+    "version": "1.0.0",
+    "channel": "development",
+    "status": "development",
+    "acceptance": "not_run",
+    "release_date": null
+  },
+  "features": [
+    {
+      "id": "installer-foundation",
+      "title_ru": "Installer foundation",
+      "summary_ru": "Preflight, install, repair/reinstall и безопасный rollback проектируются для новой линии 1.0.0.",
+      "status": "planned"
+    },
+    {
+      "id": "web-ui-shell",
+      "title_ru": "Web UI",
+      "summary_ru": "Каркас интерфейса Обзор / Маркет / RBAC / Система.",
+      "status": "planned"
+    },
+    {
+      "id": "api-contracts",
+      "title_ru": "Platform API contracts",
+      "summary_ru": "Версионированные API, единый формат ошибок, health/readiness и correlation ID.",
+      "status": "planned"
+    },
+    {
+      "id": "rbac-foundation",
+      "title_ru": "RBAC foundation",
+      "summary_ru": "Базовые роли admin/viewer и обязательная server-side проверка privileged operations.",
+      "status": "planned"
+    },
+    {
+      "id": "diagnostics-foundation",
+      "title_ru": "Diagnostics foundation",
+      "summary_ru": "System/service status, безопасные журналы и диагностические пакеты без секретов.",
+      "status": "development"
+    },
+    {
+      "id": "update-foundation",
+      "title_ru": "Update foundation",
+      "summary_ru": "Проверяемые metadata, staging, безопасное переключение и post-update acceptance.",
+      "status": "planned"
+    }
+  ],
+  "clients": {
+    "website": {
+      "version": "1.1.0-dev.1",
+      "status": "development"
+    },
+    "android_client": {
+      "version": "0.1.0",
+      "status": "bootstrap"
+    },
+    "android_admin": {
+      "version": "0.1.0",
+      "status": "bootstrap"
+    }
+  }
+}
