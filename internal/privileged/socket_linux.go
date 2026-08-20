@@ -153,8 +153,8 @@ func ListenUnix(path string, mode os.FileMode) (*net.UnixListener, error) {
 	if path == "" {
 		return nil, fmt.Errorf("%w: socket path is required", ErrInvalidRequest)
 	}
-	if mode&0077 != 0 {
-		return nil, fmt.Errorf("%w: socket mode must not grant group/other access", ErrInvalidRequest)
+	if mode&0600 != 0600 || mode&0007 != 0 {
+		return nil, fmt.Errorf("%w: socket mode must grant owner rw and deny world access", ErrInvalidRequest)
 	}
 	_ = os.Remove(path)
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
