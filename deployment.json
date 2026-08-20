@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "product": "control-center",
-  "updated_at": "2026-08-20T09:54:00Z",
+  "updated_at": "2026-08-20T16:17:00Z",
   "release": {
     "version": "1.0.0",
     "channel": "development",
@@ -12,44 +12,44 @@
   "features": [
     {
       "id": "installer-foundation",
-      "title_ru": "Installer foundation",
-      "summary_ru": "Preflight, atomic install/repair, readiness verification и безопасный rollback реализуются для новой линии 1.0.0.",
+      "title_ru": "Фундамент установщика",
+      "summary_ru": "Предварительная проверка, атомарная установка и восстановление, проверка готовности и безопасный откат для новой линии 1.0.0.",
       "status": "development"
     },
     {
       "id": "web-ui-shell",
-      "title_ru": "Web UI",
-      "summary_ru": "Server-rendered каркас Обзор / Маркет / RBAC / Система реализуется в безопасном read-only режиме без JavaScript и privileged actions.",
+      "title_ru": "Web-интерфейс",
+      "summary_ru": "Серверный каркас «Обзор / Маркет / RBAC / Система» развивается в безопасном режиме чтения без JavaScript и привилегированных действий.",
       "status": "development"
     },
     {
       "id": "api-contracts",
-      "title_ru": "Platform API contracts",
-      "summary_ru": "Версионированные API, единый формат ошибок, health/readiness и correlation ID.",
+      "title_ru": "Контракты API платформы",
+      "summary_ru": "Версионированные API, единый формат ошибок, проверки health/readiness и идентификатор корреляции.",
       "status": "development"
     },
     {
       "id": "rbac-foundation",
-      "title_ru": "RBAC foundation",
-      "summary_ru": "Server-side роли viewer/admin, permission policy, scrypt password hashing, hashed session-token primitives и secret-redacting audit envelope реализуются до включения reachable auth flow.",
+      "title_ru": "Фундамент RBAC",
+      "summary_ru": "Серверные роли viewer/admin, политика разрешений, scrypt-хеширование паролей, хешированные токены сессий и аудит с маскированием секретов реализуются до включения доступного потока аутентификации.",
       "status": "development"
     },
     {
       "id": "config-store",
-      "title_ru": "Configuration store",
-      "summary_ru": "SQLite schema v1 с forward-only migrations, accounts/sessions/settings/audit, отдельной границей для secrets и миграцией до запуска HTTP.",
+      "title_ru": "Хранилище конфигурации и состояния",
+      "summary_ru": "SQLite schema v1 с миграциями только вперёд, accounts/sessions/settings/audit, отдельной границей для секретов и миграцией до запуска HTTP.",
       "status": "development"
     },
     {
       "id": "diagnostics-foundation",
-      "title_ru": "Diagnostics foundation",
-      "summary_ru": "System/service status, безопасные журналы и диагностические пакеты без секретов.",
+      "title_ru": "Фундамент диагностики",
+      "summary_ru": "Состояние системы и служб, безопасные журналы и диагностические пакеты без секретов.",
       "status": "development"
     },
     {
       "id": "update-foundation",
-      "title_ru": "Update foundation",
-      "summary_ru": "Проверяемые metadata, staging, безопасное переключение и post-update acceptance.",
+      "title_ru": "Фундамент обновлений",
+      "summary_ru": "Проверяемые метаданные, staging, безопасное переключение, post-update acceptance и откат.",
       "status": "planned"
     }
   ],
