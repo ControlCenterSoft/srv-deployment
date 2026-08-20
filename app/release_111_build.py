@@ -7,7 +7,7 @@ APP_BUILD with the original 20260819.5 value during register().
 import database
 
 VERSION = '1.0.11'
-BUILD = '20260820.1'
+BUILD = '20260820.2'
 
 
 def register(app, main):

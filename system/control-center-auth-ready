@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SOCKET=/run/control-center-auth/auth.sock
+for _ in $(seq 1 40); do
+  if [[ -S "$SOCKET" ]] && [[ "$(stat -c '%U:%G %a' "$SOCKET" 2>/dev/null || true)" == 'root:control-center 660' ]]; then
+    exit 0
+  fi
+  sleep 0.25
+done
+echo "Control Center authentication socket is not ready: $SOCKET" >&2
+exit 1

@@ -1,7 +1,7 @@
 {
   "product": "Control Center",
   "release": "1.0.11",
-  "build": "20260820.1",
+  "build": "20260820.2",
   "channel": "production",
   "upgrade_from": ["1.0.10", "1.0.9", "clean install"],
   "database": {
@@ -12,6 +12,9 @@
     "local": true,
     "domain": true,
     "isolated_root_auth_daemon": true,
+    "auth_daemon_required_by_web": true,
+    "auth_socket_self_healing": true,
+    "auth_socket_path": "/run/control-center-auth/auth.sock",
     "root_portal_login": false,
     "clean_install_bootstrap_user": "controladmin",
     "clean_install_bootstrap_shell": "/usr/sbin/nologin",
@@ -89,6 +92,9 @@
     "local-domain-portal-authentication",
     "clean-install-controladmin-bootstrap",
     "isolated-auth-daemon",
+    "auth-daemon-required-by-web",
+    "auth-socket-self-healing",
+    "auth-runtime-directory-systemd",
     "rbac-bootstrap-schema",
     "kerberos",
     "ldap",
@@ -109,7 +115,11 @@
     "market-lifecycle-ui-hotfix"
   ],
   "notes": [
-    "Build 20260820.1 fixes the Market UI lifecycle regression where legacy refresh logic could replace Domain, DNS and Network Storage buttons with no-op handlers.",
+    "Build 20260820.2 repairs the observed post-update login failure where the Web UI remained available while /run/control-center-auth/auth.sock was absent.",
+    "The Web service now Requires control-center-authd and waits for a usable root:control-center 0660 Unix socket before starting.",
+    "control-center-authd now uses Restart=always, a managed runtime directory, and self-heals if the auth.sock pathname is removed while the daemon remains alive.",
+    "Installer acceptance deliberately stops authd, removes auth.sock, starts only the Web service, and verifies dependency recovery plus an unprivileged protocol probe.",
+    "Build 20260820.1 fixed the Market UI lifecycle regression where legacy refresh logic could replace Domain, DNS and Network Storage buttons with no-op handlers.",
     "Domain requires DNS and Network Storage. Missing dependencies are activated automatically during Domain provisioning.",
     "DNS and Network Storage may be installed independently without Domain.",
     "Standalone DNS and Storage state is preserved when transitioning into Domain mode and restored after guarded Domain removal.",
