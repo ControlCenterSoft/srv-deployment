@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Control Center read-only Platform API v1 baseline.
+"""Control Center read-only Web UI and Platform API v1 baseline.
 
 The initial service intentionally exposes only bounded, read-only endpoints.
 Privileged operations will be added later behind server-side RBAC and audit.
@@ -17,6 +17,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+try:
+    from .ui import UI_PATHS, render_ui
+except ImportError:  # Direct execution: python3 api/server.py
+    from ui import UI_PATHS, render_ui
 
 API_VERSION = 1
 SERVICE_NAME = "control-center-api"
@@ -128,6 +133,13 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         # strings cannot accidentally become a secret-bearing log channel.
         return
 
+    def _common_headers(self, correlation_id: str) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Correlation-ID", correlation_id)
+
     def _send_json(
         self,
         status: HTTPStatus,
@@ -141,11 +153,31 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Correlation-ID", correlation_id)
+        self._common_headers(correlation_id)
         if allow:
             self.send_header("Allow", allow)
+        self.end_headers()
+        if send_body:
+            self.wfile.write(body)
+
+    def _send_html(
+        self,
+        status: HTTPStatus,
+        document: str,
+        correlation_id: str,
+        *,
+        send_body: bool,
+    ) -> None:
+        body = document.encode("utf-8")
+        self.send_response(status.value)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
+            "form-action 'none'; frame-ancestors 'none'",
+        )
+        self._common_headers(correlation_id)
         self.end_headers()
         if send_body:
             self.wfile.write(body)
@@ -177,6 +209,28 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
     def _route(self, *, send_body: bool) -> None:
         correlation_id = normalize_correlation_id(self.headers.get("X-Correlation-ID"))
         path = urlsplit(self.path).path
+
+        if path in UI_PATHS:
+            try:
+                manifest = load_manifest(self.manifest_path)
+            except ManifestError:
+                self._send_html(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\">"
+                    "<title>Control Center недоступен</title>"
+                    "<body><h1>Control Center временно недоступен</h1>"
+                    "<p>Deployment metadata не прошли проверку readiness.</p></body></html>",
+                    correlation_id,
+                    send_body=send_body,
+                )
+                return
+            self._send_html(
+                HTTPStatus.OK,
+                render_ui(path, manifest),
+                correlation_id,
+                send_body=send_body,
+            )
+            return
 
         if path == "/api/v1/health":
             self._send_json(
@@ -263,7 +317,7 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         self._error(
             HTTPStatus.METHOD_NOT_ALLOWED,
             "method_not_allowed",
-            "Only GET and HEAD are allowed in the API v1 baseline",
+            "Only GET and HEAD are allowed in the current baseline",
             correlation_id,
             send_body=True,
             allow="GET, HEAD",
@@ -284,7 +338,7 @@ def make_handler(manifest_path: str | Path | None = None) -> type[ControlCenterR
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Control Center Platform API v1")
+    parser = argparse.ArgumentParser(description="Control Center Web UI and Platform API v1")
     parser.add_argument(
         "--host",
         default=os.environ.get("CONTROL_CENTER_API_HOST", DEFAULT_HOST),
