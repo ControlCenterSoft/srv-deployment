@@ -149,7 +149,7 @@ func TestSocketBoundaryEnforcesRequestSizeLimit(t *testing.T) {
 }
 
 func TestListenUnixRejectsOverPermissiveMode(t *testing.T) {
-	_, err := ListenUnix(filepath.Join(t.TempDir(), "worker.sock"), 0660)
+	_, err := ListenUnix(filepath.Join(t.TempDir(), "worker.sock"), 0666)
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("error=%v", err)
 	}
