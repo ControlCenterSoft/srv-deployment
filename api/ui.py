@@ -124,15 +124,17 @@ def render_ui(path: str, manifest: dict[str, Any]) -> str:
         "/system": _system,
     }
     body = pages[path](manifest)
-    nav = "".join(
-        f'<a href="{href}"{" aria-current=\"page\"" if active == href else ""}>{label}</a>'
-        for href, label in (
-            ("/overview", "Обзор"),
-            ("/market", "Маркет"),
-            ("/rbac", "RBAC"),
-            ("/system", "Система"),
-        )
-    )
+    nav_parts: list[str] = []
+    for href, label in (
+        ("/overview", "Обзор"),
+        ("/market", "Маркет"),
+        ("/rbac", "RBAC"),
+        ("/system", "Система"),
+    ):
+        current = ' aria-current="page"' if active == href else ""
+        nav_parts.append(f'<a href="{href}"{current}>{label}</a>')
+    nav = "".join(nav_parts)
+
     return f"""<!doctype html>
 <html lang="ru">
 <head>
