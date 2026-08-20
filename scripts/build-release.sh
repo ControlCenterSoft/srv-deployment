@@ -57,6 +57,8 @@ BUILT_AT=$BUILT_AT
 GO_VERSION=$RELEASE_GO_VERSION
 AMD64_SHA256=$(sha256sum "$ROOT/dist/control-center-linux-amd64" | awk '{print $1}')
 ARM64_SHA256=$(sha256sum "$ROOT/dist/control-center-linux-arm64" | awk '{print $1}')
+PRIVILEGED_WORKER_AMD64_SHA256=$(sha256sum "$ROOT/dist/control-center-privileged-worker-linux-amd64" | awk '{print $1}')
+PRIVILEGED_WORKER_ARM64_SHA256=$(sha256sum "$ROOT/dist/control-center-privileged-worker-linux-arm64" | awk '{print $1}')
 EOF
 chmod 0644 "$ROOT/dist/BUILDINFO.env"
 
