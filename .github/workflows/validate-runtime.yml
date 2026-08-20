@@ -6,64 +6,14 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  repair-samba-pty:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: release/1.0.11
-          fetch-depth: 0
-      - name: Repair completed interactive Samba provision handling once
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('system/control-center-samba-apply')
-          s=p.read_text()
-          if 'success_markers=[b\'Once the above files are installed' in s:
-              print('Samba PTY completion repair already present')
-              raise SystemExit(0)
-          old="sent=set();buf=b'';secret=password.encode();deadline=time.time()+240\ntry:\n while True:\n  if time.time()>deadline:\n   os.kill(pid,signal.SIGKILL);raise SystemExit('samba-tool interactive provision timeout')"
-          new="sent=set();buf=b'';secret=password.encode();deadline=time.time()+240\nsuccess_markers=[b'Once the above files are installed, your Samba AD server will be ready to use',b'Server Role:',b'DOMAIN SID:']\nsuccess_seen=False;success_deadline=None;forced_after_success=False\ntry:\n while True:\n  now=time.time()\n  if success_deadline is not None and now>success_deadline:\n   forced_after_success=True\n   try:os.kill(pid,signal.SIGTERM)\n   except ProcessLookupError:pass\n   time.sleep(1)\n   done,status=os.waitpid(pid,os.WNOHANG)\n   if done!=pid:\n    try:os.kill(pid,signal.SIGKILL)\n    except ProcessLookupError:pass\n   break\n  if now>deadline:\n   os.kill(pid,signal.SIGKILL);raise SystemExit('samba-tool interactive provision timeout')"
-          if old not in s: raise SystemExit('PTY deadline marker not found exactly once')
-          s=s.replace(old,new,1)
-          old2="   buf=(buf+chunk)[-8192:]\n   for key,marker,answer in prompts:\n    if key not in sent and marker in buf:\n     os.write(fd,answer.encode('utf-8')+b'\\n');sent.add(key);break"
-          new2="   buf=(buf+chunk)[-8192:]\n   for key,marker,answer in prompts:\n    if key not in sent and marker in buf:\n     os.write(fd,answer.encode('utf-8')+b'\\n');sent.add(key);break\n   if not success_seen and all(marker in buf for marker in success_markers):\n    success_seen=True;success_deadline=time.time()+10\n    try:os.write(fd,b'\\x04')\n    except OSError:pass"
-          if old2 not in s: raise SystemExit('PTY output marker not found exactly once')
-          s=s.replace(old2,new2,1)
-          old3="rc=os.waitstatus_to_exitcode(status)\nif rc!=0:raise SystemExit(rc)\nrequired={'realm','domain','role','dns','forwarder','password','retype'}\nif not required.issubset(sent):raise SystemExit('samba-tool interactive prompt contract incomplete: '+','.join(sorted(required-sent)))"
-          new3="rc=os.waitstatus_to_exitcode(status)\nif rc!=0 and not (success_seen and forced_after_success):raise SystemExit(rc)\nrequired={'realm','domain','role','dns','forwarder','password','retype'}\nif not required.issubset(sent):raise SystemExit('samba-tool interactive prompt contract incomplete: '+','.join(sorted(required-sent)))\nif not success_seen:raise SystemExit('samba-tool interactive provision success markers were not observed')\nfor artifact in ('/etc/samba/smb.conf','/var/lib/samba/private/krb5.conf','/var/lib/samba/private/sam.ldb'):\n if not os.path.isfile(artifact) or os.path.getsize(artifact)==0:raise SystemExit('samba-tool provision artifact missing: '+artifact)"
-          if old3 not in s: raise SystemExit('PTY result marker not found exactly once')
-          s=s.replace(old3,new3,1)
-          p.write_text(s)
-          PY
-          if git diff --quiet -- system/control-center-samba-apply; then
-            exit 0
-          fi
-          bash -n system/control-center-samba-apply
-          python3 - <<'PY'
-          from pathlib import Path
-          s=Path('system/control-center-samba-apply').read_text()
-          for x in ['success_markers=',"os.write(fd,b'\\x04')",'forced_after_success','samba-tool provision artifact missing']:
-              assert x in s,x
-          assert '--adminpass=' not in s
-          PY
-          rm -f .github/workflows/one-shot-fix-samba-pty.yml
-          git config user.name 'Control Center Release Bot'
-          git config user.email '40738562+filosoff31@users.noreply.github.com'
-          git add system/control-center-samba-apply .github/workflows/one-shot-fix-samba-pty.yml
-          git commit -m '1.0.11: accept completed Samba provision without PTY hang'
-          git push origin HEAD:release/1.0.11
-
   bootstrap-auth:
-    needs: repair-samba-pty
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -134,7 +84,6 @@ jobs:
           unset PASSWORD
 
   runtime:
-    needs: repair-samba-pty
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
