@@ -83,10 +83,15 @@ if command -v node >/dev/null 2>&1;then
  node --check "$ROOT/app/static/release-111.js" >/dev/null
  node --check "$ROOT/app/static/release-111-services.js" >/dev/null
  node --check "$ROOT/app/static/release-111-ui-fix.js" >/dev/null
+ node --check "$ROOT/app/static/release-111-market-hotfix.js" >/dev/null
  node --check "$ROOT/app/static/release-111-login.js" >/dev/null
  node --check "$ROOT/app/static/release-111-compliance.js" >/dev/null
  grep -Fq 'DHCP_CLIENTS_PAGE_SIZE_COMPLIANCE111 = 10' "$ROOT/app/static/release-111-compliance.js"
  grep -Fq "'release-111-compliance.js'" "$ROOT/app/release_111_services_assets.py"
+ grep -Fq "'release-111-market-hotfix.js'" "$ROOT/app/release_111_services_assets.py"
+ grep -Fq "market108 = marketServices111" "$ROOT/app/static/release-111-market-hotfix.js"
+ grep -Fq "market109 = marketServices111" "$ROOT/app/static/release-111-market-hotfix.js"
+ grep -Fq "service === 'domain'" "$ROOT/app/static/release-111-market-hotfix.js"
 fi
 
 test -z "$(dpkg --audit 2>&1||true)"
