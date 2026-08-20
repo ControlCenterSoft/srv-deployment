@@ -38,10 +38,10 @@ jobs:
           grep -nE '^(RC_|BETA_|PRIOR_RC_|BASE=|REPORT_|RESUME_|GO_VERSION|BACKEND_URL|PROXY_URL)' /tmp/v7.sh || true
           echo '=== FUNCTIONS ==='
           grep -nE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' /tmp/v7.sh || true
-          echo '=== PHASE / STEP LABELS ==='
-          grep -nE 'STEP=|log "|FINAL_STATUS|RC1 REAL-HOST|rc1-update-acceptance|diagnostics' /tmp/v7.sh || true
-          echo '=== CURRENT VERSION CHECKS ==='
-          grep -nE 'current_version|current_commit|BETA_VERSION|RC_VERSION|PRIOR_RC_COMMIT' /tmp/v7.sh || true
+          echo '=== RECOVERY AND INITIAL PHASE ==='
+          sed -n '510,625p' /tmp/v7.sh
+          echo '=== CONTINUE AND RESUME PHASES ==='
+          sed -n '625,790p' /tmp/v7.sh
       - name: Publish inspection result
         if: always()
         env:
