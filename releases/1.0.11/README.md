@@ -1,6 +1,6 @@
 # Control Center 1.0.11
 
-Build **20260820.1**. Статус: **production hotfix candidate**.
+Build **20260820.2**. Статус: **production hotfix candidate**.
 
 ## Состав релиза
 
@@ -15,7 +15,8 @@ Build **20260820.1**. Статус: **production hotfix candidate**.
 9. DNS/Storage выполняют cleanup-audit при удалении; Storage сохраняет пользовательские файлы.
 10. DHCP показывает clients и управляет IP reservations.
 11. Migration **005** создаёт RBAC bootstrap, service dependencies, DHCP reservations и cleanup history.
-12. Build **20260820.1** исправляет Market UI regression: legacy refresh больше не может подменить действия Домена, DNS и Сетевого хранилища no-op обработчиками.
+12. Build **20260820.1** исправил Market UI regression: legacy refresh больше не может подменить действия Домена, DNS и Сетевого хранилища no-op обработчиками.
+13. Build **20260820.2** устраняет post-update отказ входа при отсутствии `/run/control-center-auth/auth.sock`: Web теперь требует `control-center-authd`, ожидает готовый socket, а daemon восстанавливает socket автоматически.
 
 ## Domain wizard
 
@@ -46,6 +47,8 @@ sudo control-center-samba-approve --remove
 ## Portal authentication
 
 Local identities проверяются PAM, Domain identities — Samba `ntlm_auth`. Проверка выполняется `control-center-authd`; Web process остаётся непривилегированным.
+
+В build **20260820.2** `control-center.service` имеет обязательную dependency на `control-center-authd.service`. Auth daemon работает с `Restart=always`, systemd-managed runtime directory и самостоятельно пересоздаёт `auth.sock`, если pathname socket исчез при живом процессе. Installer проверяет recovery path: останавливает Web/authd, удаляет socket, запускает только Web и подтверждает автоматический запуск authd и доступность socket для пользователя `control-center`.
 
 Root через Web запрещён. Bootstrap roles: `admin`, `viewer`. Domain group `Control Center Admins` даёт `admin`. Migration 005 уже содержит schema для будущего granular RBAC.
 
