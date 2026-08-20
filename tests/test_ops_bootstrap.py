@@ -14,12 +14,12 @@ class OpsBootstrapTests(unittest.TestCase):
     def test_private_source_is_pinned_to_exact_commit(self):
         match = re.search(r'^DIAG_COMMIT="([0-9a-f]{40})"$', self.text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual("37835def4f8943c8c3d0c58b4214095296eec9d3", match.group(1))
+        self.assertEqual("82a9ce8a3858512770c56dd09855d464fade7d93", match.group(1))
 
     def test_all_bootstrap_files_have_exact_pinned_git_blob_ids(self):
         expected = {
             "agent/ccops_agent_v2.py": "8ee6a3001016e1f127cb6050b77a80eee186823c",
-            "agent/ccops_agent_v3.py": "0f167133ecb581c1de19b6336263239af6e4765d",
+            "agent/ccops_agent_v3.py": "049cfc3be85a9ee6ad40e4cf23ff7b9adf34101e",
             "agent/ccops_broker.py": "dcbeb90b5e78e2c77545a2a56468cd86e8a7327e",
             "agent/ccops_socket_broker.py": "59ff293d449f09ffbd29dde552da847f1c967b20",
             "install/install-ops-v3.sh": "4ea9a38fb51e7e4422f0649aa33da82b35f08394",
