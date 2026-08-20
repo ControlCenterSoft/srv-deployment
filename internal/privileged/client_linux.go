@@ -61,11 +61,17 @@ func (c SocketClient) Execute(ctx context.Context, req Request) (Result, error) 
 	if response.Version != ProtocolVersion {
 		return result, &RemoteError{Code: ErrorCodeProtocol, Message: "unsupported response protocol version"}
 	}
+	if response.Error != nil {
+		if response.Result.ID != "" && response.Result.ID != req.ID {
+			return result, &RemoteError{Code: ErrorCodeProtocol, Message: "error response id mismatch"}
+		}
+		if response.Result.Type != "" && response.Result.Type != req.Type {
+			return result, &RemoteError{Code: ErrorCodeProtocol, Message: "error response type mismatch"}
+		}
+		return response.Result, &RemoteError{Code: response.Error.Code, Message: response.Error.Message}
+	}
 	if response.Result.ID != req.ID || response.Result.Type != req.Type {
 		return result, &RemoteError{Code: ErrorCodeProtocol, Message: "response identity mismatch"}
-	}
-	if response.Error != nil {
-		return response.Result, &RemoteError{Code: response.Error.Code, Message: response.Error.Message}
 	}
 	return response.Result, nil
 }
