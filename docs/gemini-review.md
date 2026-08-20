@@ -10,7 +10,7 @@ Required repository secret:
 
 Optional repository variables:
 
-- `GEMINI_MODEL` — model name. Default: `gemini-3.6-flash`.
+- `GEMINI_MODEL` — model name. Default: `gemini-3.7-flash`.
 - `GEMINI_GATE_LEVEL` — minimum severity that fails the review check. Default: `NONE` (advisory-only). Accepted values: `BLOCKER`, `HIGH`, `MEDIUM`, `LOW`, `NONE`.
 
 Do not commit the API key to the repository, deployment manifest, server configuration, workflow YAML, issue, or pull request.
@@ -27,7 +27,9 @@ For pull requests it:
 4. Requests a structured review with `BLOCKER`, `HIGH`, `MEDIUM`, and `LOW` severities.
 5. Updates one persistent PR comment rather than creating a new comment on every synchronization.
 6. Runs advisory-only by default because AI severity classification can contain false positives.
-7. Optionally fails the check when a finding meets or exceeds an explicitly configured `GEMINI_GATE_LEVEL`.
+7. Retries transient Gemini API failures (`408`, `429`, and `5xx`) with bounded exponential backoff and jitter.
+8. If Gemini remains unavailable while the gate is `NONE`, records `UNAVAILABLE` without failing otherwise healthy baseline CI.
+9. Optionally fails the check when a finding meets or exceeds an explicitly configured `GEMINI_GATE_LEVEL`.
 
 For pushes to `main`, the same result is written to the GitHub Actions job summary. The optional severity gate is enforced only when `GEMINI_GATE_LEVEL` is set to a blocking level.
 
@@ -36,6 +38,8 @@ For pushes to `main`, the same result is written to the GitHub Actions job summa
 Gemini findings are evidence, not authority. A finding should be validated against repository code, runtime behavior, CI results, or authoritative external documentation before remediation or release blocking.
 
 The reviewer prompt explicitly instructs Gemini not to claim that packages, models, dependencies, or GitHub Action versions do not exist solely from model memory. This prevents stale model knowledge from being treated as release evidence.
+
+Baseline CI remains authoritative for deterministic syntax, unit, contract, metadata, and smoke-test results. External Gemini availability never overrides those deterministic checks in advisory mode.
 
 ## Security boundaries
 
