@@ -54,7 +54,7 @@ jobs:
       - name: Build exact orchestrator
         id: build
         run: |
-          STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-v1.sh bash /tmp/launcher.sh
+          sudo env STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-v1.sh bash /tmp/launcher.sh
           bash -n /tmp/stable-v1.sh
           sha="$(sha256sum /tmp/stable-v1.sh | awk '{print $1}')"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
