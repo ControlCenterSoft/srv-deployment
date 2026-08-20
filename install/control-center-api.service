@@ -9,7 +9,7 @@ Group=control-center
 WorkingDirectory=/opt/control-center/current
 Environment=PYTHONUNBUFFERED=1
 Environment=CONTROL_CENTER_STATE_DB=/var/lib/control-center/state.db
-ExecStart=/usr/bin/python3 /opt/control-center/current/api/server.py --host 127.0.0.1 --port 8876
+ExecStart=/usr/bin/python3 /opt/control-center/current/api/entrypoint.py --host 127.0.0.1 --port 8876
 Restart=on-failure
 RestartSec=2s
 TimeoutStartSec=30s
