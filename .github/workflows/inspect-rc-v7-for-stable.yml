@@ -1,0 +1,33 @@
+name: inspect-rc-v7-for-stable
+
+on:
+  push:
+    branches: ["ops/1.0.0-stable-real-host-v1"]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Materialize immutable accepted RC v7 orchestrator
+        run: |
+          set -Eeuo pipefail
+          url='https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/fe579e3f38e18bf1fc56a93699489b762206427d/ops/rc1-real-host-acceptance-v7/run-verified.sh'
+          curl -fsSL "$url" -o /tmp/v7-launcher.sh
+          chmod 0700 /tmp/v7-launcher.sh
+          RC1_V7_BUILD_ONLY=1 OUTPUT_V7=/tmp/v7.sh bash /tmp/v7-launcher.sh
+          printf 'V7_SHA256='; sha256sum /tmp/v7.sh | awk '{print $1}'
+          bash -n /tmp/v7.sh
+      - name: Inspect stable transformation anchors
+        run: |
+          set -Eeuo pipefail
+          echo '=== CONSTANTS ==='
+          grep -nE '^(RC_|BETA_|PRIOR_RC_|BASE=|REPORT_|RESUME_|GO_VERSION|BACKEND_URL|PROXY_URL)' /tmp/v7.sh || true
+          echo '=== FUNCTIONS ==='
+          grep -nE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' /tmp/v7.sh || true
+          echo '=== PHASE / STEP LABELS ==='
+          grep -nE 'STEP=|log "|FINAL_STATUS|RC1 REAL-HOST|rc1-update-acceptance|diagnostics' /tmp/v7.sh || true
+          echo '=== CURRENT VERSION CHECKS ==='
+          grep -nE 'current_version|current_commit|BETA_VERSION|RC_VERSION|PRIOR_RC_COMMIT' /tmp/v7.sh || true
