@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "product": "control-center",
-  "updated_at": "2026-08-20T19:56:00Z",
+  "updated_at": "2026-08-20T21:14:00Z",
   "release": {
     "version": "1.0.0",
     "channel": "stable",
@@ -19,7 +19,7 @@
     ],
     "known_limitations_ru": [
       "Безопасный стандартный режим сервиса остаётся loopback-only; внешний ingress настраивается отдельно",
-      "Android Client, Android Admin и Android SDK продолжают независимую линию разработки 0.1.0",
+      "Android Client, Android Admin и Android SDK синхронизированы с API Control Center 1.0.0 в линии 0.2.0-dev.1; production acceptance на реальном внешнем HTTPS ingress ещё не выполнен",
       "Расширенный Маркет и прикладные модули относятся к последующим релизам"
     ],
     "source_commit": "1b364ae88789696bf98537d21544de8a259d086d",
@@ -89,19 +89,19 @@
       "platform_range": ">=1.0.0 <2.0.0"
     },
     "android_client": {
-      "version": "0.1.0",
+      "version": "0.2.0-dev.1",
       "status": "development",
       "api_major": 1,
       "platform_range": ">=1.0.0 <2.0.0"
     },
     "android_admin": {
-      "version": "0.1.0",
+      "version": "0.2.0-dev.1",
       "status": "development",
       "api_major": 1,
       "platform_range": ">=1.0.0 <2.0.0"
     },
     "android_sdk": {
-      "version": "0.1.0",
+      "version": "0.2.0-dev.1",
       "status": "development",
       "api_major": 1,
       "platform_range": ">=1.0.0 <2.0.0"
