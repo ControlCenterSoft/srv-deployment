@@ -46,9 +46,16 @@ class ApiServerMixin:
         response = conn.getresponse()
         body = response.read()
         result_headers = {k.lower(): v for k, v in response.getheaders()}
+        status = response.status
         conn.close()
-        payload = json.loads(body.decode("utf-8")) if body else None
-        return response.status, result_headers, payload
+        content_type = result_headers.get("content-type", "")
+        if not body:
+            payload = None
+        elif content_type.startswith("application/json"):
+            payload = json.loads(body.decode("utf-8"))
+        else:
+            payload = body.decode("utf-8")
+        return status, result_headers, payload
 
 
 class ManifestTests(unittest.TestCase):
@@ -83,6 +90,7 @@ class ApiTests(ApiServerMixin, unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["api_version"], 1)
         self.assertEqual(headers["cache-control"], "no-store")
+        self.assertEqual(headers["x-frame-options"], "DENY")
         self.assertIn("x-correlation-id", headers)
 
     def test_readiness(self) -> None:
@@ -126,6 +134,29 @@ class ApiTests(ApiServerMixin, unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIsNone(payload)
 
+    def test_web_ui_shell_contains_canonical_navigation(self) -> None:
+        status, headers, body = self.request("GET", "/overview")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["content-type"].startswith("text/html"))
+        self.assertEqual(headers["x-frame-options"], "DENY")
+        self.assertIn("default-src 'none'", headers["content-security-policy"])
+        for label in ("Обзор", "Маркет", "RBAC", "Система"):
+            self.assertIn(label, body)
+        self.assertNotIn("<script", body.lower())
+        self.assertNotIn("<form", body.lower())
+
+    def test_all_web_ui_routes_are_read_only_pages(self) -> None:
+        for path in ("/", "/overview", "/market", "/rbac", "/system"):
+            with self.subTest(path=path):
+                status, _, body = self.request("GET", path)
+                self.assertEqual(status, 200)
+                self.assertIn("Control Center", body)
+
+    def test_ui_head_has_no_body(self) -> None:
+        status, _, payload = self.request("HEAD", "/system")
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload)
+
 
 class NotReadyTests(ApiServerMixin, unittest.TestCase):
     def setUp(self) -> None:
@@ -147,6 +178,13 @@ class NotReadyTests(ApiServerMixin, unittest.TestCase):
         status, _, payload = self.request("GET", "/api/v1/version")
         self.assertEqual(status, 503)
         self.assertEqual(payload["error"]["code"], "service_not_ready")
+
+    def test_web_ui_fails_closed(self) -> None:
+        status, headers, body = self.request("GET", "/overview")
+        self.assertEqual(status, 503)
+        self.assertTrue(headers["content-type"].startswith("text/html"))
+        self.assertIn("временно недоступен", body)
+        self.assertNotIn("<script", body.lower())
 
 
 if __name__ == "__main__":
