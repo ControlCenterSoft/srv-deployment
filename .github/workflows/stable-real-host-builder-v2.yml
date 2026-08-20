@@ -26,9 +26,9 @@ jobs:
           actual="$({ printf 'blob %s\0' "$size"; cat /tmp/rc-v7-launcher.sh; } | sha1sum | awk '{print $1}')"
           test "$actual" = "$RC_V7_BLOB_SHA1"
           sudo env RC1_V7_BUILD_ONLY=1 OUTPUT_V7=/tmp/rc-v7.sh bash /tmp/rc-v7-launcher.sh
-          bash -n /tmp/rc-v7.sh
+          sudo bash -n /tmp/rc-v7.sh
           echo '=== RC V7 UPDATE ACCEPTANCE ANCHORS ==='
-          grep -n -C 2 'rc1-update-acceptance.sh' /tmp/rc-v7.sh
+          sudo grep -n -C 2 'rc1-update-acceptance.sh' /tmp/rc-v7.sh
       - name: Publish inspection status
         if: always()
         env:
