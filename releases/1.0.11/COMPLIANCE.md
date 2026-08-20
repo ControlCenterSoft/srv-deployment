@@ -1,26 +1,26 @@
 # Control Center 1.0.11 — Documentation Compliance Matrix
 
 Release: **1.0.11**  
-Build: **20260819.5**  
+Build: **20260820.1**  
 Source of truth: `README.md` + `docs/*.md` + `releases/1.0.11/manifest.json`.
 
 `deployment.json.audit` MUST remain `pending` until every runtime-required row below is proven by the final commit's CI run.
 
 | Requirement | Source document | Implementation evidence | Acceptance evidence | Gate |
 |---|---|---|---|---|
-| Version/build are 1.0.11 / 20260819.5 | README, INSTALL | `app/release.json`, VERSION/BUILD install flow | static release CI + runtime version check | required |
+| Version/build are 1.0.11 / 20260820.1 | README, INSTALL | `app/release.json`, VERSION/BUILD install flow | static release CI + runtime version check | required |
 | PostgreSQL schema migration 005 | README, POSTGRESQL | `app/migrations/005_rbac_services_dhcp.sql` | schema/table/dependency checks | required |
 | Portal requires authentication | AUTHENTICATION, SECURITY | `app/release_111_auth.py` | unauthenticated `/api/market` = 401 | required |
 | Local authentication uses PAM via isolated root daemon | AUTHENTICATION, SECURITY | `system/control-center-authd`, `/etc/pam.d/control-center-web` | real local admin/viewer login | required |
 | Web process cannot read shadow / privileged auth state | AUTHENTICATION, SECURITY | systemd sandbox + auth Unix socket | socket ownership + secret-boundary checks | required |
-| Clean server gets `controladmin` nologin account | AUTHENTICATION, INSTALL | `install/install.sh` | `bootstrap-auth` runtime job | required |
-| Clean-install password is random, shown once, not persisted plaintext | AUTHENTICATION, INSTALL, SECURITY | `install/install.sh` | masked runtime login + filesystem secret scan | required |
+| Clean server gets `controladmin` nologin account | AUTHENTICATION, INSTALL | `install/install.sh` + preserved production installer | `bootstrap-auth` runtime job | required |
+| Clean-install password is random, shown once, not persisted plaintext | AUTHENTICATION, INSTALL, SECURITY | preserved production installer | masked runtime login + filesystem secret scan | required |
 | Domain authentication is enabled after AD activation | AUTHENTICATION, README | `control-center-authd`, `release_111_auth.py` | real domain admin/viewer login | required |
 | Bootstrap portal roles are admin/viewer | AUTHENTICATION | migration 005 + auth layer | local/domain authorization checks | required |
 | Domain group `Control Center Admins` is mandatory | AUTHENTICATION, SAMBA-AD-DC | `system/control-center-domain-post` | membership `Administrator` and domain test admin | required |
-| Market exposes Domain | README | `app/release_111_services.py` | Market/API test | required |
-| Market exposes standalone DNS | README | `market/control-center-dns-apply` | real Unbound install/config | required |
-| Market exposes standalone Network Storage | README | `market/control-center-storage-apply` | real Samba standalone install | required |
+| Market exposes Domain | README | `app/release_111_services.py` + `release-111-market-hotfix.js` | Market/API/UI contract test | required |
+| Market exposes standalone DNS | README | `market/control-center-dns-apply` + Market hotfix | real Unbound install/config | required |
+| Market exposes standalone Network Storage | README | `market/control-center-storage-apply` + Market hotfix | real Samba standalone install | required |
 | Domain requires DNS and Storage | README, SAMBA-AD-DC | service dependency schema/orchestrator | readiness dependency plan | required |
 | Existing standalone DNS/Storage transition into Domain mode | README, SAMBA-AD-DC | domain pre/post context | runtime standalone → Domain transition | required |
 | Existing standalone DNS/Storage return after Domain removal | README, SAMBA-AD-DC | `control-center-domain-restore-prestate` | runtime Domain removal restore | required |
@@ -56,7 +56,7 @@ Source of truth: `README.md` + `docs/*.md` + `releases/1.0.11/manifest.json`.
 
 ## Release completion rule
 
-Release 1.0.11 can be marked fully compliant only when the **same final branch head** has:
+Release 1.0.11 build 20260820.1 can be marked fully compliant only when the **same final branch head** has:
 
 ```text
 Validate Control Center release  = success
