@@ -1,77 +1,84 @@
 # Control Center
 
-Baseline: **1.0.0**
+Базовая линия: **1.0.0**
 
-This repository is the clean implementation line for the new Control Center product. Previous implementation, release history and architecture are not inherited unless explicitly re-adopted.
+Язык проектной документации: **русский**. Технические идентификаторы, имена API, путей, команд и стандартов сохраняются в исходном виде.
 
-## Current implementation
+Этот репозиторий является чистой линией реализации нового продукта Control Center. Предыдущая реализация, история релизов и архитектура не наследуются, если они не приняты заново отдельным решением.
 
-### Web UI shell
-The local server console is now available as a server-rendered, read-only shell:
+## Текущая реализация
+
+### Каркас Web UI
+
+Локальная серверная консоль уже доступна как server-rendered интерфейс только для чтения:
 
 - `/overview` — **Обзор**
 - `/market` — **Маркет**
 - `/rbac` — **RBAC**
 - `/system` — **Система**
-- `/` maps to the overview shell
+- `/` открывает раздел «Обзор»
 
-The current UI intentionally contains no JavaScript, forms or privileged actions. It reads the same validated `deployment.json` as Platform API v1, escapes manifest data before HTML output, uses CSP/frame protections and fails closed with HTTP 503 if release metadata is invalid.
+Текущий интерфейс намеренно не содержит JavaScript, форм и привилегированных действий. Он читает тот же проверенный `deployment.json`, что и Platform API v1, экранирует данные manifest перед выводом в HTML, использует CSP и защиту от встраивания во frame и переходит в безопасный fail-closed режим с HTTP 503, если метаданные релиза повреждены или недоступны.
 
-Privileged controls will be introduced only after the reachable login/session flow, CSRF/origin policy and persistent audit path are implemented and tested.
+Привилегированные элементы управления будут добавлены только после реализации и проверки доступного login/session flow, политики CSRF/origin и постоянного audit-контура.
 
-### RBAC / session security foundation
-Security primitives are implemented and tested before any login endpoint becomes reachable:
+### Основа безопасности RBAC и сессий
 
-- server-side roles `viewer` and `admin`
-- stable permission policy and fail-closed `require_permission`
-- scrypt password hashing with bounded parameters
-- cryptographically random session tokens; only SHA-256 token digests are intended for storage
-- `__Host-cc_session` cookie contract with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute
-- bounded audit envelope with recursive redaction of password/token/cookie/API-key fields
+Примитивы безопасности реализуются и тестируются до того, как какой-либо endpoint входа станет доступен извне:
 
-This is a **foundation**, not a completed authentication system. Reachable login/logout endpoints, CSRF/origin checks, rate limits and privileged authorization are not enabled yet.
+- server-side роли `viewer` и `admin`;
+- стабильная permission policy и fail-closed проверка `require_permission`;
+- хеширование паролей через scrypt с ограниченными параметрами;
+- криптографически случайные session tokens; для хранения предназначены только SHA-256 digest;
+- cookie-контракт `__Host-cc_session` с `Secure`, `HttpOnly`, `SameSite=Strict` и без атрибута Domain;
+- ограниченный audit envelope с рекурсивной маскировкой полей password/token/cookie/API-key.
 
-### State/configuration store schema v1
-The service now has a SQLite state foundation under `/var/lib/control-center/state.db` in production:
+Это **основа**, а не завершённая система аутентификации. Доступные login/logout endpoints, проверки CSRF/origin, rate limits и привилегированная авторизация пока не включены.
 
-- explicit schema migration table; only forward migration is allowed
-- startup refuses a database with a newer unsupported schema
-- local `accounts` table stores approved password hashes, not plaintext credentials
-- `sessions` accepts only SHA-256 token digests, never raw session tokens
-- ordinary `settings` rejects secret-like keys; secrets require a separate future store
-- `audit_events` persists bounded, redacted audit details
-- the systemd unit grants the unprivileged service only `StateDirectory=control-center` while keeping `ProtectSystem=strict`
-- the service entrypoint migrates/verifies state before starting HTTP
+### Хранилище состояния и конфигурации — schema v1
+
+Сервис имеет базовое SQLite-хранилище состояния по пути `/var/lib/control-center/state.db` в production:
+
+- отдельная таблица миграций схемы; разрешены только миграции вперёд;
+- запуск блокируется, если база использует более новую неподдерживаемую схему;
+- локальная таблица `accounts` хранит утверждённые хеши паролей, а не открытые учётные данные;
+- `sessions` принимает только SHA-256 digest токенов, но не исходные session tokens;
+- обычное хранилище `settings` запрещает secret-like ключи; секреты будут храниться отдельным механизмом;
+- `audit_events` хранит ограниченные и очищенные audit details;
+- systemd unit предоставляет непривилегированному сервису только `StateDirectory=control-center`, сохраняя `ProtectSystem=strict`;
+- entrypoint сервиса выполняет миграцию и проверку state до запуска HTTP.
 
 ### Platform API v1
-The first server contour is intentionally read-only and dependency-free:
+
+Первый серверный API-контур намеренно работает только на чтение и не требует внешних Python-зависимостей:
 
 - `GET /api/v1/health`
 - `GET /api/v1/readiness`
 - `GET /api/v1/version`
 - `GET /api/v1/release`
-- `HEAD` is supported for the same endpoints
-- all write methods are rejected in this baseline
-- every response carries `X-Correlation-ID`
-- deployment metadata fails closed when invalid
-- the service binds to `127.0.0.1:8876` by default
+- для тех же endpoint поддерживается `HEAD`;
+- все write-методы в текущей базовой линии отклоняются;
+- каждый ответ содержит `X-Correlation-ID`;
+- при некорректных deployment metadata сервис работает в fail-closed режиме;
+- по умолчанию сервис слушает только `127.0.0.1:8876`.
 
-The API process contains no root execution path and does not expose arbitrary commands.
+API-процесс не содержит пути выполнения команд от root и не предоставляет произвольное выполнение команд.
 
-### Installer foundation
-`install/install.sh` provides:
+### Основа установщика
 
-- host preflight
-- atomic release staging under `/opt/control-center/releases/`
-- `current` / `previous` release links
-- hardened `control-center-api.service`
-- dedicated unprivileged `control-center` system user
-- post-switch readiness verification
-- automatic restoration after a failed switch
-- explicit rollback to the previous healthy release
-- Web UI, API, security and state foundation installed as one versioned release payload
+`install/install.sh` реализует:
 
-Commands from a complete checkout:
+- preflight-проверку системы;
+- атомарную подготовку релизов в `/opt/control-center/releases/`;
+- ссылки `current` / `previous`;
+- усиленный `control-center-api.service`;
+- отдельного непривилегированного системного пользователя `control-center`;
+- readiness-проверку после переключения;
+- автоматическое восстановление после неудачного переключения;
+- явный rollback на предыдущий рабочий релиз;
+- установку Web UI, API, security foundation и state foundation как единого версионированного payload.
+
+Команды из полного checkout:
 
 ```bash
 bash install/install.sh --preflight
@@ -80,35 +87,38 @@ bash install/install.sh --repair
 bash install/install.sh --rollback
 ```
 
-The installer must run as root for install/repair/rollback because it manages the system user, `/opt/control-center`, systemd and atomic release links.
+Для install/repair/rollback установщик должен запускаться от root, поскольку он управляет системным пользователем, `/opt/control-center`, systemd и атомарными ссылками релизов.
 
-## Release metadata
-`deployment.json` is the canonical machine-readable product state consumed by the public website, local Web UI and Platform API. A feature or client must not be presented as released unless its release metadata and acceptance evidence say so.
+## Метаданные релиза
 
-## Parallel clients
-Current independent development trains:
+`deployment.json` — канонический машиночитаемый источник состояния продукта для публичного сайта, локального Web UI и Platform API. Функция или клиент не должны отображаться как выпущенные, пока это не подтверждено release metadata и acceptance evidence.
 
-- Website — release-aware public portal
-- Android Client — `0.1.0`
-- Android Admin — `0.1.0`
-- Android SDK — `0.1.0`, shared API v1 models/contracts and bounded GET transport
+## Параллельные клиенты
 
-All privileged authorization remains server-side; client UI visibility is never treated as an authorization boundary.
+Текущие независимые линии разработки:
 
-## Quality gate
-GitHub Actions validates:
+- Website — публичный портал, отображающий фактическое состояние релиза;
+- Android Client — `0.1.0`;
+- Android Admin — `0.1.0`;
+- Android SDK — `0.1.0`, общие модели и контракты API v1, а также ограниченный GET transport.
 
-- Python syntax
-- shell syntax
-- deployment manifest schema
-- API unit/contract tests
-- Web UI navigation/security/fail-closed tests
-- RBAC permission boundaries
-- password/session security primitives
-- audit secret redaction
-- SQLite schema migration/accounts/sessions/settings/audit invariants
-- live service entrypoint with temporary schema-v1 database
-- live Web UI/API smoke tests
-- negative write-method behavior
+Вся привилегированная авторизация остаётся на стороне сервера; видимость элементов интерфейса на клиенте никогда не считается границей авторизации.
 
-The CI result is recorded in `ops/ci-status.json` for machine-readable release gating.
+## Контроль качества
+
+GitHub Actions проверяет:
+
+- синтаксис Python;
+- синтаксис shell-скриптов;
+- схему deployment manifest;
+- unit/contract tests API;
+- навигацию, безопасность и fail-closed поведение Web UI;
+- границы RBAC permissions;
+- password/session security primitives;
+- маскировку секретов в audit;
+- инварианты SQLite schema migrations, accounts, sessions, settings и audit;
+- реальный entrypoint сервиса с временной базой schema v1;
+- smoke tests Web UI и API;
+- негативные сценарии write-методов.
+
+Результат CI записывается в `ops/ci-status.json` и используется как машиночитаемое evidence для release gating.
