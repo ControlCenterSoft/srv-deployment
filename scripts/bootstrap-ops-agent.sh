@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 DIAG_REPO="ControlCenterSoft/control-center-server-diagnostics"
-DIAG_COMMIT="82a9ce8a3858512770c56dd09855d464fade7d93"
+DIAG_COMMIT="2ea76c60cc6ce80a0594867004c32669f5f3944e"
 TOKEN_FILE="/etc/control-center-diagnostics-agent/github-token"
 CONFIG_FILE="/etc/control-center-diagnostics-agent/agent.conf"
 AGENT_STATE_BRANCH="agent-state"
@@ -49,17 +49,17 @@ if not token:
 
 files = {
     "agent/ccops_agent_v2.py": ("agent/ccops_agent_v2.py", "8ee6a3001016e1f127cb6050b77a80eee186823c"),
-    "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "049cfc3be85a9ee6ad40e4cf23ff7b9adf34101e"),
+    "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "00fbfdde35425b97d46015b5794a38e3343dabc7"),
     "agent/ccops_broker.py": ("agent/ccops_broker.py", "dcbeb90b5e78e2c77545a2a56468cd86e8a7327e"),
-    "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "59ff293d449f09ffbd29dde552da847f1c967b20"),
-    "install/install-ops-v3.sh": ("install/install-ops-v3.sh", "4ea9a38fb51e7e4422f0649aa33da82b35f08394"),
+    "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "d2245532af47b5ef12fcfc0a0cf1e88a9ff9a1dc"),
+    "install/install-ops-v3.sh": ("install/install-ops-v3.sh", "4c82ab9c86ab2f1c9651de41e20934ef340672c4"),
 }
 
 owner, name = repo.split("/", 1)
 headers = {
     "Accept": "application/vnd.github+json",
     "Authorization": f"Bearer {token}",
-    "User-Agent": "control-center-ops-bootstrap/1.1.2",
+    "User-Agent": "control-center-ops-bootstrap/1.1.3",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
@@ -120,7 +120,7 @@ token=pathlib.Path(token_file).read_text(encoding='utf-8').strip()
 req=urllib.request.Request(url, headers={
     'Accept':'application/vnd.github+json',
     'Authorization':f'Bearer {token}',
-    'User-Agent':'control-center-ops-bootstrap/1.1.2',
+    'User-Agent':'control-center-ops-bootstrap/1.1.3',
     'X-GitHub-Api-Version':'2022-11-28',
 })
 with urllib.request.urlopen(req, timeout=20) as response:
@@ -128,7 +128,7 @@ with urllib.request.urlopen(req, timeout=20) as response:
 payload=json.loads(base64.b64decode(wrapper['content']).decode('utf-8'))
 assert payload.get('schema') == 1
 assert payload.get('server_id') == server_id
-assert payload.get('agent_version') == '1.1.2'
+assert payload.get('agent_version') == '1.1.3'
 assert payload.get('arbitrary_shell') is False
 assert payload.get('privilege_boundary') == 'unix-so-peercred-root-broker'
 assert payload.get('sudo_required') is False
@@ -136,7 +136,7 @@ PY
 
 printf 'CONTROL_CENTER_OPS_BOOTSTRAP=PASSED\n'
 printf 'DIAGNOSTICS_SOURCE_COMMIT=%s\n' "$DIAG_COMMIT"
-printf 'OPS_AGENT_VERSION=1.1.2\n'
+printf 'OPS_AGENT_VERSION=1.1.3\n'
 printf 'TOKEN_REUSED=existing-diagnostics-token\n'
 printf 'ROOT_BOUNDARY=unix-so-peercred-root-broker\n'
 printf 'SUDO_REQUIRED=false\n'
