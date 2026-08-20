@@ -3,12 +3,11 @@ name: Remote Agent Bootstrap Probe
 on:
   push:
     branches: [ops/remote-agent-bootstrap]
-  pull_request:
-    branches: [1.1.x]
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   probe:
@@ -20,39 +19,46 @@ jobs:
       STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
       STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
       STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Validate staging configuration
+      - name: Probe trusted staging channel
+        id: probe
         shell: bash
         run: |
           set -Eeuo pipefail
+          result="$RUNNER_TEMP/remote-agent-probe.txt"
+          missing=()
           for name in STAGING_HOST STAGING_USER STAGING_SSH_KEY STAGING_KNOWN_HOSTS; do
-            [[ -n "${!name}" ]] || { echo "missing $name" >&2; exit 1; }
+            [[ -n "${!name}" ]] || missing+=("$name")
           done
-      - name: Configure pinned SSH
-        shell: bash
-        run: |
-          set -Eeuo pipefail
+          if ((${#missing[@]})); then
+            {
+              echo 'REMOTE_AGENT_PROBE_CONFIGURED=no'
+              printf 'MISSING=%s\n' "${missing[*]}"
+            } | tee "$result"
+            exit 0
+          fi
+
           install -d -m 0700 "$HOME/.ssh"
           printf '%s\n' "$STAGING_SSH_KEY" > "$HOME/.ssh/id_staging"
           chmod 0600 "$HOME/.ssh/id_staging"
           printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 0600 "$HOME/.ssh/known_hosts"
-      - name: Probe server privileges and agents
-        shell: bash
-        run: |
-          set -Eeuo pipefail
           port="${STAGING_PORT:-22}"
-          ssh \
-            -i "$HOME/.ssh/id_staging" \
-            -p "$port" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" \
-            -o ConnectTimeout=10 \
-            "$STAGING_USER@$STAGING_HOST" 'bash -s' <<'REMOTE'
+
+          {
+            echo 'REMOTE_AGENT_PROBE_CONFIGURED=yes'
+            ssh \
+              -i "$HOME/.ssh/id_staging" \
+              -p "$port" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" \
+              -o ConnectTimeout=10 \
+              "$STAGING_USER@$STAGING_HOST" 'bash -s' <<'REMOTE'
           set -u
-          echo 'REMOTE_AGENT_PROBE_V1'
+          echo 'REMOTE_AGENT_PROBE_V2'
           printf 'IDENTITY='; id
           if sudo -n true >/dev/null 2>&1; then echo 'SUDO_ALL=yes'; else echo 'SUDO_ALL=no'; fi
           echo 'SUDO_RULES_BEGIN'
@@ -73,3 +79,24 @@ jobs:
           [[ -r /etc/control-center-diagnostics-agent/github-token ]] && echo 'DIAG_TOKEN_READABLE_BY_STAGING=yes' || echo 'DIAG_TOKEN_READABLE_BY_STAGING=no'
           echo 'REMOTE_AGENT_PROBE_DONE'
           REMOTE
+          } | tee "$result"
+
+      - name: Publish sanitized probe to PR
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          result="$RUNNER_TEMP/remote-agent-probe.txt"
+          [[ -f "$result" ]] || printf '%s\n' 'REMOTE_AGENT_PROBE_RESULT=unavailable' > "$result"
+          {
+            echo '<!-- control-center-remote-agent-probe -->'
+            echo '## Remote Agent bootstrap probe'
+            echo
+            echo '```text'
+            sed -E 's/(github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]+/<REDACTED>/g' "$result"
+            echo '```'
+          } > "$RUNNER_TEMP/comment.md"
+          gh api \
+            --method POST \
+            repos/ControlCenterSoft/srv-deployment/issues/73/comments \
+            -f body="$(cat "$RUNNER_TEMP/comment.md")" >/dev/null
