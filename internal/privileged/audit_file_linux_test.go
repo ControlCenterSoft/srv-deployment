@@ -97,10 +97,10 @@ func TestSocketBoundaryFailsClosedWhenDurableAuditCannotStart(t *testing.T) {
 
 	client := SocketClient{Path: path, Timeout: time.Second}
 	_, err = client.Execute(context.Background(), Request{
-		ID: "op-audit-fail",
-		Type: OperationServiceRestart,
+		ID:      "op-audit-fail",
+		Type:    OperationServiceRestart,
 		ActorID: "actor-admin",
-		Args: map[string]string{"service": "nginx.service"},
+		Args:    map[string]string{"service": "nginx.service"},
 	})
 	var remoteErr *RemoteError
 	if !errors.As(err, &remoteErr) || remoteErr.Code != ErrorCodeAuditUnavailable {
