@@ -1,0 +1,60 @@
+name: stable-real-host-orchestrator-builder-v2
+
+on:
+  push:
+    branches: ["ci/1.0.0-stable-validation-v2"]
+
+permissions:
+  contents: read
+  statuses: write
+
+env:
+  STABLE_SHA: 1b364ae88789696bf98537d21544de8a259d086d
+  LAUNCHER_COMMIT: 8d322ce33997a95e07276a1f778208cffc9be4dd
+  LAUNCHER_BLOB_SHA1: 621b2fa1d7e495eff2a6887459d9886c74c02200
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch immutable build-only launcher
+        run: |
+          url="https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/${LAUNCHER_COMMIT}/ops/stable-1.0.0-real-host-acceptance-v1/run-verified.sh"
+          curl -fsSL "$url" -o /tmp/launcher.sh
+          size="$(wc -c < /tmp/launcher.sh | tr -d ' ')"
+          actual="$({ printf 'blob %s\0' "$size"; cat /tmp/launcher.sh; } | sha1sum | awk '{print $1}')"
+          test "$actual" = "$LAUNCHER_BLOB_SHA1"
+      - name: Build exact orchestrator
+        id: build
+        run: |
+          STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-v1.sh bash /tmp/launcher.sh
+          bash -n /tmp/stable-v1.sh
+          sha="$(sha256sum /tmp/stable-v1.sh | awk '{print $1}')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "$sha  /tmp/stable-v1.sh"
+          grep -F 'RC_VERSION="1.0.0"' /tmp/stable-v1.sh
+          grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-v1.sh
+          grep -F 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-v1.sh
+          grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-v1.sh
+          grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-v1.sh
+          ! grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-v1.sh
+      - name: Publish orchestrator SHA on frozen candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORCHESTRATOR_SHA: ${{ steps.build.outputs.sha }}
+        run: |
+          python3 - <<'PY' >/tmp/status.json
+          import json, os
+          print(json.dumps({
+            'state':'success',
+            'context':'control-center/stable-real-host-builder',
+            'description':os.environ['ORCHESTRATOR_SHA'],
+            'target_url':f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${STABLE_SHA}" \
+            --data-binary @/tmp/status.json
