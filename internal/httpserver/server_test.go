@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ControlCenterSoft/srv-deployment/internal/observability"
+	"github.com/ControlCenterSoft/srv-deployment/internal/operations"
 	"github.com/ControlCenterSoft/srv-deployment/internal/state"
 )
 
@@ -21,7 +23,16 @@ type testApp struct {
 
 func newTestApp(t *testing.T) testApp {
 	t.Helper()
-	store, err := state.Open(t.TempDir())
+	root := t.TempDir()
+	store, err := state.Open(root + "/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opStore, err := operations.Open(root + "/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, err := observability.OpenAudit(root + "/log")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +40,7 @@ func newTestApp(t *testing.T) testApp {
 	if err != nil || !created {
 		t.Fatalf("bootstrap created=%v err=%v", created, err)
 	}
-	return testApp{handler: New(slog.New(slog.NewTextHandler(io.Discard, nil)), store), store: store, adminPassword: password}
+	return testApp{handler: New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, opStore, audit), store: store, adminPassword: password}
 }
 
 func requestJSON(t *testing.T, h http.Handler, method, path, body string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {
@@ -200,5 +211,47 @@ func TestWebUIServed(t *testing.T) {
 	app.handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d", rr.Code)
+	}
+}
+
+func TestOperationAuditAndDiagnosticsEndpoints(t *testing.T) {
+	app := newTestApp(t)
+	adminCookie, adminCSRF := login(t, app, "admin", app.adminPassword)
+	rr := requestJSON(t, app.handler, http.MethodPost, "/api/v1/rbac/users", `{"username":"viewer2","password":"viewer2-password-123","role":"viewer"}`, adminCookie, adminCSRF)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create viewer status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	for _, path := range []string{"/api/v1/operations", "/api/v1/audit", "/api/v1/diagnostics/summary"} {
+		rr = requestJSON(t, app.handler, http.MethodGet, path, "", adminCookie, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+	}
+	rr = requestJSON(t, app.handler, http.MethodGet, "/api/v1/diagnostics/export", "", adminCookie, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("diagnostics export status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Content-Type") != "application/gzip" || rr.Body.Len() == 0 {
+		t.Fatalf("invalid diagnostics response headers=%v size=%d", rr.Header(), rr.Body.Len())
+	}
+}
+
+func TestViewerCannotReadAuditOrOperations(t *testing.T) {
+	app := newTestApp(t)
+	adminCookie, adminCSRF := login(t, app, "admin", app.adminPassword)
+	rr := requestJSON(t, app.handler, http.MethodPost, "/api/v1/rbac/users", `{"username":"viewer3","password":"viewer3-password-123","role":"viewer"}`, adminCookie, adminCSRF)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create viewer status=%d", rr.Code)
+	}
+	viewerCookie, _ := login(t, app, "viewer3", "viewer3-password-123")
+	for _, path := range []string{"/api/v1/operations", "/api/v1/audit", "/api/v1/diagnostics/export"} {
+		rr = requestJSON(t, app.handler, http.MethodGet, path, "", viewerCookie, "")
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("viewer %s status=%d", path, rr.Code)
+		}
+	}
+	rr = requestJSON(t, app.handler, http.MethodGet, "/api/v1/diagnostics/summary", "", viewerCookie, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer diagnostics summary status=%d", rr.Code)
 	}
 }

@@ -1,13 +1,13 @@
 # Control Center
 
 Baseline: **1.0.0**  
-Current development milestone: **1.0.0-alpha.2 — Authentication, RBAC & State Foundation**
+Current development milestone: **1.0.0-alpha.3 — Operations, Audit & Diagnostics Foundation**
 
 Control Center is being rebuilt from a clean baseline. Previous implementation, release history and architecture are not part of the active product unless explicitly re-adopted through the new governance process.
 
-## alpha.2
+## alpha.3
 
-This milestone extends the alpha.1 platform skeleton with local authentication, server-side sessions, admin/viewer RBAC, CSRF/origin validation, login rate limiting, versioned persistent state and separated password-hash storage. The Web runtime remains unprivileged and listens on loopback by default.
+This milestone extends alpha.2 with persistent operation tracking, correlated audit events, extended runtime status and a bounded diagnostics export. Diagnostics are generated from an explicit whitelist and never collect arbitrary filesystem paths or authentication secrets.
 
 ### First administrator
 
@@ -24,7 +24,7 @@ Read it with root privileges, sign in, and change the initial password. The boot
 ```bash
 go test ./...
 CONTROL_CENTER_STATE_DIR=$(mktemp -d) go run ./cmd/control-center bootstrap-admin
-CONTROL_CENTER_STATE_DIR=<same-dir> go run ./cmd/control-center
+CONTROL_CENTER_STATE_DIR=<same-dir> CONTROL_CENTER_LOG_DIR=$(mktemp -d) go run ./cmd/control-center
 ```
 
 The runtime binds to `127.0.0.1:8876` by default. Browser session cookies are `Secure`, so browser deployment is expected to use HTTPS termination while the application itself remains loopback-only.
@@ -33,7 +33,8 @@ The runtime binds to `127.0.0.1:8876` by default. Browser session cookies are `S
 
 ```bash
 ./scripts/build.sh
-./scripts/auth-acceptance.sh   # on an installed test host
+./scripts/auth-acceptance.sh        # on an installed test host
+./scripts/operations-acceptance.sh  # after Auth/RBAC acceptance
 ```
 
 Release binaries are written to `dist/` for linux/amd64 and linux/arm64.
@@ -51,4 +52,4 @@ Use `sudo ./install/uninstall.sh --purge` only for explicit destructive removal 
 
 ## Architecture decisions
 
-See `docs/adr/ADR-0001` through `ADR-0006`. ADR-0001 through ADR-0004 are accepted for the implemented foundation; privileged-worker and update-integrity decisions remain proposed until their implementation milestones.
+See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0001 through ADR-0004 and ADR-0007 are accepted for the implemented foundation; privileged-worker and update-integrity decisions remain proposed until their implementation milestones.

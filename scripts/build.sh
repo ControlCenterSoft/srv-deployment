@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-VERSION="${VERSION:-1.0.0-alpha.2+dev}"
+VERSION="${VERSION:-1.0.0-alpha.3+dev}"
 COMMIT="${COMMIT:-$(git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)}"
 BUILT_AT="${BUILT_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 mkdir -p dist

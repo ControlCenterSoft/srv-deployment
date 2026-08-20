@@ -24,19 +24,20 @@ jobs:
       - name: Unit and API tests
         run: go test ./...
       - name: Installer syntax
-        run: bash -n install/install.sh install/uninstall.sh scripts/build.sh scripts/auth-acceptance.sh
+        run: bash -n install/install.sh install/uninstall.sh scripts/build.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh
       - name: Build release binaries
         env:
-          VERSION: 1.0.0-alpha.2+ci
+          VERSION: 1.0.0-alpha.3+ci
           COMMIT: ${{ github.sha }}
         run: ./scripts/build.sh
       - name: Smoke test
         run: |
           state_dir=$(mktemp -d)
+          log_dir=$(mktemp -d)
           CONTROL_CENTER_STATE_DIR="$state_dir" ./dist/control-center-linux-amd64 bootstrap-admin --username admin
-          CONTROL_CENTER_STATE_DIR="$state_dir" CONTROL_CENTER_LISTEN=127.0.0.1:18876 ./dist/control-center-linux-amd64 > /tmp/control-center.log 2>&1 &
+          CONTROL_CENTER_STATE_DIR="$state_dir" CONTROL_CENTER_LOG_DIR="$log_dir" CONTROL_CENTER_LISTEN=127.0.0.1:18876 ./dist/control-center-linux-amd64 > /tmp/control-center.log 2>&1 &
           pid=$!
-          trap 'kill "$pid" 2>/dev/null || true; rm -rf "$state_dir"' EXIT
+          trap 'kill "$pid" 2>/dev/null || true; rm -rf "$state_dir" "$log_dir"' EXIT
           for i in {1..20}; do
             if curl -fsS http://127.0.0.1:18876/api/v1/health >/dev/null; then break; fi
             sleep 0.25
@@ -55,7 +56,7 @@ jobs:
           cache: true
       - name: Build candidate
         env:
-          VERSION: 1.0.0-alpha.2+ci
+          VERSION: 1.0.0-alpha.3+ci
           COMMIT: ${{ github.sha }}
         run: ./scripts/build.sh
       - name: Clean install
@@ -70,6 +71,8 @@ jobs:
           curl -fsS http://127.0.0.1:8876/api/v1/readiness
       - name: Authentication and RBAC acceptance
         run: sudo ./scripts/auth-acceptance.sh
+      - name: Operations and diagnostics acceptance
+        run: sudo ./scripts/operations-acceptance.sh
       - name: Repair and reinstall acceptance
         run: |
           sudo ./install/install.sh --repair

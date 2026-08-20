@@ -2,10 +2,10 @@ let csrfToken = "";
 let currentUser = null;
 
 const pages = {
-  overview: ["Обзор", "Состояние платформы", "Базовый runtime, health/readiness и текущая сессия."],
+  overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],
   market: ["Маркет", "Маркет", "Module lifecycle будет подключён после завершения foundation релиза."],
   rbac: ["RBAC", "RBAC", "Локальные пользователи и server-side роли admin/viewer."],
-  system: ["Система", "Система", "Системные изменения будут выполняться только через ограниченный Privileged Worker."],
+  system: ["Система", "Система", "Runtime diagnostics и безопасная эксплуатационная информация платформы."],
 };
 
 async function api(path, options = {}) {
@@ -69,6 +69,9 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     const [title, cardTitle, text] = pages[button.dataset.page];
     document.querySelector("#page-title").textContent = title; document.querySelector("#card-title").textContent = cardTitle; document.querySelector("#card-text").textContent = text;
     const users = document.querySelector("#rbac-users"); users.hidden = true; users.textContent = "";
+    const systemDetails = document.querySelector("#system-details"); systemDetails.hidden = true; systemDetails.textContent = "";
+    const operations = document.querySelector("#operations-list"); operations.hidden = true; operations.textContent = "";
+    const exportLink = document.querySelector("#diagnostics-export"); exportLink.hidden = true;
     if (button.dataset.page === "rbac" && currentUser?.role === "admin") {
       try {
         const data = await api("/api/v1/rbac/users");
@@ -76,6 +79,23 @@ document.querySelectorAll(".nav-item").forEach((button) => {
         users.hidden = false;
       } catch (error) { users.textContent = error.message; users.hidden = false; }
     }
+    if (button.dataset.page === "system") {
+      try {
+        const summary = await api("/api/v1/diagnostics/summary");
+        systemDetails.textContent = `Uptime: ${Math.round(summary.uptime_seconds)} сек. · Operations: ${summary.operation_count} · Audit: ${summary.audit_readable ? "OK" : "Unavailable"}`;
+        systemDetails.hidden = false;
+        if (currentUser?.role === "admin") {
+          const data = await api("/api/v1/operations?limit=10");
+          const title = document.createElement("h3"); title.textContent = "Последние операции"; operations.appendChild(title);
+          const list = document.createElement("ul"); list.className = "compact-list";
+          for (const op of data.operations) {
+            const li = document.createElement("li"); li.textContent = `${op.kind} · ${op.status} · ${op.actor}`; list.appendChild(li);
+          }
+          operations.appendChild(list); operations.hidden = false; exportLink.hidden = false;
+        }
+      } catch (error) { systemDetails.textContent = error.message; systemDetails.hidden = false; }
+    }
+
   });
 });
 
