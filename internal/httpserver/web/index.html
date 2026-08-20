@@ -7,7 +7,19 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div class="shell">
+  <section id="login-view" class="auth-view" hidden>
+    <form id="login-form" class="auth-card">
+      <span class="eyebrow">Control Center</span>
+      <h1>Вход</h1>
+      <p>Введите локальную учётную запись Control Center.</p>
+      <label>Логин<input id="login-username" name="username" autocomplete="username" required></label>
+      <label>Пароль<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Войти</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <div id="app-view" class="shell" hidden>
     <aside class="sidebar">
       <div class="brand">Control Center</div>
       <nav aria-label="Основная навигация">
@@ -16,12 +28,26 @@
         <button class="nav-item" data-page="rbac">RBAC</button>
         <button class="nav-item" data-page="system">Система</button>
       </nav>
+      <div class="session-box">
+        <div id="session-user">—</div>
+        <div id="session-role" class="muted">—</div>
+        <button id="logout" class="text-button">Выйти</button>
+      </div>
     </aside>
     <main class="content">
       <header>
         <div><span class="eyebrow">Control Center</span><h1 id="page-title">Обзор</h1></div>
         <span id="health" class="status">Проверка…</span>
       </header>
+      <section id="password-warning" class="warning" hidden>
+        <strong>Требуется смена начального пароля.</strong>
+        <form id="password-form">
+          <input id="current-password" type="password" autocomplete="current-password" placeholder="Текущий пароль" required>
+          <input id="new-password" type="password" autocomplete="new-password" placeholder="Новый пароль (минимум 12 символов)" required>
+          <button class="primary" type="submit">Сменить пароль</button>
+        </form>
+        <p id="password-error" class="error"></p>
+      </section>
       <section class="card">
         <h2 id="card-title">Состояние платформы</h2>
         <p id="card-text">Загрузка данных runtime…</p>
@@ -30,8 +56,9 @@
           <div><dt>Commit</dt><dd id="commit">—</dd></div>
           <div><dt>Readiness</dt><dd id="readiness">—</dd></div>
         </dl>
+        <div id="rbac-users" hidden></div>
       </section>
-      <p class="note">1.0.0-alpha.1 — platform skeleton. Изменение системного состояния на этом этапе намеренно отключено.</p>
+      <p class="note">1.0.0-alpha.2 — authentication, sessions, RBAC и state foundation.</p>
     </main>
   </div>
   <script src="/app.js" defer></script>

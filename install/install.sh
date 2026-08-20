@@ -22,6 +22,7 @@ die() { printf '[control-center] ERROR: %s\n' "$*" >&2; exit 1; }
 command -v systemctl >/dev/null || die "systemd is required"
 command -v install >/dev/null || die "install utility is required"
 command -v curl >/dev/null || die "curl is required for local health validation"
+command -v runuser >/dev/null || die "runuser is required for account bootstrap"
 [[ -d /run/systemd/system ]] || die "systemd is not running"
 
 arch="$(uname -m)"
@@ -83,10 +84,18 @@ install -d -o root -g root -m 0755 "$INSTALL_DIR"
 install -m 0755 "$binary" "$INSTALL_DIR/control-center"
 install -m 0644 "$REPO_ROOT/packaging/systemd/control-center.service" "$UNIT_PATH"
 install -d -o root -g control-center -m 0750 "$CONFIG_DIR"
+install -d -o control-center -g control-center -m 0750 "$STATE_DIR" "$LOG_DIR"
 if [[ ! -f "$ENV_PATH" ]]; then
   printf '%s\n' 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' > "$ENV_PATH"
   chown root:control-center "$ENV_PATH"
   chmod 0640 "$ENV_PATH"
+fi
+
+bootstrap_output="$(runuser -u control-center -- "$INSTALL_DIR/control-center" bootstrap-admin --username admin)"
+log "$bootstrap_output"
+if [[ -f "$STATE_DIR/bootstrap-admin.secret" ]]; then
+  chmod 0600 "$STATE_DIR/bootstrap-admin.secret"
+  log "Initial credentials are root-readable at $STATE_DIR/bootstrap-admin.secret and are deleted after the first password change."
 fi
 
 systemctl daemon-reload

@@ -1,52 +1,54 @@
 # Control Center
 
 Baseline: **1.0.0**  
-Current development milestone: **1.0.0-alpha.1 — Platform Skeleton**
+Current development milestone: **1.0.0-alpha.2 — Authentication, RBAC & State Foundation**
 
 Control Center is being rebuilt from a clean baseline. Previous implementation, release history and architecture are not part of the active product unless explicitly re-adopted through the new governance process.
 
-## alpha.1
+## alpha.2
 
-The first milestone provides an unprivileged Go runtime, embedded Web UI, versioned health/readiness/version APIs, systemd packaging, installer/repair/uninstall foundations and CI validation.
+This milestone extends the alpha.1 platform skeleton with local authentication, server-side sessions, admin/viewer RBAC, CSRF/origin validation, login rate limiting, versioned persistent state and separated password-hash storage. The Web runtime remains unprivileged and listens on loopback by default.
+
+### First administrator
+
+The installer bootstraps a local `admin` account only when the state store contains no users. The generated credential is **not printed to logs**. It is stored at:
+
+```text
+/var/lib/control-center/bootstrap-admin.secret
+```
+
+Read it with root privileges, sign in, and change the initial password. The bootstrap secret is deleted automatically after a successful password change.
 
 ### Local development
 
 ```bash
 go test ./...
-go run ./cmd/control-center
+CONTROL_CENTER_STATE_DIR=$(mktemp -d) go run ./cmd/control-center bootstrap-admin
+CONTROL_CENTER_STATE_DIR=<same-dir> go run ./cmd/control-center
 ```
 
-Open `http://127.0.0.1:8876`.
+The runtime binds to `127.0.0.1:8876` by default. Browser session cookies are `Secure`, so browser deployment is expected to use HTTPS termination while the application itself remains loopback-only.
 
-### Build
+### Build and validation
 
 ```bash
 ./scripts/build.sh
+./scripts/auth-acceptance.sh   # on an installed test host
 ```
 
 Release binaries are written to `dist/` for linux/amd64 and linux/arm64.
 
-### Install on a systemd test host
+### Install / repair / uninstall
 
 ```bash
 sudo ./install/install.sh
-```
-
-Repair/reinstall:
-
-```bash
 sudo ./install/install.sh --repair
 sudo ./install/install.sh --reinstall
-```
-
-Uninstall while preserving state:
-
-```bash
 sudo ./install/uninstall.sh
 ```
 
-Use `--purge` only for explicit destructive removal of configuration and state.
+Use `sudo ./install/uninstall.sh --purge` only for explicit destructive removal of configuration and state.
 
 ## Architecture decisions
 
-See `docs/adr/ADR-0001` through `ADR-0006`. Accepted alpha.1 decisions are ADR-0001 and ADR-0002; later security/state/update ADRs remain proposed until their implementation milestone.
+See `docs/adr/ADR-0001` through `ADR-0006`. ADR-0001 through ADR-0004 are accepted for the implemented foundation; privileged-worker and update-integrity decisions remain proposed until their implementation milestones.
