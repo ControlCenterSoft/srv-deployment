@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"time"
 )
 
@@ -42,17 +43,22 @@ func (c SocketClient) Execute(ctx context.Context, req Request) (Result, error) 
 		return result, err
 	}
 
-	if err := json.NewEncoder(conn).Encode(Envelope{Version: ProtocolVersion, Request: req}); err != nil {
-		return result, fmt.Errorf("write privileged request: %w", err)
-	}
-	if err := conn.CloseWrite(); err != nil {
-		return result, fmt.Errorf("finish privileged request: %w", err)
+	writeErr := json.NewEncoder(conn).Encode(Envelope{Version: ProtocolVersion, Request: req})
+	if writeErr == nil {
+		if err := conn.CloseWrite(); err != nil {
+			return result, fmt.Errorf("finish privileged request: %w", err)
+		}
+	} else if !isEarlyRemoteClose(writeErr) {
+		return result, fmt.Errorf("write privileged request: %w", writeErr)
 	}
 
 	var response ResponseEnvelope
 	decoder := json.NewDecoder(conn)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&response); err != nil {
+		if writeErr != nil {
+			return result, fmt.Errorf("write privileged request: %w", writeErr)
+		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return result, ctx.Err()
 		}
@@ -74,4 +80,8 @@ func (c SocketClient) Execute(ctx context.Context, req Request) (Result, error) 
 		return result, &RemoteError{Code: ErrorCodeProtocol, Message: "response identity mismatch"}
 	}
 	return response.Result, nil
+}
+
+func isEarlyRemoteClose(err error) bool {
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }

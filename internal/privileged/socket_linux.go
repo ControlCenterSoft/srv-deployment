@@ -23,6 +23,7 @@ type SocketServer struct {
 	AllowedUIDs     []uint32
 	MaxRequestBytes int64
 	Audit           AuditSink
+	DurableAudit    DurableAuditSink
 }
 
 func NewSocketServer(engine *Engine, allowedUIDs []uint32) (*SocketServer, error) {
@@ -112,19 +113,36 @@ func (s *SocketServer) HandleConn(ctx context.Context, conn *net.UnixConn) error
 	}
 
 	startedAt := time.Now().UTC()
+	if s.DurableAudit != nil {
+		if err := s.DurableAudit.Ready(); err != nil {
+			return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeAuditUnavailable, "durable audit sink unavailable")
+		}
+		if err := s.DurableAudit.RecordDurable(AuditEvent{
+			OperationID: envelope.Request.ID,
+			ActorID:     envelope.Request.ActorID,
+			Type:        envelope.Request.Type,
+			Status:      "started",
+			ExitCode:    -1,
+			StartedAt:   startedAt,
+			FinishedAt:  startedAt,
+			DurationMS:  0,
+		}); err != nil {
+			return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeAuditUnavailable, "durable audit intent failed")
+		}
+	}
+
 	result, execErr := s.Engine.Execute(ctx, envelope.Request)
 	finishedAt := time.Now().UTC()
 	failure := failureFor(execErr)
-	s.recordAudit(envelope.Request, result, failure, startedAt, finishedAt)
+	if err := s.recordAudit(envelope.Request, result, failure, startedAt, finishedAt); err != nil {
+		return s.writeFailure(conn, result, ErrorCodeAuditUnavailable, "durable audit completion failed")
+	}
 
 	response := ResponseEnvelope{Version: ProtocolVersion, Result: result, Error: failure}
 	return json.NewEncoder(conn).Encode(response)
 }
 
-func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure, startedAt, finishedAt time.Time) {
-	if s.Audit == nil {
-		return
-	}
+func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure, startedAt, finishedAt time.Time) error {
 	errorCode := ""
 	if failure != nil {
 		errorCode = failure.Code
@@ -137,7 +155,7 @@ func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure,
 	if duration < 0 {
 		duration = 0
 	}
-	s.Audit.Record(AuditEvent{
+	event := AuditEvent{
 		OperationID: req.ID,
 		ActorID:     req.ActorID,
 		Type:        req.Type,
@@ -147,7 +165,14 @@ func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure,
 		StartedAt:   startedAt,
 		FinishedAt:  finishedAt,
 		DurationMS:  duration.Milliseconds(),
-	})
+	}
+	if s.Audit != nil {
+		s.Audit.Record(event)
+	}
+	if s.DurableAudit != nil {
+		return s.DurableAudit.RecordDurable(event)
+	}
+	return nil
 }
 
 func (s *SocketServer) writeFailure(conn *net.UnixConn, result Result, code, message string) error {
