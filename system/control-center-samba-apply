@@ -295,9 +295,22 @@ prompts=[
  ('password',b'Administrator password:',password),('retype',b'Retype password:',password),
 ]
 sent=set();buf=b'';secret=password.encode();deadline=time.time()+240
+success_markers=[b'Server Role:',b'DNS Domain:',b'DOMAIN SID:']
+success_seen=False;success_deadline=None;forced_after_success=False
 try:
  while True:
-  if time.time()>deadline:
+  now=time.time()
+  if success_deadline is not None and now>success_deadline:
+   forced_after_success=True
+   try:os.kill(pid,signal.SIGTERM)
+   except ProcessLookupError:pass
+   time.sleep(1)
+   done,status=os.waitpid(pid,os.WNOHANG)
+   if done!=pid:
+    try:os.kill(pid,signal.SIGKILL)
+    except ProcessLookupError:pass
+   break
+  if now>deadline:
    os.kill(pid,signal.SIGKILL);raise SystemExit('samba-tool interactive provision timeout')
   ready,_,_=select.select([fd],[],[],0.5)
   if ready:
@@ -311,6 +324,10 @@ try:
    for key,marker,answer in prompts:
     if key not in sent and marker in buf:
      os.write(fd,answer.encode('utf-8')+b'\n');sent.add(key);break
+   if not success_seen and all(marker in buf for marker in success_markers):
+    success_seen=True;success_deadline=time.time()+10
+    try:os.write(fd,b'\x04')
+    except OSError:pass
   done,status=os.waitpid(pid,os.WNOHANG)
   if done==pid:break
 finally:
@@ -321,9 +338,12 @@ try:
 except ChildProcessError:
  pass
 rc=os.waitstatus_to_exitcode(status)
-if rc!=0:raise SystemExit(rc)
+if rc!=0 and not (success_seen and forced_after_success):raise SystemExit(rc)
 required={'realm','domain','role','backend','forwarder','password','retype'}
 if not required.issubset(sent):raise SystemExit('samba-tool prompt sequence incomplete: '+','.join(sorted(required-sent)))
+if not success_seen:raise SystemExit('samba-tool interactive provision success markers were not observed')
+for artifact in ('/etc/samba/smb.conf','/var/lib/samba/private/krb5.conf','/var/lib/samba/private/sam.ldb'):
+ if not os.path.isfile(artifact) or os.path.getsize(artifact)==0:raise SystemExit('samba-tool provision artifact missing: '+artifact)
 PY
 # Assert the selected forwarder made it into the generated DC configuration.
 samba-tool testparm --parameter-name='dns forwarder' 2>/dev/null | grep -Fxq "$FORWARDER"
