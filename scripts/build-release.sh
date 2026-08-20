@@ -18,6 +18,7 @@ source "$META"
 }
 command -v git >/dev/null || { echo "ERROR: git is required for exact release build" >&2; exit 1; }
 command -v go >/dev/null || { echo "ERROR: go is required for exact release build" >&2; exit 1; }
+command -v date >/dev/null || { echo "ERROR: date is required for exact release build" >&2; exit 1; }
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: exact release build requires a Git checkout" >&2; exit 1; }
 [[ -z "$(git status --porcelain --untracked-files=normal -- . ':(exclude)dist')" ]] || {
@@ -27,7 +28,16 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: exact rele
 }
 
 COMMIT="$(git rev-parse HEAD)"
-BUILT_AT="$(git show -s --format=%cI "$COMMIT")"
+COMMIT_EPOCH="$(git show -s --format=%ct "$COMMIT")"
+[[ "$COMMIT_EPOCH" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: invalid Git commit epoch" >&2
+  exit 1
+}
+BUILT_AT="$(date -u -d "@$COMMIT_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+[[ "$BUILT_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+  echo "ERROR: failed to canonicalize build timestamp to UTC" >&2
+  exit 1
+}
 actual_go="$(go env GOVERSION)"
 [[ "$actual_go" == "go$RELEASE_GO_VERSION" ]] || {
   printf 'ERROR: rc.1 requires Go %s, got %s\n' "$RELEASE_GO_VERSION" "$actual_go" >&2
@@ -51,4 +61,4 @@ EOF
 chmod 0644 "$ROOT/dist/BUILDINFO.env"
 
 "$ROOT/dist/control-center-linux-amd64" build-info
-printf 'Exact release build completed from %s with %s.\n' "$COMMIT" "$actual_go"
+printf 'Exact release build completed from %s with %s at canonical UTC %s.\n' "$COMMIT" "$actual_go" "$BUILT_AT"
