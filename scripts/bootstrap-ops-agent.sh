@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 DIAG_REPO="ControlCenterSoft/control-center-server-diagnostics"
-DIAG_COMMIT="94aad6b079ec9a7dff52e6187bed5f551f59672e"
+DIAG_COMMIT="efad992ca9147fa9b751221d332a4837defa0c53"
 TOKEN_FILE="/etc/control-center-diagnostics-agent/github-token"
 WORK=""
 
@@ -41,16 +41,16 @@ if not token:
     raise SystemExit("diagnostics token is empty")
 
 files = {
-    "agent/ccops_agent.py": ("agent/ccops_agent.py", "c89d93c95f42bc2de3fc07060061ede1e6aec4cd"),
+    "agent/ccops_agent_v2.py": ("agent/ccops_agent_v2.py", "8ee6a3001016e1f127cb6050b77a80eee186823c"),
     "agent/ccops_broker.py": ("agent/ccops_broker.py", "dcbeb90b5e78e2c77545a2a56468cd86e8a7327e"),
-    "install/install-ops.sh": ("install/install-ops.sh", "dba4843538747e2523990903a36ce011eea93335"),
+    "install/install-ops-v2.sh": ("install/install-ops-v2.sh", "6327cbfe18e2ce371279114d21ab148f1d709881"),
 }
 
 owner, name = repo.split("/", 1)
 headers = {
     "Accept": "application/vnd.github+json",
     "Authorization": f"Bearer {token}",
-    "User-Agent": "control-center-ops-bootstrap/1.1",
+    "User-Agent": "control-center-ops-bootstrap/1.1.1",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
@@ -71,21 +71,17 @@ for source, (destination, expected_blob) in files.items():
     encoded_content = data.get("content")
     if not isinstance(encoded_content, str):
         raise SystemExit(f"missing content for {source}")
-    content = base64.b64decode(encoded_content, validate=False)
     target = work / destination
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
+    target.write_bytes(base64.b64decode(encoded_content, validate=False))
 
-# Do not persist or print the token. The child installer reuses the original
-# root-protected token file already present on the server.
 del token
 PY
 
-chmod 0755 "$WORK/agent/ccops_agent.py" "$WORK/agent/ccops_broker.py" "$WORK/install/install-ops.sh"
-python3 -m py_compile "$WORK/agent/ccops_agent.py" "$WORK/agent/ccops_broker.py"
-bash -n "$WORK/install/install-ops.sh"
-
-bash "$WORK/install/install-ops.sh"
+chmod 0755 "$WORK/agent/ccops_agent_v2.py" "$WORK/agent/ccops_broker.py" "$WORK/install/install-ops-v2.sh"
+python3 -m py_compile "$WORK/agent/ccops_agent_v2.py" "$WORK/agent/ccops_broker.py"
+bash -n "$WORK/install/install-ops-v2.sh"
+bash "$WORK/install/install-ops-v2.sh"
 
 systemctl is-enabled --quiet control-center-ops-agent.timer \
   || fail "ops timer is not enabled after installation"
@@ -94,6 +90,7 @@ systemctl start control-center-ops-agent.service \
 
 printf 'CONTROL_CENTER_OPS_BOOTSTRAP=PASSED\n'
 printf 'DIAGNOSTICS_SOURCE_COMMIT=%s\n' "$DIAG_COMMIT"
+printf 'OPS_AGENT_VERSION=1.1.1\n'
 printf 'TOKEN_REUSED=existing-diagnostics-token\n'
 printf 'ROOT_BOUNDARY=typed-broker\n'
 printf 'ARBITRARY_SHELL=disabled\n'
