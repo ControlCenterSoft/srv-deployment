@@ -22,8 +22,8 @@ type Envelope struct {
 }
 
 type ResponseEnvelope struct {
-	Version int     `json:"version"`
-	Result  Result  `json:"result"`
+	Version int      `json:"version"`
+	Result  Result   `json:"result"`
 	Error   *Failure `json:"error,omitempty"`
 }
 
