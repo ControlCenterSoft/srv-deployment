@@ -180,7 +180,11 @@ jobs:
             bash install/install.sh
           curl -fsS http://127.0.0.1:8876/api/v1/health
           curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"ready":true'
-          sudo env CONTROL_CENTER_UPDATE_PRIVATE_KEY="$RUNNER_TEMP/update-private.pem" \
+          sudo env \
+            CONTROL_CENTER_UPDATE_PRIVATE_KEY="$RUNNER_TEMP/update-private.pem" \
+            CONTROL_CENTER_UPDATE_TEST_TARGET_VERSION=1.1.1-beta.1 \
+            CONTROL_CENTER_UPDATE_TEST_BROKEN_VERSION=1.1.1-beta.2 \
+            CONTROL_CENTER_UPDATE_TEST_DOWNGRADE_VERSION=1.1.0-rc.1 \
             bash scripts/update-acceptance.sh
           sudo bash scripts/auth-acceptance.sh
           sudo bash scripts/operations-acceptance.sh
