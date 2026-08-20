@@ -1,0 +1,120 @@
+    echo "service_enabled=$(systemctl is-enabled control-center.service 2>/dev/null || true)"
+    echo "nginx_active=$(systemctl is-active nginx.service 2>/dev/null || true)"
+    echo "current_target=$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
+    echo "config_mode=$(stat -c %a /etc/control-center 2>/dev/null || true)"
+    echo "state_mode=$(stat -c %a /var/lib/control-center 2>/dev/null || true)"
+    echo "log_mode=$(stat -c %a /var/log/control-center 2>/dev/null || true)"
+    echo "trust_key_sha256=$(sha256sum "$TRUST_KEY" 2>/dev/null | awk '{print $1}' || true)"
+    echo "test_private_key_was_present=$private_key_was_present"
+    echo "test_private_key_removed=$([[ ! -f "$PRIVATE_KEY" ]] && echo true || echo false)"
+    echo
+    echo "--- BACKEND VERSION ---"
+    curl -fsS "$BACKEND_URL/api/v1/version" 2>/dev/null || true
+    echo
+    echo "--- BACKEND READINESS ---"
+    curl -fsS "$BACKEND_URL/api/v1/readiness" 2>/dev/null || true
+    echo
+    echo "--- PROXY HEALTH ---"
+    curl -fsS "$PROXY_URL/api/v1/health" 2>/dev/null || true
+    echo
+    echo "--- SYSTEMD STATUS ---"
+    systemctl status control-center.service --no-pager -l 2>&1 | tail -n 100 || true
+    echo
+    echo "--- JOURNAL TAIL ---"
+    journalctl -u control-center.service --no-pager -n 240 2>&1 || true
+    echo
+    echo "NOTE: passwords, password hashes, cookies, CSRF tokens, request bodies and private signing keys are excluded."
+  } > "$REPORT"
+  chmod 0600 "$REPORT"
+  push_report || true
+  echo
+  echo "FINAL_STATUS=$STATUS"
+  echo "LOCAL_REPORT=$REPORT"
+  [[ -f "$DIAG_BUNDLE" ]] && echo "LOCAL_DIAGNOSTICS=$DIAG_BUNDLE"
+  echo "PANEL_URL=$panel"
+  echo "ADMIN_CREDENTIALS=$CREDS"
+  exit "$rc"
+}
+trap finalize EXIT
+
+STEP="dependencies"
+echo "=== Dependencies ==="
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq git curl ca-certificates golang-go python3 tar gzip openssl nginx openssh-client >/dev/null
+for c in git curl go python3 tar sha256sum openssl nginx systemctl ss; do command -v "$c" >/dev/null || { echo "Missing command: $c"; exit 1; }; done
+[[ -d /run/systemd/system ]] || { echo "systemd is not running"; exit 1; }
+[[ -f "$CREDS" ]] || { echo "Missing admin credentials file: $CREDS"; exit 1; }
+[[ -f "$ENV_FILE" ]] || { echo "Missing Control Center environment file: $ENV_FILE"; exit 1; }
+
+PUBLIC_IP="$(public_ip)"
+[[ -n "$PUBLIC_IP" ]] || { echo "Unable to determine public IP"; exit 1; }
+PUBLIC_ORIGIN="http://${PUBLIC_IP}:8876"
+
+echo "PUBLIC_IP=$PUBLIC_IP"
+echo "PANEL_URL=$PUBLIC_ORIGIN"
+
+STEP="fetch-build"
+echo "=== Fetch and validate exact beta.1 ==="
+rm -rf "$SRC"
+mkdir -p "$SRC"
+git -C "$WORK" init -q source
+git -C "$SRC" remote add origin "$PRODUCT_REPO"
+git -C "$SRC" fetch -q --depth=1 origin "$PRODUCT_COMMIT"
+git -C "$SRC" checkout -q --detach FETCH_HEAD
+[[ "$(git -C "$SRC" rev-parse HEAD)" == "$PRODUCT_COMMIT" ]]
+cd "$SRC"
+test -z "$(gofmt -l .)"
+go vet ./...
+go test ./...
+bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh
+VERSION="$PRODUCT_VERSION" COMMIT="$PRODUCT_COMMIT" ./scripts/build.sh
+sha256sum -c dist/SHA256SUMS
+[[ "$(./dist/control-center-linux-amd64 build-info --field version)" == "$PRODUCT_VERSION" ]]
+[[ "$(./dist/control-center-linux-amd64 build-info --field commit)" == "$PRODUCT_COMMIT" ]]
+
+STEP="signing-trust"
+echo "=== Generate ephemeral test update trust ==="
+rm -rf "$KEY_DIR"
+mkdir -p "$KEY_DIR"
+chmod 0700 "$KEY_DIR"
+openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY"
+openssl pkey -in "$PRIVATE_KEY" -pubout -out "$PUBLIC_KEY"
+chmod 0600 "$PRIVATE_KEY"
+chmod 0644 "$PUBLIC_KEY"
+go run ./cmd/release-tool package \
+  --binary ./dist/control-center-linux-amd64 \
+  --version "$PRODUCT_VERSION" \
+  --commit "$PRODUCT_COMMIT" \
+  --arch amd64 \
+  --private-key "$PRIVATE_KEY" \
+  --output "$BETA1_PACKAGE" >/dev/null
+mkdir -p "$WORK/package-check"
+rm -rf "$WORK/package-check"/*
+tar -xzf "$BETA1_PACKAGE" -C "$WORK/package-check"
+./dist/control-center-linux-amd64 verify-release \
+  --manifest "$WORK/package-check/manifest.json" \
+  --signature "$WORK/package-check/manifest.sig" \
+  --public-key "$PUBLIC_KEY" \
+  --artifact "$WORK/package-check/control-center" \
+  --field release-id
+
+STEP="prepare-http-proxy"
+echo "=== Prepare ops-only HTTP/IP proxy ==="
+cp -a "$ENV_FILE" "$WORK/control-center.env.before-beta1"
+if [[ -f "$NGINX_CONF" ]]; then cp -a "$NGINX_CONF" "$WORK/nginx.before-beta1.conf"; fi
+cat > "$NGINX_CONF" <<'NGINX'
+server {
+    listen 0.0.0.0:8876 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8877;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_cookie_flags cc_session nosecure;
+    }
+}
