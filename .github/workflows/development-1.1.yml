@@ -2,7 +2,7 @@ name: Control Center 1.1.x Development
 
 on:
   push:
-    branches: ['1.1.x']
+    branches: ['1.1.x', 'feature/1.1-*']
   pull_request:
     branches: ['1.1.x']
   workflow_dispatch:
@@ -39,6 +39,8 @@ jobs:
         run: go vet ./...
       - name: Shell syntax
         run: bash -n install/*.sh scripts/*.sh
+      - name: Privileged worker policy
+        run: ./scripts/privileged-worker-policy-check.sh
       - name: Secret scan
         run: ./scripts/secret-scan.sh
       - name: Gemini reviewer syntax
@@ -58,6 +60,8 @@ jobs:
           cache: true
       - name: Unit and contract tests
         run: go test ./...
+      - name: Privileged worker race regression
+        run: go test -race ./internal/privileged
 
   build:
     name: Build ${{ matrix.arch }}

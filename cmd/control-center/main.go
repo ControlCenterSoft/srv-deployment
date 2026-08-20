@@ -41,6 +41,12 @@ func main() {
 		case "compare-version":
 			compareVersion(os.Args[2:])
 			return
+		case "privileged-worker":
+			privilegedWorker(logger, os.Args[2:])
+			return
+		case "privileged-call":
+			privilegedCall(os.Args[2:])
+			return
 		}
 	}
 
