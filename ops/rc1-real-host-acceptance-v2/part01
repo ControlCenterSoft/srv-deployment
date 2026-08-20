@@ -1,0 +1,63 @@
+ng"
+POST_REBOOT_AUTH="pending"
+RC_UPDATE_ROLLBACK="pending"
+REPAIR_REINSTALL="pending"
+PRESERVE_STATE_REINSTALL="pending"
+STATE_PRESERVED="pending"
+DIAGNOSTICS="pending"
+TRUST_RESTORED="pending"
+REPORT_SENT="NO"
+FINAL_STATUS="RUNNING"
+PRODUCT_CHANGED="0"
+FAILURE_ACTIVE="0"
+
+[[ $EUID -eq 0 ]] || { printf 'ERROR: rc.1 real-host acceptance must run as root\n' >&2; exit 1; }
+
+mkdir -p "$BASE" "$REPORT_DIR"
+chmod 0700 "$BASE" "$REPORT_DIR"
+touch "$LOG_FILE"
+chmod 0600 "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+log() { printf '=== %s ===\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
+
+safe_hash() {
+  local path="$1"
+  if [[ -f "$path" ]]; then sha256sum "$path" | awk '{print $1}'; else printf 'missing'; fi
+}
+
+current_version() {
+  /usr/local/lib/control-center/current/control-center build-info --field version 2>/dev/null || true
+}
+current_commit() {
+  /usr/local/lib/control-center/current/control-center build-info --field commit 2>/dev/null || true
+}
+
+wait_ready() {
+  local url="$1"
+  for _ in {1..80}; do
+    if curl -fsS --max-time 2 "$url/api/v1/readiness" 2>/dev/null | grep -Fq '"ready":true'; then return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+
+load_backend_url() {
+  local listen host port
+  listen="$(sed -n 's/^CONTROL_CENTER_LISTEN=//p' /etc/control-center/control-center.env | tail -1)"
+  [[ -n "$listen" ]] || die "CONTROL_CENTER_LISTEN missing"
+  host="${listen%:*}"; port="${listen##*:}"
+  case "$host" in 0.0.0.0|'') host=127.0.0.1 ;; esac
+  BACKEND_URL="http://$host:$port"
+}
+
+ensure_dependencies() {
+  local cmd
+  for cmd in curl git tar sha256sum openssl python3 systemctl install sed awk grep find stat ss; do
+    command -v "$cmd" >/dev/null || die "$cmd is required"
+  done
+  [[ -d /run/systemd/system ]] || die "systemd is not running"
+}
+
+setup_arch

@@ -1,0 +1,36 @@
+hostname | tr -cd 'A-Za-z0-9._-' | head -c 80)"
+  PUBLIC_IP="$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  [[ -n "$PUBLIC_IP" ]] || PUBLIC_IP="$(hostname -I | awk '{print $1}')"
+  PANEL_URL="http://$PUBLIC_IP:8876"
+  ensure_dependencies
+  setup_arch
+  load_backend_url
+  wait_ready "$BACKEND_URL" || die "current backend is not ready"
+  [[ "$(current_version)" == "$BETA_VERSION" ]] || die "host is not on accepted beta.1"
+  [[ "$(current_commit)" == "$BETA_COMMIT" ]] || die "host beta.1 commit is not the accepted source identity"
+  systemctl is-active --quiet nginx.service || die "test HTTP ingress nginx is not active"
+
+  STATE_HASH_BEFORE="$(safe_hash /var/lib/control-center/state.json)"
+  SECRETS_HASH_BEFORE="$(safe_hash /var/lib/control-center/secrets.json)"
+  OLD_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id)"
+
+  ensure_pinned_go
+  build_exact_candidate
+  package_exact_candidate
+
+  STEP="upgrade-beta1-to-rc1"
+  log "Upgrade accepted beta.1 to exact rc.1"
+  install_test_trust
+  PRODUCT_CHANGED=1
+  CONTROL_CENTER_UPDATE_HEALTH_URL="$BACKEND_URL" /usr/local/sbin/control-center-update --package "$RC_PACKAGE"
+  wait_ready "$BACKEND_URL" || die "rc.1 did not become ready"
+  [[ "$(current_version)" == "$RC_VERSION" && "$(current_commit)" == "$RC_COMMIT" ]] || die "installed rc.1 identity mismatch"
+  printf '%s  %s\n' "$EXPECTED_RC_SHA" /usr/local/lib/control-center/current/control-center | sha256sum -c -
+  BETA_UPGRADE="passed"
+
+  STEP="pre-reboot-auth-security"
+  log "Pre-reboot browser/security regression"
+  api_security_regression pre-reboot
+  PRE_REBOOT_AUTH="passed"
+  [[ "$(safe_hash /var/lib/control-center/state.json)" == "$STATE_HASH_BEFORE" ]] || die "state changed during rc upgrade/security read-only acceptance"
+  [[ "$(safe_hash /var/lib

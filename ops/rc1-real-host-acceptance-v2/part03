@@ -1,0 +1,31 @@
+"$EXPECTED_RC_SHA" "$SOURCE_DIR/dist/control-center-linux-$GOARCH" | sha256sum -c -
+  [[ "$($SOURCE_DIR/dist/control-center-linux-$GOARCH build-info --field version)" == "$RC_VERSION" ]] || die "built version mismatch"
+  [[ "$($SOURCE_DIR/dist/control-center-linux-$GOARCH build-info --field commit)" == "$RC_COMMIT" ]] || die "built commit mismatch"
+
+  cp "$SOURCE_DIR/dist/SHA256SUMS" "$BASE/first-SHA256SUMS"
+  cp "$SOURCE_DIR/dist/BUILDINFO.env" "$BASE/first-BUILDINFO.env"
+  rm -rf "$SOURCE_DIR/dist"
+  (cd "$SOURCE_DIR" && ./scripts/build-release.sh)
+  cmp "$BASE/first-SHA256SUMS" "$SOURCE_DIR/dist/SHA256SUMS"
+  cmp "$BASE/first-BUILDINFO.env" "$SOURCE_DIR/dist/BUILDINFO.env"
+  printf '%s  %s\n' "$EXPECTED_RC_SHA" "$SOURCE_DIR/dist/control-center-linux-$GOARCH" | sha256sum -c -
+}
+
+package_exact_candidate() {
+  STEP="package-exact-candidate"
+  log "Package exact signed rc.1 candidate"
+  openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY" >/dev/null 2>&1
+  chmod 0600 "$PRIVATE_KEY"
+  openssl pkey -in "$PRIVATE_KEY" -pubout -out "$PUBLIC_KEY" >/dev/null 2>&1
+  chmod 0644 "$PUBLIC_KEY"
+  # shellcheck disable=SC1090
+  source "$SOURCE_DIR/dist/BUILDINFO.env"
+  (cd "$SOURCE_DIR" && go run ./cmd/release-tool package \
+    --binary "$SOURCE_DIR/dist/control-center-linux-$GOARCH" \
+    --version "$VERSION" --commit "$COMMIT" --built-at "$BUILT_AT" --arch "$GOARCH" \
+    --private-key "$PRIVATE_KEY" --output "$RC_PACKAGE" >/dev/null)
+  local check="$BASE/package-check"
+  rm -rf "$check"; mkdir -p "$check"
+  tar -xzf "$RC_PACKAGE" -C "$check"
+  [[ "$(find "$check" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ' -)" == "control-center manifest.json manifest.sig" ]] || die "package whitelist mismatch"
+  "$SOURCE_DIR/dist/control-center-linux-$GOARCH" verify-release \

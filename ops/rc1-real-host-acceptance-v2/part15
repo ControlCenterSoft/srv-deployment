@@ -1,0 +1,47 @@
+afe_hash /var/lib/control-center/state.json)" == "$STATE_HASH_BEFORE" ]] || die "state hash changed across lifecycle"
+  [[ "$(safe_hash /var/lib/control-center/secrets.json)" == "$SECRETS_HASH_BEFORE" ]] || die "secrets hash changed across lifecycle"
+  PRESERVE_STATE_REINSTALL="passed"
+  STATE_PRESERVED="passed"
+
+  STEP="final-auth-diagnostics"
+  log "Final browser path and diagnostics"
+  api_security_regression final
+  DIAGNOSTICS="passed"
+
+  STEP="restore-original-trust"
+  restore_original_trust
+  [[ "$(safe_hash /var/lib/control-center/state.json)" == "$STATE_HASH_BEFORE" ]] || die "final state hash mismatch"
+  [[ "$(safe_hash /var/lib/control-center/secrets.json)" == "$SECRETS_HASH_BEFORE" ]] || die "final secrets hash mismatch"
+  rm -f "$PRIVATE_KEY" "$PUBLIC_KEY"
+
+  STEP="completed"
+  FINAL_STATUS="PASSED"
+  write_report
+  push_report || die "unable to push final diagnostics evidence"
+  rm -f "$STATE_FILE"
+  remove_resume_unit
+  printf 'PASSED\n' > "$BASE/FINAL_STATUS"
+  chmod 0600 "$BASE/FINAL_STATUS"
+  logger -t control-center-rc1-acceptance "RC1 real-host acceptance PASSED commit=$RC_COMMIT report=${REPORT_BRANCH:-unknown}"
+  echo
+  echo "=== RC1 REAL-HOST ACCEPTANCE PASSED ==="
+  echo "REPORT_SENT=$REPORT_SENT"
+  echo "REPORT_BRANCH=${REPORT_BRANCH:-}"
+  echo "FINAL_STATUS=PASSED"
+  echo "LOCAL_REPORT=$REPORT_FILE"
+  echo "PANEL_URL=$PANEL_URL"
+}
+
+if [[ ${1:-} == "--resume" ]]; then
+  phase_resume
+else
+  if [[ -f "$STATE_FILE" ]]; then
+    old_phase="$(sed -n 's/^PHASE=//p' "$STATE_FILE" | head -1)"
+    [[ "$old_phase" != post-reboot ]] || die "an rc.1 acceptance run is already awaiting/resuming after reboot"
+  fi
+  rm -rf "$BASE"
+  mkdir -p "$BASE" "$REPORT_DIR"
+  chmod 0700 "$BASE" "$REPORT_DIR"
+  touch "$LOG_FILE"; chmod 0600 "$LOG_FILE"
+  phase_initial
+fi

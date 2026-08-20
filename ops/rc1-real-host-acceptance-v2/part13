@@ -1,0 +1,43 @@
+/control-center/secrets.json)" == "$SECRETS_HASH_BEFORE" ]] || die "secrets changed during rc upgrade/security read-only acceptance"
+
+  STEP="schedule-reboot-resume"
+  write_state_file
+  install_resume_unit
+  sync
+  log "Intentional reboot for rc.1 boot acceptance; resume unit is armed"
+  systemctl reboot
+  sleep 20
+  exit 0
+}
+
+phase_resume() {
+  load_state_file
+  ensure_dependencies
+  ensure_pinned_go
+  load_backend_url
+  PANEL_URL="http://$PUBLIC_IP:8876"
+
+  STEP="post-reboot-readiness"
+  log "Post-reboot service/readiness acceptance"
+  local new_boot_id="$(cat /proc/sys/kernel/random/boot_id)"
+  [[ "$new_boot_id" != "$OLD_BOOT_ID" ]] || die "boot ID did not change"
+  systemctl is-enabled --quiet control-center.service || die "control-center service is not enabled"
+  systemctl is-active --quiet control-center.service || die "control-center service is not active after reboot"
+  wait_ready "$BACKEND_URL" || die "control-center not ready after reboot"
+  [[ "$(current_version)" == "$RC_VERSION" && "$(current_commit)" == "$RC_COMMIT" ]] || die "rc.1 identity changed across reboot"
+  printf '%s  %s\n' "$EXPECTED_RC_SHA" /usr/local/lib/control-center/current/control-center | sha256sum -c -
+  REBOOT_ACCEPTANCE="passed"
+
+  STEP="post-reboot-auth-security"
+  api_security_regression post-reboot
+  POST_REBOOT_AUTH="passed"
+
+  STEP="rc-forward-update-broken-rollback"
+  log "Signed rc.2 forward update and broken rc.3 rollback regression"
+  CONTROL_CENTER_UPDATE_PRIVATE_KEY="$PRIVATE_KEY" CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" \
+    "$SOURCE_DIR/scripts/rc1-update-acceptance.sh"
+  RC_UPDATE_ROLLBACK="passed"
+
+  STEP="restore-exact-rc1"
+  log "Restore exact rc.1 after synthetic update tests"
+  CONTROL_CENTER_UPDATE_HEALTH_URL="$BACKEND_URL" /usr/local/sbin/control-center-update

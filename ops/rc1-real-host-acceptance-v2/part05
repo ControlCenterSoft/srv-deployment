@@ -1,0 +1,32 @@
+hon3 - "$1" "$2" <<'PY'
+import json,sys
+obj=json.load(open(sys.argv[1],encoding='utf-8'))
+for part in sys.argv[2].split('.'):
+    obj=obj[part]
+print(obj)
+PY
+}
+
+api_security_regression() {
+  local label="$1" work="$BASE/api-$label"
+  rm -rf "$work"; mkdir -p "$work"; chmod 0700 "$work"
+  load_admin_credentials
+  write_login_json "$work/login.json" "$ADMIN_USER" "$ADMIN_PASSWORD"
+
+  local code direct_token direct_csrf browser_token browser_csrf
+  code="$(curl -sS -D "$work/direct.headers" -o "$work/direct.body" -w '%{http_code}' \
+    -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    --data-binary "@$work/login.json" "$BACKEND_URL/api/v1/auth/login")"
+  [[ "$code" == 200 ]] || die "direct admin login failed: $code"
+  grep -qi '^Set-Cookie: cc_session=.*HttpOnly' "$work/direct.headers" || die "HttpOnly cookie missing"
+  grep -qi '^Set-Cookie: cc_session=.*Secure' "$work/direct.headers" || die "Secure product cookie missing"
+  grep -qi '^Set-Cookie: cc_session=.*SameSite=Strict' "$work/direct.headers" || die "SameSite=Strict cookie missing"
+  direct_token="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$work/direct.headers" | tr -d '\r' | head -1)"
+  direct_csrf="$(json_field "$work/direct.body" csrf_token)"
+  [[ -n "$direct_token" && -n "$direct_csrf" ]] || die "direct session material missing"
+  code="$(curl -sS -o "$work/direct-session.json" -w '%{http_code}' -H "Cookie: cc_session=$direct_token" "$BACKEND_URL/api/v1/auth/session")"
+  [[ "$code" == 200 ]] || die "direct session lookup failed"
+
+  code="$(curl -sS -D "$work/browser.headers" -o "$work/browser.body" -w '%{http_code}' \
+    -H "Host: $PUBLIC_IP:8876" -H "Origin: http://$PUBLIC_IP:8876" -H 'Content-Type: application/json' \
+    --data-binary "@$work/login.json" "http://127.0.0.1:8876/

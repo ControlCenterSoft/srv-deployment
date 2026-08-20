@@ -1,0 +1,25 @@
+ --package "$RC_PACKAGE" --allow-downgrade
+  wait_ready "$BACKEND_URL" || die "exact rc.1 restore not ready"
+  [[ "$(current_version)" == "$RC_VERSION" && "$(current_commit)" == "$RC_COMMIT" ]] || die "exact rc.1 restore identity mismatch"
+  printf '%s  %s\n' "$EXPECTED_RC_SHA" /usr/local/lib/control-center/current/control-center | sha256sum -c -
+
+  STEP="repair-reinstall"
+  log "Repair and reinstall exact rc.1"
+  CONTROL_CENTER_BINARY="$SOURCE_DIR/dist/control-center-linux-$GOARCH" CONTROL_CENTER_UPDATE_PUBLIC_KEY="$PUBLIC_KEY" CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" \
+    "$SOURCE_DIR/install/install.sh" --repair
+  CONTROL_CENTER_BINARY="$SOURCE_DIR/dist/control-center-linux-$GOARCH" CONTROL_CENTER_UPDATE_PUBLIC_KEY="$PUBLIC_KEY" CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" \
+    "$SOURCE_DIR/install/install.sh" --reinstall
+  wait_ready "$BACKEND_URL" || die "rc.1 not ready after repair/reinstall"
+  REPAIR_REINSTALL="passed"
+
+  STEP="preserve-state-uninstall-reinstall"
+  log "Non-purge uninstall/reinstall with state and trust preservation"
+  "$SOURCE_DIR/install/uninstall.sh"
+  [[ -f /etc/control-center/control-center.env ]] || die "configuration was not preserved"
+  [[ -f /etc/control-center/update-public-key.pem ]] || die "update trust was not preserved"
+  [[ -d /var/lib/control-center ]] || die "state directory was not preserved"
+  CONTROL_CENTER_BINARY="$SOURCE_DIR/dist/control-center-linux-$GOARCH" CONTROL_CENTER_UPDATE_PUBLIC_KEY="$PUBLIC_KEY" CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" \
+    "$SOURCE_DIR/install/install.sh"
+  wait_ready "$BACKEND_URL" || die "rc.1 not ready after preserve-state reinstall"
+  [[ "$(current_version)" == "$RC_VERSION" && "$(current_commit)" == "$RC_COMMIT" ]] || die "identity mismatch after preserve-state reinstall"
+  [[ "$(s

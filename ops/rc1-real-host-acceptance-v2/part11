@@ -1,0 +1,46 @@
+rts/$HOST_SAFE/$START_TS"
+  git -C "$repo" commit -q -m "Record rc.1 acceptance on $HOST_SAFE"
+  git -C "$repo" push -q origin "$report_branch" || return 1
+  REPORT_SENT="YES"
+  REPORT_BRANCH="$report_branch"
+  printf 'REPORT_SENT=YES\nREPORT_BRANCH=%s\n' "$report_branch"
+}
+
+recover_exact_rc() {
+  set +e
+  if [[ -f "$PUBLIC_KEY" ]]; then install_test_trust >/dev/null 2>&1 || true; fi
+  if [[ -f "$RC_PACKAGE" && -x /usr/local/sbin/control-center-update ]]; then
+    CONTROL_CENTER_UPDATE_HEALTH_URL="$BACKEND_URL" /usr/local/sbin/control-center-update --package "$RC_PACKAGE" --allow-downgrade >/dev/null 2>&1 || true
+  elif [[ -x "$SOURCE_DIR/install/install.sh" && -f "$SOURCE_DIR/dist/control-center-linux-$GOARCH" ]]; then
+    CONTROL_CENTER_BINARY="$SOURCE_DIR/dist/control-center-linux-$GOARCH" CONTROL_CENTER_UPDATE_PUBLIC_KEY="$PUBLIC_KEY" CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" \
+      "$SOURCE_DIR/install/install.sh" --reinstall >/dev/null 2>&1 || true
+  fi
+  systemctl reset-failed control-center.service >/dev/null 2>&1 || true
+  systemctl start control-center.service >/dev/null 2>&1 || true
+  set -e
+}
+
+on_error() {
+  local rc="$1" line="$2"
+  [[ "$FAILURE_ACTIVE" == 0 ]] || exit "$rc"
+  FAILURE_ACTIVE=1
+  trap - ERR
+  set +e
+  printf 'ACCEPTANCE FAILURE: step=%s line=%s rc=%s\n' "$STEP" "$line" "$rc" >&2
+  FINAL_STATUS="FAILED"
+  recover_exact_rc
+  restore_original_trust
+  rm -f "$PRIVATE_KEY" "$PUBLIC_KEY"
+  rm -rf -- "$BASE"/api-* "$BASE/package-check" 2>/dev/null || true
+  write_report
+  push_report || true
+  rm -f "$STATE_FILE"
+  remove_resume_unit
+  printf '\nFINAL_STATUS=FAILED\nLOCAL_REPORT=%s\nPANEL_URL=%s\n' "$REPORT_FILE" "$PANEL_URL"
+  exit "$rc"
+}
+trap 'on_error $? $LINENO' ERR
+
+phase_initial() {
+  START_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+  HOST_SAFE="$(

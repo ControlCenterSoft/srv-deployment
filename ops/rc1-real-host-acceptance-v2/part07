@@ -1,0 +1,27 @@
+ '{"blocked":true}\n' > "$work/self-block.json"
+  code="$(curl -sS -o "$work/self-block-body.json" -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    -H "Cookie: cc_session=$direct_token" -H "X-CSRF-Token: $direct_csrf" --data-binary "@$work/self-block.json" \
+    "$BACKEND_URL/api/v1/rbac/users/$ADMIN_USER/blocked")"
+  [[ "$code" == 409 ]] || die "self-block protection failed: $code"
+
+  write_login_json "$work/rate.json" "rc1-rate-test-${START_TS}" "definitely-wrong-password"
+  local i
+  for i in 1 2 3 4 5; do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+      --data-binary "@$work/rate.json" "$BACKEND_URL/api/v1/auth/login")"
+    [[ "$code" == 401 ]] || die "rate-limit pre-threshold attempt $i returned $code"
+  done
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    --data-binary "@$work/rate.json" "$BACKEND_URL/api/v1/auth/login")"
+  [[ "$code" == 429 ]] || die "auth rate limit did not trigger: $code"
+
+  code="$(curl -sS -D "$work/root.headers" -o /dev/null -w '%{http_code}' "$BACKEND_URL/")"
+  [[ "$code" == 200 ]] || die "root UI failed: $code"
+  grep -qi '^X-Frame-Options: DENY' "$work/root.headers" || die "frame protection missing"
+  grep -qi '^X-Content-Type-Options: nosniff' "$work/root.headers" || die "nosniff header missing"
+
+  code="$(curl -sS -o "$work/diagnostics.tar.gz" -w '%{http_code}' -H "Cookie: cc_session=$direct_token" "$BACKEND_URL/api/v1/diagnostics/export")"
+  [[ "$code" == 200 ]] || die "diagnostics export returned $code"
+  local names
+  names="$(tar -tzf "$work/diagnostics.tar.gz" | sort | paste -sd ' ' -)"
+  [[ "$names" == "audit.json manifest.json operations.json runtime.js

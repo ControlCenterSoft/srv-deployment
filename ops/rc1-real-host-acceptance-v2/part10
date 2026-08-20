@@ -1,0 +1,39 @@
+ true)"
+    echo "log_mode=$(stat -c %a /var/log/control-center 2>/dev/null || true)"
+    echo "state_sha256_before=$STATE_HASH_BEFORE"
+    echo "state_sha256_after=$(safe_hash /var/lib/control-center/state.json)"
+    echo "secrets_sha256_before=$SECRETS_HASH_BEFORE"
+    echo "secrets_sha256_after=$(safe_hash /var/lib/control-center/secrets.json)"
+    echo "panel_url=$PANEL_URL"
+    echo
+    echo "--- BACKEND VERSION ---"
+    curl -fsS "$BACKEND_URL/api/v1/version" 2>/dev/null || true
+    echo
+    echo "--- BACKEND READINESS ---"
+    curl -fsS "$BACKEND_URL/api/v1/readiness" 2>/dev/null || true
+    echo
+    echo "--- PROXY HEALTH ---"
+    curl -fsS -H "Host: $PUBLIC_IP:8876" "http://127.0.0.1:8876/api/v1/health" 2>/dev/null || true
+    echo
+    echo "--- SYSTEMD STATUS ---"
+    systemctl status control-center.service --no-pager -l 2>&1 | tail -n 100 || true
+    echo
+    echo "--- JOURNAL TAIL ---"
+    journalctl -u control-center.service --no-pager -n 160 2>&1 || true
+    echo
+    echo "NOTE: no passwords, password hashes, session cookies, CSRF tokens, request bodies or private signing keys are included intentionally."
+  } > "$REPORT_FILE"
+  chmod 0600 "$REPORT_FILE"
+}
+
+push_report() {
+  local repo="$BASE/diagnostics-repo" report_branch="reports/$HOST_SAFE/${START_TS}-rc1"
+  rm -rf "$repo"
+  git clone -q "$DIAG_SSH" "$repo" || return 1
+  git -C "$repo" checkout -q -b "$report_branch"
+  mkdir -p "$repo/reports/$HOST_SAFE/$START_TS"
+  cp "$REPORT_FILE" "$repo/reports/$HOST_SAFE/$START_TS/report.txt"
+  [[ -f "$DIAG_BUNDLE" ]] && cp "$DIAG_BUNDLE" "$repo/reports/$HOST_SAFE/$START_TS/control-center-diagnostics.tar.gz"
+  git -C "$repo" config user.name 'control-center-acceptance'
+  git -C "$repo" config user.email 'acceptance@control-center.invalid'
+  git -C "$repo" add "repo
