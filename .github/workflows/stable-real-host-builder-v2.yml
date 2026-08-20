@@ -12,10 +12,37 @@ env:
   STABLE_SHA: 1b364ae88789696bf98537d21544de8a259d086d
   LAUNCHER_COMMIT: 8d322ce33997a95e07276a1f778208cffc9be4dd
   LAUNCHER_BLOB_SHA1: 621b2fa1d7e495eff2a6887459d9886c74c02200
+  STATUS_CONTEXT: control-center/stable-real-host-builder
 
 jobs:
-  build-only:
+  announce:
     runs-on: ubuntu-24.04
+    steps:
+      - name: Mark builder pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY' >/tmp/status.json
+          import json, os
+          print(json.dumps({
+            'state':'pending',
+            'context':os.environ['STATUS_CONTEXT'],
+            'description':'Building exact stable real-host orchestrator',
+            'target_url':f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${STABLE_SHA}" \
+            --data-binary @/tmp/status.json
+
+  build-only:
+    needs: announce
+    runs-on: ubuntu-24.04
+    outputs:
+      orchestrator_sha: ${{ steps.build.outputs.sha }}
     steps:
       - name: Fetch immutable build-only launcher
         run: |
@@ -38,17 +65,31 @@ jobs:
           grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-v1.sh
           grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-v1.sh
           ! grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-v1.sh
-      - name: Publish orchestrator SHA on frozen candidate
+
+  report:
+    if: always()
+    needs: [announce, build-only]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish builder result
         env:
           GH_TOKEN: ${{ github.token }}
-          ORCHESTRATOR_SHA: ${{ steps.build.outputs.sha }}
+          BUILD_RESULT: ${{ needs.build-only.result }}
+          ORCHESTRATOR_SHA: ${{ needs.build-only.outputs.orchestrator_sha }}
         run: |
+          STATE=failure
+          DESCRIPTION='Stable real-host orchestrator build failed'
+          if [[ "$BUILD_RESULT" == success && -n "$ORCHESTRATOR_SHA" ]]; then
+            STATE=success
+            DESCRIPTION="$ORCHESTRATOR_SHA"
+          fi
+          export STATE DESCRIPTION
           python3 - <<'PY' >/tmp/status.json
           import json, os
           print(json.dumps({
-            'state':'success',
-            'context':'control-center/stable-real-host-builder',
-            'description':os.environ['ORCHESTRATOR_SHA'],
+            'state':os.environ['STATE'],
+            'context':os.environ['STATUS_CONTEXT'],
+            'description':os.environ['DESCRIPTION'],
             'target_url':f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
           }))
           PY
