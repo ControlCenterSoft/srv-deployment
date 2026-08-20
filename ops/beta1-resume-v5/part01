@@ -1,0 +1,102 @@
+NDLE" "reports/$HOST_SAFE/$TS/control-center-diagnostics.tar.gz"
+  git add "reports/$HOST_SAFE/$TS"
+  git -c user.name='Control Center Test Host' -c user.email='control-center-test-host@localhost' commit -q -m "Beta1 start-limit resume acceptance: $HOST_SAFE $TS"
+  if [[ -n "$ssh_cmd" ]]; then
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" git push -q origin "$REPORT_BRANCH" && echo "REPORT_SENT=YES" && echo "REPORT_BRANCH=$REPORT_BRANCH" || echo "REPORT_SENT=NO"
+  else
+    GIT_TERMINAL_PROMPT=0 git push -q origin "$REPORT_BRANCH" && echo "REPORT_SENT=YES" && echo "REPORT_BRANCH=$REPORT_BRANCH" || echo "REPORT_SENT=NO"
+  fi
+  cd /
+  rm -rf "$tmp"
+}
+
+finalize() {
+  local rc=$?
+  trap - EXIT
+  best_effort_restore_beta1 || true
+  restore_trust || true
+  rm -f -- "$PRIVATE_KEY" 2>/dev/null || true
+  local public panel
+  public="$(public_ip)"
+  panel="http://${public}:8876"
+  {
+    echo "CONTROL CENTER BETA1 FINAL RESUME ACCEPTANCE"
+    echo "started_at=$STARTED_AT"
+    echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "host=$HOST"
+    echo "status=$STATUS"
+    echo "last_step=$STEP"
+    echo "product_version=$PRODUCT_VERSION"
+    echo "product_commit=$PRODUCT_COMMIT"
+    echo "start_limit_regression=$START_LIMIT_REGRESSION"
+    echo "repair_reinstall=$REPAIR_REINSTALL"
+    echo "preserve_state_reinstall=$PRESERVE_REINSTALL"
+    echo "browser_auth=$BROWSER_AUTH"
+    echo "trust_restored=$TRUST_RESTORED"
+    echo "current_version=$(current_version)"
+    echo "current_commit=$(current_commit)"
+    echo "current_target=$(readlink /usr/local/lib/control-center/current 2>/dev/null || true)"
+    echo "service_active=$(systemctl is-active control-center.service 2>/dev/null || true)"
+    echo "service_failed=$(systemctl is-failed control-center.service 2>/dev/null || true)"
+    echo "service_result=$(systemctl show control-center.service -p Result --value 2>/dev/null || true)"
+    echo "service_restarts=$(systemctl show control-center.service -p NRestarts --value 2>/dev/null || true)"
+    echo "nginx_active=$(systemctl is-active nginx.service 2>/dev/null || true)"
+    echo "config_mode=$(stat -c %a /etc/control-center 2>/dev/null || true)"
+    echo "state_mode=$(stat -c %a /var/lib/control-center 2>/dev/null || true)"
+    echo "log_mode=$(stat -c %a /var/log/control-center 2>/dev/null || true)"
+    echo "test_private_key_removed=$([[ ! -f "$PRIVATE_KEY" ]] && echo true || echo false)"
+    echo "panel_url=$panel"
+    echo
+    echo "--- BACKEND VERSION ---"
+    curl -fsS "$BACKEND_URL/api/v1/version" 2>/dev/null || true
+    echo
+    echo "--- BACKEND READINESS ---"
+    curl -fsS "$BACKEND_URL/api/v1/readiness" 2>/dev/null || true
+    echo
+    echo "--- PROXY HEALTH ---"
+    curl -fsS "$PROXY_URL/api/v1/health" 2>/dev/null || true
+    echo
+    echo "--- SYSTEMD STATUS ---"
+    systemctl status control-center.service --no-pager -l 2>&1 | tail -n 100 || true
+    echo
+    echo "--- JOURNAL TAIL ---"
+    journalctl -u control-center.service --no-pager -n 260 2>&1 || true
+    echo
+    echo "NOTE: passwords, password hashes, cookies, CSRF tokens, request bodies and private signing keys are excluded."
+  } > "$REPORT"
+  chmod 0600 "$REPORT"
+  push_report || true
+  echo
+  echo "FINAL_STATUS=$STATUS"
+  echo "LOCAL_REPORT=$REPORT"
+  [[ -f "$DIAG_BUNDLE" ]] && echo "LOCAL_DIAGNOSTICS=$DIAG_BUNDLE"
+  echo "PANEL_URL=$panel"
+  echo "ADMIN_CREDENTIALS=$CREDS"
+  exit "$rc"
+}
+trap finalize EXIT
+
+STEP="preflight"
+echo "=== Preflight ==="
+for c in git curl go python3 tar sha256sum openssl systemctl; do command -v "$c" >/dev/null || { echo "Missing command: $c"; exit 1; }; done
+[[ -d /run/systemd/system ]]
+[[ -f "$CREDS" ]]
+[[ -f "$ENV_FILE" ]]
+grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8877' "$ENV_FILE"
+wait_url "$BACKEND_URL/api/v1/readiness" '"ready":true'
+wait_url "$PROXY_URL/api/v1/health" '"status":"ok"'
+
+STEP="fetch-build"
+echo "=== Fetch/build exact beta.1 start-limit fix ==="
+rm -rf "$SRC"
+mkdir -p "$SRC"
+git -C "$WORK" init -q source
+git -C "$SRC" remote add origin "$PRODUCT_REPO"
+git -C "$SRC" fetch -q --depth=1 origin "$PRODUCT_COMMIT"
+git -C "$SRC" checkout -q --detach FETCH_HEAD
+[[ "$(git -C "$SRC" rev-parse HEAD)" == "$PRODUCT_COMMIT" ]]
+cd "$SRC"
+test -z "$(gofmt -l .)"
+go vet ./...
+go test ./...
+bash -n install/install.sh ins
