@@ -1,0 +1,120 @@
+NGINX
+nginx -t
+python3 - "$ENV_FILE" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1])
+lines=p.read_text().splitlines()
+remove={'CONTROL_CENTER_LISTEN','CONTROL_CENTER_INSECURE_HTTP'}
+lines=[line for line in lines if line.split('=',1)[0] not in remove]
+lines.append('CONTROL_CENTER_LISTEN=127.0.0.1:8877')
+p.write_text('\n'.join(lines)+'\n')
+PY
+chown root:control-center "$ENV_FILE"
+chmod 0640 "$ENV_FILE"
+
+STEP="install-beta1"
+echo "=== Install/migrate beta.1 ==="
+cd "$SRC"
+CONTROL_CENTER_UPDATE_PUBLIC_KEY="$PUBLIC_KEY" CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" ./install/install.sh --reinstall
+wait_url "$BACKEND_URL/api/v1/readiness" '"ready":true'
+[[ -L "$CURRENT_LINK" ]]
+[[ "$(/usr/local/lib/control-center/current/control-center build-info --field version)" == "$PRODUCT_VERSION" ]]
+[[ "$(/usr/local/lib/control-center/current/control-center build-info --field commit)" == "$PRODUCT_COMMIT" ]]
+[[ "$(stat -c %a /etc/control-center)" == 750 ]]
+[[ "$(stat -c %a /var/lib/control-center)" == 750 ]]
+[[ "$(stat -c %a /var/log/control-center)" == 750 ]]
+[[ -x /usr/local/sbin/control-center-update ]]
+[[ -f "$TRUST_KEY" ]]
+cmp -s "$PUBLIC_KEY" "$TRUST_KEY"
+curl -fsS "$BACKEND_URL/styles.css" | grep -Fq '[hidden] { display: none !important; }'
+
+STEP="start-http-proxy"
+echo "=== Start HTTP/IP test proxy ==="
+systemctl enable nginx.service >/dev/null 2>&1 || true
+systemctl restart nginx.service
+systemctl is-active --quiet nginx.service
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow 8876/tcp >/dev/null
+fi
+wait_url "$PROXY_URL/api/v1/health" '"status":"ok"'
+
+STEP="browser-auth"
+echo "=== Browser-path authentication ==="
+AUTH_WORK="$(mktemp -d /tmp/control-center-beta1-auth.XXXXXX)"
+chmod 0700 "$AUTH_WORK"
+python3 - "$CREDS" > "$AUTH_WORK/admin-login.json" <<'PY'
+import json,sys
+vals={}
+for line in open(sys.argv[1],encoding='utf-8'):
+    if '=' in line:
+        k,v=line.rstrip('\n').split('=',1); vals[k]=v
+if not vals.get('username') or not vals.get('password'):
+    raise SystemExit('credentials file incomplete')
+print(json.dumps({'username':vals['username'],'password':vals['password']}))
+PY
+# Direct backend must retain the secure product cookie.
+direct_code="$(curl -sS -D "$AUTH_WORK/direct-h" -o "$AUTH_WORK/direct-b" -w '%{http_code}' \
+  -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' \
+  --data-binary "@$AUTH_WORK/admin-login.json" "$BACKEND_URL/api/v1/auth/login")"
+[[ "$direct_code" == 200 ]]
+grep -qi '^Set-Cookie: cc_session=.*Secure' "$AUTH_WORK/direct-h"
+# Proxy path removes Secure only for this temporary HTTP test endpoint.
+proxy_code="$(curl -sS -D "$AUTH_WORK/proxy-h" -o "$AUTH_WORK/proxy-b" -w '%{http_code}' \
+  -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' \
+  --data-binary "@$AUTH_WORK/admin-login.json" "$PROXY_URL/api/v1/auth/login")"
+[[ "$proxy_code" == 200 ]]
+! grep -qi '^Set-Cookie: cc_session=.*Secure' "$AUTH_WORK/proxy-h"
+grep -qi '^Set-Cookie: cc_session=.*HttpOnly' "$AUTH_WORK/proxy-h"
+grep -qi '^Set-Cookie: cc_session=.*SameSite=Strict' "$AUTH_WORK/proxy-h"
+ADMIN_TOKEN="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$AUTH_WORK/proxy-h" | tr -d '\r' | head -1)"
+ADMIN_CSRF="$(python3 - "$AUTH_WORK/proxy-b" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1],encoding='utf-8'))['csrf_token'])
+PY
+)"
+[[ -n "$ADMIN_TOKEN" && -n "$ADMIN_CSRF" ]]
+session_code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$ADMIN_TOKEN" "$PROXY_URL/api/v1/auth/session")"
+[[ "$session_code" == 200 ]]
+BROWSER_PROXY="passed"
+
+STEP="rbac-real-host"
+echo "=== Upgrade-state Auth/RBAC acceptance ==="
+VIEWER_USER="b1v$(date -u +%H%M%S)"
+VIEWER_PASS="$(python3 - <<'PY'
+import secrets,string
+alphabet=string.ascii_letters+string.digits
+print(''.join(secrets.choice(alphabet) for _ in range(20)))
+PY
+)"
+python3 - "$VIEWER_USER" "$VIEWER_PASS" > "$AUTH_WORK/viewer-create.json" <<'PY'
+import json,sys
+print(json.dumps({'username':sys.argv[1],'password':sys.argv[2],'role':'viewer'}))
+PY
+code="$(curl -sS -o "$AUTH_WORK/viewer-create-body" -w '%{http_code}' \
+  -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' \
+  -H "Cookie: cc_session=$ADMIN_TOKEN" -H "X-CSRF-Token: $ADMIN_CSRF" \
+  --data-binary "@$AUTH_WORK/viewer-create.json" "$PROXY_URL/api/v1/rbac/users")"
+[[ "$code" == 201 ]]
+python3 - "$VIEWER_USER" "$VIEWER_PASS" > "$AUTH_WORK/viewer-login.json" <<'PY'
+import json,sys
+print(json.dumps({'username':sys.argv[1],'password':sys.argv[2]}))
+PY
+code="$(curl -sS -D "$AUTH_WORK/viewer-h" -o "$AUTH_WORK/viewer-b" -w '%{http_code}' \
+  -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' \
+  --data-binary "@$AUTH_WORK/viewer-login.json" "$PROXY_URL/api/v1/auth/login")"
+[[ "$code" == 200 ]]
+VIEWER_TOKEN="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$AUTH_WORK/viewer-h" | tr -d '\r' | head -1)"
+VIEWER_CSRF="$(python3 - "$AUTH_WORK/viewer-b" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1],encoding='utf-8'))['csrf_token'])
+PY
+)"
+code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$VIEWER_TOKEN" "$PROXY_URL/api/v1/system/status")"
+[[ "$code" == 200 ]]
+cat > "$AUTH_WORK/forbidden.json" <<'JSON'
+{"username":"b1forbidden","password":"forbidden-password-123","role":"viewer"}
+JSON
+code="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' \
+  -H "Cookie: cc_session=$VIEWER_TOKEN" -H "X-CSRF-Token: $VIEWER_CSRF" \
