@@ -1,4 +1,4 @@
-"""Bounded, secret-redacting audit envelope for Control Center."""
+"""Ограниченный audit envelope Control Center с редактированием секретов."""
 
 from __future__ import annotations
 
