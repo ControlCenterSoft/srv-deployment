@@ -14,13 +14,15 @@ class OpsBootstrapTests(unittest.TestCase):
     def test_private_source_is_pinned_to_exact_commit(self):
         match = re.search(r'^DIAG_COMMIT="([0-9a-f]{40})"$', self.text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual("efad992ca9147fa9b751221d332a4837defa0c53", match.group(1))
+        self.assertEqual("37835def4f8943c8c3d0c58b4214095296eec9d3", match.group(1))
 
     def test_all_bootstrap_files_have_exact_pinned_git_blob_ids(self):
         expected = {
             "agent/ccops_agent_v2.py": "8ee6a3001016e1f127cb6050b77a80eee186823c",
+            "agent/ccops_agent_v3.py": "0f167133ecb581c1de19b6336263239af6e4765d",
             "agent/ccops_broker.py": "dcbeb90b5e78e2c77545a2a56468cd86e8a7327e",
-            "install/install-ops-v2.sh": "6327cbfe18e2ce371279114d21ab148f1d709881",
+            "agent/ccops_socket_broker.py": "59ff293d449f09ffbd29dde552da847f1c967b20",
+            "install/install-ops-v3.sh": "4ea9a38fb51e7e4422f0649aa33da82b35f08394",
         }
         for path, blob in expected.items():
             self.assertIn(f'"{path}": ("{path}", "{blob}")', self.text)
@@ -34,14 +36,20 @@ class OpsBootstrapTests(unittest.TestCase):
         self.assertNotRegex(self.text, r'echo[^\n]*\$TOKEN')
         self.assertNotRegex(self.text, r'printf[^\n]*\$TOKEN')
 
-    def test_installs_redirect_fixed_agent_v2(self):
-        self.assertIn("ccops_agent_v2.py", self.text)
-        self.assertIn("install-ops-v2.sh", self.text)
-        self.assertIn("OPS_AGENT_VERSION=1.1.1", self.text)
+    def test_installs_unix_broker_agent_v3(self):
+        self.assertIn("ccops_agent_v3.py", self.text)
+        self.assertIn("ccops_socket_broker.py", self.text)
+        self.assertIn("install-ops-v3.sh", self.text)
+        self.assertIn("OPS_AGENT_VERSION=1.1.2", self.text)
+        self.assertIn("ROOT_BOUNDARY=unix-so-peercred-root-broker", self.text)
+        self.assertIn("SUDO_REQUIRED=false", self.text)
 
-    def test_installation_requires_root_and_post_validates_timer(self):
+    def test_installation_requires_root_and_post_validates_runtime(self):
         self.assertIn('[[ ${EUID:-$(id -u)} -eq 0 ]]', self.text)
         self.assertIn("systemctl is-enabled --quiet control-center-ops-agent.timer", self.text)
+        self.assertIn("systemctl is-active --quiet control-center-ops-broker.service", self.text)
+        self.assertIn("/run/control-center-ops/broker.sock", self.text)
+        self.assertIn("NoNewPrivileges", self.text)
         self.assertIn("ARBITRARY_SHELL=disabled", self.text)
 
 
