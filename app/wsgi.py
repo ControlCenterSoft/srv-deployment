@@ -21,6 +21,7 @@ import release_111_dependencies
 import release_111_dhcp
 import release_111_services_assets
 import release_111_auth
+import release_111_build
 
 app = main.app
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
@@ -61,6 +62,9 @@ release_111_dependencies.register(app, main)
 release_111_dhcp.register(app, main)
 release_111_services_assets.register(app, main)
 release_111_auth.register(app, main)
+# Build identity must be registered last because release_111 retains the
+# original 20260819.5 constant for historical source compatibility.
+release_111_build.register(app, main)
 
 
 @app.before_request

@@ -1,7 +1,7 @@
 {
   "product": "Control Center",
   "release": "1.0.11",
-  "build": "20260819.5",
+  "build": "20260820.1",
   "channel": "production",
   "upgrade_from": ["1.0.10", "1.0.9", "clean install"],
   "database": {
@@ -105,9 +105,11 @@
     "dhcp-ad-dns-integration",
     "active-dc-network-guards",
     "active-dc-hostname-guard",
-    "postgresql-migration-005"
+    "postgresql-migration-005",
+    "market-lifecycle-ui-hotfix"
   ],
   "notes": [
+    "Build 20260820.1 fixes the Market UI lifecycle regression where legacy refresh logic could replace Domain, DNS and Network Storage buttons with no-op handlers.",
     "Domain requires DNS and Network Storage. Missing dependencies are activated automatically during Domain provisioning.",
     "DNS and Network Storage may be installed independently without Domain.",
     "Standalone DNS and Storage state is preserved when transitioning into Domain mode and restored after guarded Domain removal.",
