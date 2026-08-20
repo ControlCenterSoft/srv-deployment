@@ -1,8 +1,8 @@
-"""Server-side RBAC policy for Control Center.
+"""Серверная политика RBAC для Control Center.
 
-UI visibility is never an authorization boundary. Every future privileged
-operation must call this policy (or a stricter policy derived from it) on the
-server side before executing any action.
+Видимость элементов UI никогда не является границей авторизации. Каждая будущая
+привилегированная операция до выполнения действия обязана вызывать эту политику
+(или более строгую производную политику) на серверной стороне.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def require_permission(role: Role, permission: Permission) -> None:
 
 
 def public_policy() -> dict[str, list[str]]:
-    """Stable machine-readable policy contract for tests/SDK parity."""
+    """Стабильный машиночитаемый контракт политики для тестов и parity с SDK."""
     return {
         role.value: sorted(permission.value for permission in permissions)
         for role, permissions in ROLE_PERMISSIONS.items()
