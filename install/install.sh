@@ -56,8 +56,10 @@ done
 preflight() {
   [[ "${EUID}" -eq 0 ]] || die "installer must run as root"
   [[ -f "${MANIFEST}" ]] || die "deployment.json is missing"
-  [[ -f "${ROOT_DIR}/api/server.py" ]] || die "api/server.py is missing"
-  [[ -f "${ROOT_DIR}/api/ui.py" ]] || die "api/ui.py is missing"
+  local required_file
+  for required_file in server.py ui.py rbac.py security.py audit.py; do
+    [[ -f "${ROOT_DIR}/api/${required_file}" ]] || die "api/${required_file} is missing"
+  done
   [[ -f "${ROOT_DIR}/install/control-center-api.service" ]] || die "systemd unit template is missing"
 
   local command
@@ -99,8 +101,7 @@ source_id() {
   fi
   {
     sha256sum "${ROOT_DIR}/deployment.json"
-    sha256sum "${ROOT_DIR}/api/server.py"
-    sha256sum "${ROOT_DIR}/api/ui.py"
+    sha256sum "${ROOT_DIR}"/api/*.py
     sha256sum "${ROOT_DIR}/install/control-center-api.service"
   } | sha256sum | awk '{print $1}'
 }
@@ -177,9 +178,7 @@ install_or_repair() {
     chmod 0750 "${STAGING_DIR}"
     install -d -o root -g "${APP_GROUP}" -m 0750 "${STAGING_DIR}/api"
     install -o root -g "${APP_GROUP}" -m 0640 \
-      "${ROOT_DIR}/api/__init__.py" \
-      "${ROOT_DIR}/api/server.py" \
-      "${ROOT_DIR}/api/ui.py" \
+      "${ROOT_DIR}"/api/*.py \
       "${STAGING_DIR}/api/"
     install -o root -g "${APP_GROUP}" -m 0640 \
       "${ROOT_DIR}/deployment.json" \
