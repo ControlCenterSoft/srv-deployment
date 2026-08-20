@@ -6,6 +6,19 @@ This repository is the clean implementation line for the new Control Center prod
 
 ## Current implementation
 
+### Web UI shell
+The local server console is now available as a server-rendered, read-only shell:
+
+- `/overview` — **Обзор**
+- `/market` — **Маркет**
+- `/rbac` — **RBAC**
+- `/system` — **Система**
+- `/` maps to the overview shell
+
+The current UI intentionally contains no JavaScript, forms or privileged actions. It reads the same validated `deployment.json` as Platform API v1, escapes manifest data before HTML output, uses CSP/frame protections and fails closed with HTTP 503 if release metadata is invalid.
+
+Privileged controls will be introduced only after session, server-side RBAC, CSRF/origin and audit contracts are implemented and tested.
+
 ### Platform API v1
 The first server contour is intentionally read-only and dependency-free:
 
@@ -32,6 +45,7 @@ The API process contains no root execution path and does not expose arbitrary co
 - post-switch readiness verification
 - automatic restoration after a failed switch
 - explicit rollback to the previous healthy release
+- Web UI and Platform API installed as one versioned release payload
 
 Commands from a complete checkout:
 
@@ -45,7 +59,7 @@ bash install/install.sh --rollback
 The installer must run as root for install/repair/rollback because it manages the system user, `/opt/control-center`, systemd and atomic release links.
 
 ## Release metadata
-`deployment.json` is the canonical machine-readable product state consumed by the public website and local Platform API. A feature or client must not be presented as released unless its release metadata and acceptance evidence say so.
+`deployment.json` is the canonical machine-readable product state consumed by the public website, local Web UI and Platform API. A feature or client must not be presented as released unless its release metadata and acceptance evidence say so.
 
 ## Parallel clients
 Current independent development trains:
@@ -53,7 +67,7 @@ Current independent development trains:
 - Website — release-aware public portal
 - Android Client — `0.1.0`
 - Android Admin — `0.1.0`
-- Android SDK — `0.1.0`, shared API v1 models/contracts
+- Android SDK — `0.1.0`, shared API v1 models/contracts and bounded GET transport
 
 All privileged authorization remains server-side; client UI visibility is never treated as an authorization boundary.
 
@@ -64,6 +78,7 @@ GitHub Actions validates:
 - shell syntax
 - deployment manifest schema
 - API unit/contract tests
+- Web UI navigation/security/fail-closed tests
 - live API smoke test
 - negative write-method behavior
 
