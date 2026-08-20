@@ -7,7 +7,13 @@
     "channel": "stable",
     "status": "production-ready",
     "acceptance": "passed",
-    "release_date": "2026-08-20"
+    "release_date": "2026-08-20",
+    "source_commit": "1b364ae88789696bf98537d21544de8a259d086d",
+    "built_at": "2026-08-20T16:07:56Z",
+    "artifacts": {
+      "linux_amd64_sha256": "341f6a49646f92aca72692730ea61278cc03bfc1689d029d7a7ce573554fa735",
+      "linux_arm64_sha256": "5e6e959f39bd4cb554e902908863c92eb5c697f4d99b55ca97fa4735ec9419fe"
+    }
   },
   "features": [
     {

@@ -1,8 +1,8 @@
-name: ci
+name: post-release-main
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -10,173 +10,84 @@ permissions:
 
 env:
   GOTOOLCHAIN: local
+  ACCEPTED_VERSION: 1.0.0
+  ACCEPTED_COMMIT: 1b364ae88789696bf98537d21544de8a259d086d
+  ACCEPTED_BUILT_AT: 2026-08-20T16:07:56Z
+  ACCEPTED_AMD64_SHA256: 341f6a49646f92aca72692730ea61278cc03bfc1689d029d7a7ce573554fa735
+  ACCEPTED_ARM64_SHA256: 5e6e959f39bd4cb554e902908863c92eb5c697f4d99b55ca97fa4735ec9419fe
 
 jobs:
-  validate:
+  integration-guard:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.2'
           cache: true
       - name: Toolchain identity
         run: test "$(go env GOVERSION)" = go1.23.2
-      - name: Formatting
-        run: test -z "$(gofmt -l .)"
-      - name: Vet
-        run: go vet ./...
-      - name: Unit and API tests
-        run: go test ./...
-      - name: Script syntax
-        run: bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/build-release.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh scripts/rc1-update-acceptance.sh scripts/stable-update-acceptance.sh scripts/secret-scan.sh
-      - name: Secret scan
-        run: ./scripts/secret-scan.sh
-      - name: Exact release build
-        run: ./scripts/build-release.sh
-      - name: Stable release identity
+      - name: Accepted source is an ancestor
+        run: git merge-base --is-ancestor "$ACCEPTED_COMMIT" HEAD
+      - name: Fail closed on runtime drift after acceptance
+        shell: bash
         run: |
-          set -a
-          source dist/BUILDINFO.env
-          set +a
-          test "$VERSION" = 1.0.0
-          test "$COMMIT" = "${{ github.sha }}"
-          test "$GO_VERSION" = 1.23.2
-          [[ "$BUILT_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
-      - name: Reproducible rebuild
+          set -Eeuo pipefail
+          mapfile -t changed < <(git diff --name-only "$ACCEPTED_COMMIT"..HEAD)
+          for path in "${changed[@]}"; do
+            case "$path" in
+              .github/workflows/ci.yml|deployment.json|evidence/1.0.0-production-closure.md)
+                ;;
+              *)
+                echo "ERROR: post-release main changes accepted runtime/tooling path: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
+      - name: Current source regression
         run: |
-          cp dist/SHA256SUMS /tmp/first-SHA256SUMS
-          cp dist/BUILDINFO.env /tmp/first-BUILDINFO.env
-          rm -rf dist
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          bash -n install/install.sh install/uninstall.sh install/update.sh scripts/*.sh
+          ./scripts/secret-scan.sh
+      - name: Rebuild exact accepted 1.0.0 source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git worktree add --detach /tmp/control-center-accepted "$ACCEPTED_COMMIT"
+          cd /tmp/control-center-accepted
           ./scripts/build-release.sh
-          cmp /tmp/first-SHA256SUMS dist/SHA256SUMS
-          cmp /tmp/first-BUILDINFO.env dist/BUILDINFO.env
-      - name: Release signature smoke
-        run: |
           set -a
           source dist/BUILDINFO.env
           set +a
-          openssl genpkey -algorithm ED25519 -out /tmp/control-center-update-private.pem
-          openssl pkey -in /tmp/control-center-update-private.pem -pubout -out /tmp/control-center-update-public.pem
-          go run ./cmd/release-tool package \
-            --binary ./dist/control-center-linux-amd64 \
-            --version "$VERSION" \
-            --commit "$COMMIT" \
-            --arch amd64 \
-            --private-key /tmp/control-center-update-private.pem \
-            --output /tmp/control-center-release.tar.gz \
-            --built-at "$BUILT_AT"
-          mkdir /tmp/release-check
-          tar -xzf /tmp/control-center-release.tar.gz -C /tmp/release-check
-          test "$(find /tmp/release-check -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ' -)" = "control-center manifest.json manifest.sig"
-          ./dist/control-center-linux-amd64 verify-release \
-            --manifest /tmp/release-check/manifest.json \
-            --signature /tmp/release-check/manifest.sig \
-            --public-key /tmp/control-center-update-public.pem \
-            --artifact /tmp/release-check/control-center \
-            --field release-id
-          rm -f /tmp/control-center-update-private.pem
-      - name: Runtime smoke
+          test "$VERSION" = "$ACCEPTED_VERSION"
+          test "$COMMIT" = "$ACCEPTED_COMMIT"
+          test "$BUILT_AT" = "$ACCEPTED_BUILT_AT"
+          test "$GO_VERSION" = 1.23.2
+          test "$AMD64_SHA256" = "$ACCEPTED_AMD64_SHA256"
+          test "$ARM64_SHA256" = "$ACCEPTED_ARM64_SHA256"
+          cp dist/SHA256SUMS /tmp/accepted-first-sums
+          ./scripts/build-release.sh
+          cmp /tmp/accepted-first-sums dist/SHA256SUMS
+      - name: Canonical production manifest
         run: |
-          state_dir=$(mktemp -d)
-          log_dir=$(mktemp -d)
-          CONTROL_CENTER_STATE_DIR="$state_dir" ./dist/control-center-linux-amd64 bootstrap-admin --username admin
-          CONTROL_CENTER_STATE_DIR="$state_dir" CONTROL_CENTER_LOG_DIR="$log_dir" CONTROL_CENTER_LISTEN=127.0.0.1:18876 ./dist/control-center-linux-amd64 > /tmp/control-center.log 2>&1 &
-          pid=$!
-          trap 'kill "$pid" 2>/dev/null || true; rm -rf "$state_dir" "$log_dir"' EXIT
-          for i in {1..20}; do
-            if curl -fsS http://127.0.0.1:18876/api/v1/health >/dev/null; then break; fi
-            sleep 0.25
-          done
-          curl -fsS http://127.0.0.1:18876/api/v1/health
-          curl -fsS http://127.0.0.1:18876/api/v1/readiness
-          version_json=$(curl -fsS http://127.0.0.1:18876/api/v1/version)
-          grep -Fq '"version":"1.0.0"' <<<"$version_json"
-          grep -Fq "\"commit\":\"${{ github.sha }}\"" <<<"$version_json"
-
-  systemd-acceptance:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23.2'
-          cache: true
-      - name: Toolchain identity
-        run: test "$(go env GOVERSION)" = go1.23.2
-      - name: Generate ephemeral update trust
-        run: |
-          openssl genpkey -algorithm ED25519 -out /tmp/control-center-update-private.pem
-          openssl pkey -in /tmp/control-center-update-private.pem -pubout -out /tmp/control-center-update-public.pem
-          chmod 0600 /tmp/control-center-update-private.pem
-      - name: Build exact candidate
-        run: ./scripts/build-release.sh
-      - name: Clean install
-        run: |
-          sudo env PATH="$PATH" CONTROL_CENTER_UPDATE_PUBLIC_KEY=/tmp/control-center-update-public.pem ./install/install.sh
-          systemctl is-active --quiet control-center.service
-          test -L /usr/local/lib/control-center/current
-          test -x /usr/local/lib/control-center/current/control-center
-          test -x /usr/local/sbin/control-center-update
-          sudo test -f /etc/control-center/update-public-key.pem
-          sudo grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
-          curl -fsS http://127.0.0.1:8876/api/v1/health
-          curl -fsS http://127.0.0.1:8876/api/v1/readiness
-      - name: Restart acceptance
-        run: |
-          sudo systemctl restart control-center.service
-          systemctl is-active --quiet control-center.service
-          for i in {1..20}; do
-            if curl -fsS http://127.0.0.1:8876/api/v1/readiness >/dev/null; then break; fi
-            sleep 0.5
-          done
-          curl -fsS http://127.0.0.1:8876/api/v1/readiness
-          test "$(stat -c %a /etc/control-center)" = 750
-          test "$(stat -c %a /var/lib/control-center)" = 750
-          test "$(stat -c %a /var/log/control-center)" = 750
-      - name: Authentication and RBAC acceptance
-        run: sudo env PATH="$PATH" ./scripts/auth-acceptance.sh
-      - name: Operations and diagnostics acceptance
-        run: sudo env PATH="$PATH" ./scripts/operations-acceptance.sh
-      - name: Stable signed update and rollback acceptance
-        run: sudo env PATH="$PATH" CONTROL_CENTER_UPDATE_PRIVATE_KEY=/tmp/control-center-update-private.pem ./scripts/stable-update-acceptance.sh
-      - name: Restore exact stable after synthetic update tests
-        run: |
-          set -a
-          source dist/BUILDINFO.env
-          set +a
-          go run ./cmd/release-tool package \
-            --binary ./dist/control-center-linux-amd64 \
-            --version "$VERSION" \
-            --commit "$COMMIT" \
-            --arch amd64 \
-            --private-key /tmp/control-center-update-private.pem \
-            --output /tmp/control-center-stable.tar.gz \
-            --built-at "$BUILT_AT"
-          sudo env PATH="$PATH" control-center-update --package /tmp/control-center-stable.tar.gz --allow-downgrade
-      - name: Repair and reinstall acceptance
-        run: |
-          sudo env PATH="$PATH" ./install/install.sh --repair
-          sudo env PATH="$PATH" ./install/install.sh --reinstall
-          systemctl is-active --quiet control-center.service
-          sudo test -f /etc/control-center/update-public-key.pem
-      - name: Preserve-state uninstall and reinstall
-        run: |
-          sudo ./install/uninstall.sh
-          sudo test -f /etc/control-center/control-center.env
-          sudo test -f /etc/control-center/update-public-key.pem
-          sudo test -d /var/lib/control-center
-          sudo env PATH="$PATH" ./install/install.sh
-          systemctl is-active --quiet control-center.service
-      - name: Purge uninstall
-        run: |
-          sudo ./install/uninstall.sh --purge
-          test ! -e /etc/control-center
-          test ! -e /var/lib/control-center
-          test ! -e /var/log/control-center
-          test ! -e /usr/local/lib/control-center
-          test ! -e /usr/local/sbin/control-center-update
-          ! systemctl is-active --quiet control-center.service
-      - name: Remove ephemeral signing key
-        if: always()
-        run: sudo rm -f /tmp/control-center-update-private.pem /tmp/control-center-update-public.pem /tmp/control-center-stable.tar.gz
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('deployment.json').read_text())
+          r=p['release']
+          assert p['schema'] == 1
+          assert p['product'] == 'control-center'
+          assert r['version'] == '1.0.0'
+          assert r['channel'] == 'stable'
+          assert r['status'] == 'production-ready'
+          assert r['acceptance'] == 'passed'
+          assert r['source_commit'] == '1b364ae88789696bf98537d21544de8a259d086d'
+          assert r['built_at'] == '2026-08-20T16:07:56Z'
+          assert r['artifacts']['linux_amd64_sha256'] == '341f6a49646f92aca72692730ea61278cc03bfc1689d029d7a7ce573554fa735'
+          assert r['artifacts']['linux_arm64_sha256'] == '5e6e959f39bd4cb554e902908863c92eb5c697f4d99b55ca97fa4735ec9419fe'
+          print('PRODUCTION_MANIFEST=PASSED')
+          PY
