@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.6-flash' }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.7-flash' }}
       GEMINI_GATE_LEVEL: ${{ vars.GEMINI_GATE_LEVEL || 'NONE' }}
     steps:
       - uses: actions/checkout@v6
@@ -78,11 +78,13 @@ jobs:
 
       - name: Run Gemini review
         if: steps.config.outputs.configured == 'true'
+        id: gemini
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
+          set +e
           python3 scripts/gemini_review.py \
             --diff-file "$RUNNER_TEMP/gemini-review.diff" \
             --output-json "$RUNNER_TEMP/gemini-review.json" \
@@ -91,10 +93,35 @@ jobs:
             --change-id "${{ steps.diff.outputs.change_id }}" \
             --sha "${{ steps.diff.outputs.head_sha }}" \
             --model "$GEMINI_MODEL"
+          STATUS=$?
+          set -e
+
+          if [[ "$STATUS" -ne 0 ]]; then
+            echo 'review_ok=false' >> "$GITHUB_OUTPUT"
+            echo 'report_ready=true' >> "$GITHUB_OUTPUT"
+            {
+              echo '## Gemini independent review'
+              echo
+              echo "**Model:** \`${GEMINI_MODEL}\`  "
+              echo '**Status:** `UNAVAILABLE`'
+              echo
+              echo 'The external Gemini review could not be completed after transient-error retries. Baseline CI remains authoritative while the review is advisory.'
+            } > "$RUNNER_TEMP/gemini-review.md"
+            cat "$RUNNER_TEMP/gemini-review.md" >> "$GITHUB_STEP_SUMMARY"
+
+            GATE="${GEMINI_GATE_LEVEL^^}"
+            if [[ "$GATE" == 'NONE' || "$GATE" == 'OFF' || "$GATE" == 'DISABLED' ]]; then
+              exit 0
+            fi
+            exit "$STATUS"
+          fi
+
+          echo 'review_ok=true' >> "$GITHUB_OUTPUT"
+          echo 'report_ready=true' >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/gemini-review.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish PR review comment
-        if: steps.config.outputs.configured == 'true' && github.event_name == 'pull_request'
+        if: steps.config.outputs.configured == 'true' && github.event_name == 'pull_request' && steps.gemini.outputs.report_ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -128,7 +155,7 @@ jobs:
           fi
 
       - name: Enforce Gemini severity gate
-        if: steps.config.outputs.configured == 'true'
+        if: steps.config.outputs.configured == 'true' && steps.gemini.outputs.review_ok == 'true'
         env:
           REVIEW_FILE: ${{ runner.temp }}/gemini-review.json
         shell: bash
