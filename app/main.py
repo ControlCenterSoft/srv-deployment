@@ -1,5 +1,5 @@
 APP_VERSION = '1.0.11'
-APP_BUILD = '20260819.5'
+APP_BUILD = '20260820.1'
 
 # Compatibility shim for legacy updaters that read APP_VERSION directly from
 # app/main.py before running the installer. The application implementation is
