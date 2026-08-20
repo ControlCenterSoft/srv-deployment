@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "product": "control-center",
-  "updated_at": "2026-08-20T09:30:00Z",
+  "updated_at": "2026-08-20T09:36:00Z",
   "release": {
     "version": "1.0.0",
     "channel": "development",
@@ -13,8 +13,8 @@
     {
       "id": "installer-foundation",
       "title_ru": "Installer foundation",
-      "summary_ru": "Preflight, install, repair/reinstall и безопасный rollback проектируются для новой линии 1.0.0.",
-      "status": "planned"
+      "summary_ru": "Preflight, atomic install/repair, readiness verification и безопасный rollback реализуются для новой линии 1.0.0.",
+      "status": "development"
     },
     {
       "id": "web-ui-shell",
