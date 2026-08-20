@@ -6,11 +6,21 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   inspect:
     runs-on: ubuntu-24.04
     steps:
+      - name: Mark inspection pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY' >/tmp/status.json
+          import json,os
+          print(json.dumps({"state":"pending","context":"ops/stable-v1-inspect","description":"Inspecting accepted RC v7 anchors","target_url":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"}))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" --data-binary @/tmp/status.json >/dev/null
       - name: Materialize immutable accepted RC v7 orchestrator
         run: |
           set -Eeuo pipefail
@@ -31,3 +41,17 @@ jobs:
           grep -nE 'STEP=|log "|FINAL_STATUS|RC1 REAL-HOST|rc1-update-acceptance|diagnostics' /tmp/v7.sh || true
           echo '=== CURRENT VERSION CHECKS ==='
           grep -nE 'current_version|current_commit|BETA_VERSION|RC_VERSION|PRIOR_RC_COMMIT' /tmp/v7.sh || true
+      - name: Publish inspection result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          STATE=failure; DESC='Stable v1 anchor inspection failed'
+          if [[ "$JOB_STATUS" == success ]]; then STATE=success; DESC='Stable v1 anchor inspection passed'; fi
+          export STATE DESC
+          python3 - <<'PY' >/tmp/status.json
+          import json,os
+          print(json.dumps({"state":os.environ["STATE"],"context":"ops/stable-v1-inspect","description":os.environ["DESC"],"target_url":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"}))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" --data-binary @/tmp/status.json >/dev/null
