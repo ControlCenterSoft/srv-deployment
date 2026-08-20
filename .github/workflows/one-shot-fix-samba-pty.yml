@@ -1,3 +1,4 @@
+# Triggered after workflow registration on the release branch.
 name: One-shot Samba PTY completion repair
 
 on:
