@@ -3,6 +3,8 @@ name: Remote Agent Bootstrap Probe
 on:
   push:
     branches: [ops/remote-agent-bootstrap]
+  pull_request:
+    branches: [1.1.x]
   workflow_dispatch:
 
 permissions:
