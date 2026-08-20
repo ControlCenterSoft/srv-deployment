@@ -21,6 +21,7 @@ env:
   GOTOOLCHAIN: local
   GO_VERSION: '1.23.2'
   DEVELOPMENT_VERSION: 1.1.0-dev
+  PRODUCTION_BASELINE_COMMIT: 49b7753d0acaa9f0e9e27a29e54a8884fa6147e4
 
 jobs:
   scope:
@@ -86,9 +87,8 @@ jobs:
       - name: Production pointer remains frozen in development
         run: |
           set -Eeuo pipefail
-          git diff --exit-code \
-            1b364ae88789696bf98537d21544de8a259d086d..HEAD \
-            -- deployment.json release/1.0.0.env
+          git diff --exit-code "$PRODUCTION_BASELINE_COMMIT" -- \
+            deployment.json release/1.0.0.env
       - name: Diff whitespace
         env:
           BASE_SHA: ${{ needs.scope.outputs.base_sha }}
