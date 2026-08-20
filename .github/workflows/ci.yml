@@ -42,3 +42,46 @@ jobs:
           curl -fsS http://127.0.0.1:18876/api/v1/health
           curl -fsS http://127.0.0.1:18876/api/v1/readiness
           curl -fsS http://127.0.0.1:18876/api/v1/version
+
+  systemd-acceptance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: Build candidate
+        env:
+          VERSION: 1.0.0-alpha.1+ci
+          COMMIT: ${{ github.sha }}
+        run: ./scripts/build.sh
+      - name: Clean install
+        run: |
+          sudo ./install/install.sh
+          systemctl is-active --quiet control-center.service
+          curl -fsS http://127.0.0.1:8876/api/v1/health
+      - name: Restart acceptance
+        run: |
+          sudo systemctl restart control-center.service
+          systemctl is-active --quiet control-center.service
+          curl -fsS http://127.0.0.1:8876/api/v1/readiness
+      - name: Repair and reinstall acceptance
+        run: |
+          sudo ./install/install.sh --repair
+          sudo ./install/install.sh --reinstall
+          systemctl is-active --quiet control-center.service
+      - name: Preserve-state uninstall and reinstall
+        run: |
+          sudo ./install/uninstall.sh
+          test -f /etc/control-center/control-center.env
+          test -d /var/lib/control-center
+          sudo ./install/install.sh
+          systemctl is-active --quiet control-center.service
+      - name: Purge uninstall
+        run: |
+          sudo ./install/uninstall.sh --purge
+          test ! -e /etc/control-center
+          test ! -e /var/lib/control-center
+          test ! -e /var/log/control-center
+          ! systemctl is-active --quiet control-center.service
