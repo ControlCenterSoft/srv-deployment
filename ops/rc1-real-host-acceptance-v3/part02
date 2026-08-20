@@ -1,0 +1,38 @@
+() {
+  case "$(uname -m)" in
+    x86_64) GOARCH=amd64; EXPECTED_RC_SHA="$RC_AMD64_SHA256"; GO_ARCHIVE_SHA="$GO_AMD64_SHA256" ;;
+    aarch64|arm64) GOARCH=arm64; EXPECTED_RC_SHA="$RC_ARM64_SHA256"; GO_ARCHIVE_SHA="$GO_ARM64_SHA256" ;;
+    *) die "unsupported host architecture: $(uname -m)" ;;
+  esac
+}
+
+ensure_pinned_go() {
+  setup_arch
+  local archive="$BASE/go${GO_VERSION}.linux-${GOARCH}.tar.gz"
+  if [[ ! -x "$TOOLCHAIN_ROOT/go/bin/go" ]]; then
+    rm -rf "$TOOLCHAIN_ROOT"
+    mkdir -p "$TOOLCHAIN_ROOT"
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" -o "$archive"
+    printf '%s  %s\n' "$GO_ARCHIVE_SHA" "$archive" | sha256sum -c -
+    tar -C "$TOOLCHAIN_ROOT" -xzf "$archive"
+    rm -f "$archive"
+  fi
+  export GOROOT="$TOOLCHAIN_ROOT/go"
+  export PATH="$GOROOT/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  export GOTOOLCHAIN=local
+  [[ "$(go env GOVERSION)" == "go$GO_VERSION" ]] || die "pinned Go toolchain mismatch"
+}
+
+build_exact_candidate() {
+  STEP="build-exact-candidate"
+  log "Fetch and build exact rc.1 with pinned Go $GO_VERSION"
+  rm -rf "$SOURCE_DIR"
+  git clone -q "$PRODUCT_REPO" "$SOURCE_DIR"
+  git -C "$SOURCE_DIR" checkout -q --detach "$RC_COMMIT"
+  [[ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" == "$RC_COMMIT" ]] || die "source commit mismatch"
+  [[ -z "$(git -C "$SOURCE_DIR" status --porcelain)" ]] || die "source checkout is not clean"
+  (cd "$SOURCE_DIR" && ./scripts/secret-scan.sh && go test ./... && go vet ./...)
+  bash -n "$SOURCE_DIR"/install/install.sh "$SOURCE_DIR"/install/uninstall.sh "$SOURCE_DIR"/install/update.sh \
+    "$SOURCE_DIR"/scripts/build.sh "$SOURCE_DIR"/scripts/build-release.sh "$SOURCE_DIR"/scripts/rc1-update-acceptance.sh
+  (cd "$SOURCE_DIR" && ./scripts/build-release.sh)
+  printf '%s  %s\n' 

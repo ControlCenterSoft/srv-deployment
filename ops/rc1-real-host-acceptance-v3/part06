@@ -1,0 +1,25 @@
+api/v1/auth/login")"
+  [[ "$code" == 200 ]] || die "browser-path admin login failed: $code"
+  browser_token="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$work/browser.headers" | tr -d '\r' | head -1)"
+  browser_csrf="$(json_field "$work/browser.body" csrf_token)"
+  [[ -n "$browser_token" && -n "$browser_csrf" ]] || die "browser session material missing"
+  code="$(curl -sS -o "$work/browser-session.json" -w '%{http_code}' -H "Host: $PUBLIC_IP:8876" -H "Cookie: cc_session=$browser_token" "http://127.0.0.1:8876/api/v1/auth/session")"
+  [[ "$code" == 200 ]] || die "browser-path session lookup failed"
+
+  local endpoint
+  for endpoint in system/status rbac/users operations audit diagnostics/summary; do
+    code="$(curl -sS -o "$work/${endpoint//\//-}.json" -w '%{http_code}' -H "Cookie: cc_session=$direct_token" "$BACKEND_URL/api/v1/$endpoint")"
+    [[ "$code" == 200 ]] || die "protected endpoint $endpoint returned $code"
+  done
+
+  cat > "$work/password.json" <<'JSON'
+{"current_password":"rc1-deliberately-wrong-current-password","new_password":"rc1-deliberately-unused-new-password"}
+JSON
+  code="$(curl -sS -o "$work/no-csrf.json" -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $BACKEND_URL" \
+    -H "Cookie: cc_session=$direct_token" --data-binary "@$work/password.json" "$BACKEND_URL/api/v1/auth/password")"
+  [[ "$code" == 403 ]] || die "missing-CSRF mutation was not rejected: $code"
+  code="$(curl -sS -o "$work/bad-origin.json" -w '%{http_code}' -H 'Content-Type: application/json' -H 'Origin: http://invalid.example' \
+    -H "Cookie: cc_session=$direct_token" -H "X-CSRF-Token: $direct_csrf" --data-binary "@$work/password.json" "$BACKEND_URL/api/v1/auth/password")"
+  [[ "$code" == 403 ]] || die "bad-origin mutation was not rejected: $code"
+
+  printf

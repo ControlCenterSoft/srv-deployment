@@ -1,0 +1,64 @@
+on users.json version.json" ]] || die "diagnostics whitelist mismatch"
+  rm -rf "$work/diag-expanded"; mkdir "$work/diag-expanded"; tar -xzf "$work/diagnostics.tar.gz" -C "$work/diag-expanded"
+  ! grep -RqiE 'pbkdf2-sha256|bootstrap-admin\.secret|cc_session|BEGIN .*PRIVATE KEY' "$work/diag-expanded" || die "secret material leaked into diagnostics"
+  cp "$work/diagnostics.tar.gz" "$DIAG_BUNDLE"
+  chmod 0600 "$DIAG_BUNDLE"
+  # Login payloads, session cookies and CSRF material are acceptance-only secrets.
+  rm -rf -- "$work"
+}
+
+write_state_file() {
+  cat > "$STATE_FILE" <<EOF
+PHASE=post-reboot
+START_TS=$START_TS
+HOST_SAFE=$HOST_SAFE
+PUBLIC_IP=$PUBLIC_IP
+BACKEND_URL=$BACKEND_URL
+PANEL_URL=$PANEL_URL
+OLD_BOOT_ID=$OLD_BOOT_ID
+GOARCH=$GOARCH
+EXPECTED_RC_SHA=$EXPECTED_RC_SHA
+STATE_HASH_BEFORE=$STATE_HASH_BEFORE
+SECRETS_HASH_BEFORE=$SECRETS_HASH_BEFORE
+PRODUCT_CHANGED=1
+EOF
+  chmod 0600 "$STATE_FILE"
+}
+
+load_state_file() {
+  [[ -f "$STATE_FILE" ]] || die "resume state missing"
+  # shellcheck disable=SC1090
+  source "$STATE_FILE"
+}
+
+install_resume_unit() {
+  install -m 0700 "$0" "$RESUME_SCRIPT"
+  cat > "$RESUME_UNIT" <<EOF
+[Unit]
+Description=Control Center rc.1 acceptance resume after reboot
+Wants=network-online.target
+After=network-online.target control-center.service nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=$RESUME_SCRIPT --resume
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "$RESUME_UNIT"
+  systemctl daemon-reload
+  systemctl enable "$RESUME_UNIT_NAME" >/dev/null
+}
+
+remove_resume_unit() {
+  systemctl disable "$RESUME_UNIT_NAME" >/dev/null 2>&1 || true
+  rm -f "$RESUME_UNIT" "$RESUME_SCRIPT"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+write_report() {
+  mkdir -p "$REPORT_DIR"
+  local private_removed=false
+  [[ ! -e "$PRIVATE_KEY" 

@@ -1,0 +1,60 @@
+    --manifest "$check/manifest.json" --signature "$check/manifest.sig" --public-key "$PUBLIC_KEY" \
+    --artifact "$check/control-center" --field release-id >/dev/null
+  rm -rf "$check"
+}
+
+backup_original_trust() {
+  if [[ ! -f "$HAD_TRUST_FILE" ]]; then
+    if [[ -f "$TRUST_KEY" ]]; then
+      cp -a "$TRUST_KEY" "$ORIGINAL_TRUST"
+      printf '1\n' > "$HAD_TRUST_FILE"
+    else
+      printf '0\n' > "$HAD_TRUST_FILE"
+    fi
+    chmod 0600 "$HAD_TRUST_FILE"
+  fi
+}
+
+install_test_trust() {
+  backup_original_trust
+  install -D -o root -g root -m 0644 "$PUBLIC_KEY" "$TRUST_KEY"
+}
+
+restore_original_trust() {
+  # If acceptance failed before trust backup was created, do not mutate the
+  # host trust configuration during cleanup.
+  if [[ ! -f "$HAD_TRUST_FILE" ]]; then
+    TRUST_RESTORED="not-touched"
+    return 0
+  fi
+  local had
+  had="$(cat "$HAD_TRUST_FILE")"
+  if [[ "$had" == 1 && -f "$ORIGINAL_TRUST" ]]; then
+    install -D -o root -g root -m 0644 "$ORIGINAL_TRUST" "$TRUST_KEY"
+  elif [[ "$had" == 0 ]]; then
+    rm -f "$TRUST_KEY"
+  else
+    return 1
+  fi
+  TRUST_RESTORED="passed"
+}
+
+load_admin_credentials() {
+  [[ -f "$CREDENTIALS_FILE" ]] || die "admin credentials file missing"
+  ADMIN_USER="$(sed -n 's/^username=//p' "$CREDENTIALS_FILE" | head -1)"
+  ADMIN_PASSWORD="$(sed -n 's/^password=//p' "$CREDENTIALS_FILE" | head -1)"
+  [[ -n "$ADMIN_USER" && -n "$ADMIN_PASSWORD" ]] || die "admin credentials file incomplete"
+}
+
+write_login_json() {
+  local path="$1" user="$2" password="$3"
+  CC_LOGIN_USER="$user" CC_LOGIN_PASSWORD="$password" python3 - "$path" <<'PY'
+import json,os,sys
+with open(sys.argv[1],"w",encoding="utf-8") as f:
+    json.dump({"username":os.environ["CC_LOGIN_USER"],"password":os.environ["CC_LOGIN_PASSWORD"]},f)
+PY
+  chmod 0600 "$path"
+}
+
+json_field() {
+  pyt
