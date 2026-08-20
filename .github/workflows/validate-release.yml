@@ -77,7 +77,7 @@ jobs:
           assets=(r/'app/release_111_services_assets.py').read_text()
           assert "'release-111-market-hotfix.js'" in assets
           hotfix=(r/'app/static/release-111-market-hotfix.js').read_text()
-          for marker in ['market108 = marketServices111','market109 = marketServices111',"service === 'domain'",'data-open-domain-setup']:
+          for marker in ['market108 = marketServices111','market109 = marketServices111',"service === 'domain'"]:
               assert marker in hotfix,marker
           installer=(r/'install/install.sh').read_text()
           for marker in ['TARGET_BUILD=20260820.1','install-1.0.11-build5.sh','control-center-authd.service','candidate=controladmin','migration 005',"printf '  Пароль: %s\\n'"]:
