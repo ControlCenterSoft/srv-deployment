@@ -1,7 +1,7 @@
 [Unit]
 Description=Control Center privileged typed-operation worker
-After=local-fs.target control-center.service
-PartOf=control-center.service
+After=local-fs.target
+Before=control-center.service
 
 [Service]
 Type=simple
