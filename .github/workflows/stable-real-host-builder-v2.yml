@@ -1,4 +1,4 @@
-name: stable-real-host-orchestrator-builder-v2
+name: stable-real-host-orchestrator-builder-v3
 
 on:
   push:
@@ -10,36 +10,49 @@ permissions:
 
 env:
   STABLE_SHA: 1b364ae88789696bf98537d21544de8a259d086d
-  RC_V7_COMMIT: fe579e3f38e18bf1fc56a93699489b762206427d
-  RC_V7_BLOB_SHA1: 65625a24659540df4226cf60134365f18b2917cd
-  STATUS_CONTEXT: control-center/stable-builder-inspect
+  LAUNCHER_COMMIT: 44b358dc736998df42eca016324ea6de86e68fb4
+  LAUNCHER_BLOB_SHA1: 7a3bcf32152fae84ecb499072628223775aefcc3
+  STATUS_CONTEXT: control-center/stable-real-host-builder
 
 jobs:
-  inspect:
+  build-only:
     runs-on: ubuntu-24.04
+    outputs:
+      orchestrator_sha: ${{ steps.build.outputs.sha }}
     steps:
-      - name: Build immutable RC v7 script
+      - name: Fetch immutable stable launcher
         run: |
-          url="https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/${RC_V7_COMMIT}/ops/rc1-real-host-acceptance-v7/run-verified.sh"
-          curl -fsSL "$url" -o /tmp/rc-v7-launcher.sh
-          size="$(wc -c < /tmp/rc-v7-launcher.sh | tr -d ' ')"
-          actual="$({ printf 'blob %s\0' "$size"; cat /tmp/rc-v7-launcher.sh; } | sha1sum | awk '{print $1}')"
-          test "$actual" = "$RC_V7_BLOB_SHA1"
-          sudo env RC1_V7_BUILD_ONLY=1 OUTPUT_V7=/tmp/rc-v7.sh bash /tmp/rc-v7-launcher.sh
-          sudo bash -n /tmp/rc-v7.sh
-          echo '=== RC V7 UPDATE ACCEPTANCE ANCHORS ==='
-          sudo grep -n -C 2 'rc1-update-acceptance.sh' /tmp/rc-v7.sh
-      - name: Publish inspection status
+          url="https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/${LAUNCHER_COMMIT}/ops/stable-1.0.0-real-host-acceptance-v1/run-verified.sh"
+          curl -fsSL "$url" -o /tmp/launcher.sh
+          size="$(wc -c < /tmp/launcher.sh | tr -d ' ')"
+          actual="$({ printf 'blob %s\0' "$size"; cat /tmp/launcher.sh; } | sha1sum | awk '{print $1}')"
+          test "$actual" = "$LAUNCHER_BLOB_SHA1"
+      - name: Build exact orchestrator
+        id: build
+        run: |
+          sudo env STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-v1.sh bash /tmp/launcher.sh
+          bash -n /tmp/stable-v1.sh
+          sha="$(sha256sum /tmp/stable-v1.sh | awk '{print $1}')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          grep -F 'RC_VERSION="1.0.0"' /tmp/stable-v1.sh
+          grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-v1.sh
+          grep -F 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-v1.sh
+          grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-v1.sh
+          grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-v1.sh
+          ! grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-v1.sh
+          echo "$sha  /tmp/stable-v1.sh"
+      - name: Publish result
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           JOB_STATUS: ${{ job.status }}
+          ORCHESTRATOR_SHA: ${{ steps.build.outputs.sha }}
         run: |
           STATE=failure
-          DESCRIPTION='RC v7 builder anchor inspection failed'
-          if [[ "$JOB_STATUS" == success ]]; then
+          DESCRIPTION='Stable real-host orchestrator build failed'
+          if [[ "$JOB_STATUS" == success && -n "$ORCHESTRATOR_SHA" ]]; then
             STATE=success
-            DESCRIPTION='RC v7 builder anchors inspected'
+            DESCRIPTION="$ORCHESTRATOR_SHA"
           fi
           export STATE DESCRIPTION
           python3 - <<'PY' >/tmp/status.json
