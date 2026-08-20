@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SYSTEM=/var/lib/control-center-system
+ROOT=/var/lib/control-center-root
+ROOT_RUN=/run/control-center-root
+CTX="$ROOT/domain-install-context.json"
+STATUS="$SYSTEM/samba-status.json"
+PRE=/usr/local/sbin/control-center-domain-pre
+CORE=/usr/local/sbin/control-center-samba-apply-core
+POST=/usr/local/sbin/control-center-domain-post
+RESTORE=/usr/local/sbin/control-center-domain-restore-prestate
+KRB_SHIM="$ROOT_RUN/krb-shim-$$"
+KRB_CACHE="$ROOT_RUN/krb5cc-domain-$$"
+
+write_status(){ python3 - "$STATUS" "$1" "$2" "${3:-}" <<'PY'
+import json,sys,time,os,tempfile
+p,state,msg,detail=sys.argv[1:]
+try:old=json.load(open(p))
+except Exception:old={}
+old.update({'state':state,'message':msg,'detail':detail,'timestamp':int(time.time())})
+fd,tmp=tempfile.mkstemp(prefix='.samba-status.',dir=os.path.dirname(p))
+with os.fdopen(fd,'w') as f:json.dump(old,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+os.replace(tmp,p)
+PY
+chown root:control-center "$STATUS";chmod 0640 "$STATUS"; }
+
+restart_preserved_dns(){
+  [[ -s "$CTX" ]]||return 0
+  ACTIVE="$(python3 - "$CTX" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print('1' if j.get('unbound_active') else '0')
+PY
+)"
+  [[ "$ACTIVE" == 1 ]]&&systemctl start unbound.service >/dev/null 2>&1||true
+}
+
+cleanup_kerberos_shim(){
+  rm -rf "$KRB_SHIM" 2>/dev/null||true
+  rm -f "$KRB_CACHE" 2>/dev/null||true
+}
+
+prepare_kerberos_shim(){
+  install -d -o root -g root -m 0700 "$ROOT_RUN" "$KRB_SHIM"
+  cat >"$KRB_SHIM/kinit" <<'PY'
+#!/usr/bin/env python3
+from __future__ import annotations
+import errno
+import os
+import pty
+import select
+import signal
+import sys
+import time
+
+cache = os.environ.get('CONTROL_CENTER_KRB5CCACHE', '')
+if not cache.startswith('/run/control-center-root/krb5cc-domain-'):
+    raise SystemExit('invalid Control Center Kerberos cache path')
+password = sys.stdin.read(512).rstrip('\r\n')
+if not password:
+    raise SystemExit('empty Kerberos password input')
+secret = password.encode('utf-8')
+env = os.environ.copy()
+env['KRB5CCNAME'] = 'FILE:' + cache
+argv = ['/usr/bin/kinit', *sys.argv[1:]]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ.clear()
+    os.environ.update(env)
+    os.execv(argv[0], argv)
+
+buf = b''
+sent = False
+deadline = time.time() + 45
+status = None
+try:
+    while True:
+        if time.time() > deadline:
+            os.kill(pid, signal.SIGKILL)
+            raise SystemExit('kinit pseudo-TTY timeout')
+        ready, _, _ = select.select([fd], [], [], 0.25)
+        if ready:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not chunk:
+                break
+            os.write(1, chunk.replace(secret, b'***'))
+            buf = (buf + chunk)[-4096:]
+            if not sent and b'Password for ' in buf and b':' in buf[buf.rfind(b'Password for '):]:
+                os.write(fd, secret + b'\n')
+                sent = True
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            break
+finally:
+    password = ''
+    secret = b''
+try:
+    if status is None or status == 0:
+        _, status = os.waitpid(pid, 0)
+except ChildProcessError:
+    pass
+if not sent:
+    raise SystemExit('kinit password prompt was not observed')
+rc = os.waitstatus_to_exitcode(status)
+if rc == 0:
+    os.write(2, b'CONTROL_CENTER_ACCEPT: Kerberos kinit OK\n')
+else:
+    os.write(2, f'CONTROL_CENTER_ACCEPT: Kerberos kinit FAILED rc={rc}\n'.encode())
+raise SystemExit(rc)
+PY
+  cat >"$KRB_SHIM/klist" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+CACHE="${CONTROL_CENTER_KRB5CCACHE:?}"
+[[ "$CACHE" == /run/control-center-root/krb5cc-domain-* ]]||exit 2
+rc=0
+env KRB5CCNAME="FILE:$CACHE" /usr/bin/klist "$@"||rc=$?
+if [[ $rc -eq 0 ]];then
+  echo 'CONTROL_CENTER_ACCEPT: Kerberos klist OK' >&2
+else
+  echo "CONTROL_CENTER_ACCEPT: Kerberos klist FAILED rc=$rc" >&2
+fi
+exit "$rc"
+SH
+  cat >"$KRB_SHIM/kdestroy" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+CACHE="${CONTROL_CENTER_KRB5CCACHE:?}"
+[[ "$CACHE" == /run/control-center-root/krb5cc-domain-* ]]||exit 2
+# The legacy core calls kdestroy immediately after klist. Keep the validated
+# cache until the parent returns so diagnostics can prove Kerberos succeeded;
+# the orchestrator deletes it unconditionally after the core step.
+echo 'CONTROL_CENTER_ACCEPT: Kerberos cache destruction deferred to orchestrator cleanup' >&2
+exit 0
+SH
+  cat >"$KRB_SHIM/samba-tool" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+
+# A Control Center DC uses Samba's native idmap.ldb allocation for Unix IDs.
+# The release does not currently expose RFC2307 uidNumber/gidNumber management,
+# so enabling --use-rfc2307 can make a freshly provisioned DC accept Kerberos
+# yet reject SMB tokens with NT_STATUS_INVALID_SID when a token SID has no
+# RFC2307 Unix mapping. Keep the NIS extension out of the provisioning path and
+# make the local lookup mode explicit.
+if [[ "${1:-}" == domain && "${2:-}" == provision ]];then
+  filtered=()
+  for arg in "$@";do
+    [[ "$arg" == '--use-rfc2307' ]]&&continue
+    filtered+=("$arg")
+  done
+  /usr/bin/samba-tool "${filtered[@]}"
+  rc=$?
+  if [[ $rc -eq 0 ]];then
+    if grep -Eqi '^\s*idmap_ldb:use[[:space:]]+rfc2307[[:space:]]*=' /etc/samba/smb.conf 2>/dev/null;then
+      sed -Ei 's/^([[:space:]]*)idmap_ldb:use[[:space:]]+rfc2307[[:space:]]*=.*/\1idmap_ldb:use rfc2307 = no/I' /etc/samba/smb.conf
+    else
+      sed -i '/^\[global\][[:space:]]*$/a\	idmap_ldb:use rfc2307 = no' /etc/samba/smb.conf
+    fi
+    /usr/bin/samba-tool testparm >/dev/null || exit $?
+    echo 'CONTROL_CENTER_ACCEPT: Samba AD DC native idmap mode provisioned (idmap_ldb:use rfc2307 = no)' >&2
+  fi
+  exit "$rc"
+fi
+
+retry=0
+label=''
+if [[ "${1:-}" == domain && "${2:-}" == info ]];then retry=1;label='LDAP domain-info';fi
+if [[ "${1:-}" == drs && "${2:-}" == showrepl ]];then retry=1;label='DRS replication';fi
+if [[ $retry -eq 0 ]];then exec /usr/bin/samba-tool "$@";fi
+tmp="$(mktemp /tmp/control-center-samba-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
+rc=1
+for attempt in $(seq 1 45);do
+  /usr/bin/samba-tool "$@" >"$tmp" 2>&1
+  rc=$?
+  if [[ $rc -eq 0 ]];then
+    cat "$tmp"
+    echo "CONTROL_CENTER_ACCEPT: $label ready attempt=$attempt" >&2
+    exit 0
+  fi
+  sleep 1
+done
+echo "CONTROL_CENTER_ACCEPT: $label FAILED after 45 attempts rc=$rc" >&2
+cat "$tmp" >&2
+exit "$rc"
+SH
+  cat >"$KRB_SHIM/host" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+tmp="$(mktemp /tmp/control-center-samba-dns-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
+rc=1
+for attempt in $(seq 1 30);do
+  /usr/bin/host "$@" >"$tmp" 2>&1
+  rc=$?
+  if [[ $rc -eq 0 ]];then
+    cat "$tmp"
+    echo "CONTROL_CENTER_ACCEPT: DNS query ready attempt=$attempt" >&2
+    exit 0
+  fi
+  sleep 1
+done
+echo "CONTROL_CENTER_ACCEPT: DNS query FAILED after 30 attempts rc=$rc" >&2
+cat "$tmp" >&2
+exit "$rc"
+SH
+  cat >"$KRB_SHIM/smbclient" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+# The core supplies a root-only authentication file. Validate that boundary and
+# require Samba's native idmap.ldb to map the built-in Administrator SID to UID
+# 0 before password-authenticated SMB acceptance.
+auth_file=''
+args=("$@")
+for ((i=0;i<${#args[@]};i++));do
+  case "${args[$i]}" in
+    -A|--authentication-file)
+      j=$((i+1));(( j < ${#args[@]} ))&&auth_file="${args[$j]}"
+      ;;
+    --authentication-file=*) auth_file="${args[$i]#*=}";;
+  esac
+done
+if [[ -z "$auth_file" || "$auth_file" != /run/control-center-root/samba-auth-* || ! -s "$auth_file" ]];then
+  echo 'CONTROL_CENTER_ACCEPT: SMB credential file missing or outside root runtime' >&2
+  exit 2
+fi
+perm="$(stat -c '%U:%G %a' "$auth_file" 2>/dev/null||true)"
+[[ "$perm" == 'root:root 600' ]]||{ echo "CONTROL_CENTER_ACCEPT: unsafe SMB credential file permissions: $perm" >&2;exit 2; }
+domain="$(sed -n 's/^[[:space:]]*domain[[:space:]]*=[[:space:]]*//p' "$auth_file" | head -1 | tr -d '\r')"
+[[ -n "$domain" ]]||{ echo 'CONTROL_CENTER_ACCEPT: SMB credential domain missing' >&2;exit 2; }
+admin_sid=''
+for attempt in $(seq 1 30);do
+  admin_sid="$(/usr/bin/wbinfo --name-to-sid "${domain}\\Administrator" 2>/dev/null | awk '{print $1}')"
+  [[ "$admin_sid" =~ ^S-1-5-21-.*-500$ ]]&&break
+  sleep 1
+done
+[[ "$admin_sid" =~ ^S-1-5-21-.*-500$ ]]||{ echo 'CONTROL_CENTER_ACCEPT: Administrator SID resolution failed' >&2;exit 1; }
+/usr/bin/net cache flush >/dev/null 2>&1||true
+admin_uid="$(/usr/bin/wbinfo --sid-to-uid "$admin_sid" 2>/dev/null||true)"
+[[ "$admin_uid" == 0 ]]||{ echo "CONTROL_CENTER_ACCEPT: Administrator SID does not map to UID 0 (uid=${admin_uid:-none})" >&2;exit 1; }
+echo 'CONTROL_CENTER_ACCEPT: Administrator SID maps to UID 0' >&2
+
+tmp="$(mktemp /tmp/control-center-samba-smb-ready.XXXXXX)";trap 'rm -f "$tmp"' EXIT
+rc=1
+for attempt in $(seq 1 45);do
+  /usr/bin/smbclient "$@" >"$tmp" 2>&1
+  rc=$?
+  if [[ $rc -eq 0 ]];then
+    cat "$tmp"
+    echo "CONTROL_CENTER_ACCEPT: SMB password-authenticated smbclient OK attempt=$attempt" >&2
+    exit 0
+  fi
+  systemctl is-active --quiet samba-ad-dc.service||break
+  sleep 1
+done
+echo "CONTROL_CENTER_ACCEPT: SMB password-authenticated smbclient FAILED after readiness retries rc=$rc" >&2
+cat "$tmp" >&2
+journalctl -u samba-ad-dc.service -n 120 --no-pager >&2||true
+exit "$rc"
+SH
+  chmod 0700 "$KRB_SHIM/kinit" "$KRB_SHIM/klist" "$KRB_SHIM/kdestroy" "$KRB_SHIM/samba-tool" "$KRB_SHIM/host" "$KRB_SHIM/smbclient"
+}
+
+trap cleanup_kerberos_shim EXIT
+"$PRE"
+prepare_kerberos_shim
+set +e
+PATH="$KRB_SHIM:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" CONTROL_CENTER_KRB5CCACHE="$KRB_CACHE" "$CORE"
+rc=$?
+set -e
+cleanup_kerberos_shim
+if [[ $rc -ne 0 ]];then
+  BACKUP="$(python3 - "$STATUS" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except Exception:j={}
+print(j.get('backup_path') or '')
+PY
+)"
+  if [[ -n "$BACKUP" && -s "$BACKUP/pre-provision.tar.gz" ]];then "$RESTORE" rollback >/dev/null 2>&1||true;else restart_preserved_dns;fi
+  exit "$rc"
+fi
+
+write_status postconfig 'Базовый контроллер создан. Завершается интеграция DNS, хранилища и авторизации…'
+set +e
+"$POST"
+rc=$?
+set -e
+if [[ $rc -ne 0 ]];then
+  DETAIL='Домен был создан ядром provisioning, но обязательные DNS/Storage/Auth post-checks не завершились. Выполняется полный rollback.'
+  write_status rollback 'Domain post-provision failed; restoring pre-state' "$DETAIL"
+  "$RESTORE" rollback || true
+  write_status rollback 'Создание Домена отменено. Предыдущее состояние восстановлено.' "$DETAIL"
+  exit "$rc"
+fi
+
+write_status active 'Домен полностью активирован: Samba AD-DC, DNS, Сетевое хранилище и авторизация работают.'
+exit 0

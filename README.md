@@ -1,97 +1,153 @@
-# Control Center 1.0.10
+# Control Center 1.0.11
 
-Control Center — web-панель управления Linux-сервером. Текущий Production release: **1.0.10**, build **20260819.4**, audit `passed`.
+Control Center — web-панель управления Linux-сервером. Release candidate: **1.0.11**, build **20260819.5**.
 
-## Главное в 1.0.10
+## Главное в 1.0.11
 
-- Samba AD-DC: расширенный readiness, migration `003` и воспроизводимый dry-run change plan;
-- реальный provisioning Samba намеренно отключён до **1.0.11**;
-- переименование компьютера из Настроек через отдельный root-helper с backup/rollback;
-- исправлена смена Web-порта и SSL при недоступной PostgreSQL;
-- стандартный HTTP → `80`, стандартный HTTPS → `443`, custom → `1024–65535`;
-- фактический Web runtime хранится независимо от PostgreSQL и автоматически синхронизируется в БД после её восстановления;
-- operational alerts консолидированы в центр уведомлений;
-- WAN и LAN можно выключать по отдельности;
-- поддерживаются WAN+LAN, только WAN и только LAN;
-- dashboard показывает только графики активных сетевых ролей.
+### Маркет и зависимости
 
-## Web runtime
+В Маркете активированы:
 
-Control Center работает от системной УЗ `control-center`. Для портов 80/443 systemd выдаёт только:
+- **Домен** — Samba Active Directory Domain Controller;
+- **DNS** — standalone Unbound либо Samba Internal DNS внутри Домена;
+- **Сетевое хранилище** — standalone Samba либо доменный SMB-ресурс;
+- существующий DHCP дополнен клиентами и IP-бронированиями.
+
+Зависимости Домена строгие:
 
 ```text
-CAP_NET_BIND_SERVICE
+Домен → DNS      (обязательно)
+Домен → Storage  (обязательно)
 ```
 
-При включении HTTPS используются:
+DNS и Сетевое хранилище можно устанавливать отдельно. Если их нет, мастер Домена активирует их автоматически. Если они уже работают standalone, их состояние сохраняется и они переводятся в доменный режим; после удаления Домена прежнее standalone-состояние восстанавливается.
 
-```text
-/etc/control-center/tls/server.crt
-/etc/control-center/tls/server.key
+Пункты DNS / Сетевое хранилище / Домен появляются в меню только после установки соответствующей службы и скрываются после штатного удаления.
+
+## Авторизация Control Center
+
+Портал 1.0.11 требует авторизацию:
+
+- **Локальная** — Linux/PAM;
+- **Доменная** — после активации Домена.
+
+Root через Web запрещён. Локальная bootstrap-группа администраторов: `control-center-admins`. Если при чистой установке не найден локальный администратор с паролем, installer создаёт отдельного `controladmin` без SSH-shell и показывает случайный пароль один раз.
+
+Проверка паролей выполняется отдельным root-процессом `control-center-authd` через Unix socket. Web-процесс `control-center` не получает доступ к `/etc/shadow` или привилегированному Winbind socket.
+
+Текущий authorization bootstrap:
+
+- `admin` — чтение и изменения;
+- `viewer` — чтение;
+- доменная группа `Control Center Admins` → `admin`.
+
+PostgreSQL migration `005` уже содержит `rbac_roles` и `rbac_bindings` для следующего полноценного RBAC lifecycle.
+
+## Первоначальная настройка Домена
+
+Мастер проводит по шагам:
+
+1. readiness и выбор Static LAN/WAN;
+2. DNS Realm и NetBIOS domain;
+3. DNS forwarder и обязательные зависимости DNS/Storage;
+4. пароль Domain Administrator и локальный one-time approval;
+5. итоговая проверка и создание.
+
+Перед созданием:
+
+```bash
+sudo control-center-samba-approve
 ```
 
-Self-signed certificate может вызвать предупреждение браузера. Изменение Web runtime проходит через privileged helper с проверкой порта, restart, HTTP/HTTPS health-check и rollback.
+Код действует 10 минут и используется один раз. Administrator password находится только в `/run` до чтения root worker, не сохраняется в PostgreSQL/persistent state и не передаётся через `--adminpass`.
 
-В 1.0.10 PostgreSQL больше не является обязательным условием применения порта/SSL. Если БД временно недоступна, Web runtime всё равно применяется, а факт degraded-состояния попадает в колокольчик. После восстановления БД настройки reconciled автоматически.
+Создаются Samba Internal DNS, Kerberos, LDAP, SYSVOL/NETLOGON, signed NTP/chrony и доменное SMB-хранилище.
 
-## Сети
+## Защита активного контроллера
 
-В WAN и LAN доступен пункт **«Выключен»**. Допустимы:
+После активации Домена обычными настройками запрещено:
 
-```text
-WAN + LAN
-только WAN
-только LAN
+- переименовывать DC;
+- выключать его WAN/LAN роль;
+- переводить интерфейс на DHCP;
+- менять interface/IP/prefix;
+- удалять DNS;
+- удалять Сетевое хранилище;
+- выдавать доменным DHCP-клиентам внешний DNS вместо AD DNS.
+
+Автоматический takeover внешнего, ранее не управляемого Samba AD-DC запрещён.
+
+## DNS
+
+Standalone DNS использует Unbound и Static IPv4. В доменном режиме provider автоматически меняется на Samba Internal DNS. Внешнее разрешение выполняется через DNS forwarder.
+
+Удалить DNS при активном Домене нельзя.
+
+## Сетевое хранилище
+
+Standalone Storage использует Samba и сохраняет пользовательские данные в `/srv/control-center/storage/public`. При создании Домена ресурс переводится в доменный SMB с доступом Domain Users/Domain Admins.
+
+Удаление самой службы не удаляет пользовательские файлы.
+
+## DHCP
+
+Раздел DHCP показывает leases + reservations, состояние ONLINE/OFFLINE, MAC, hostname, текущий и забронированный IP. Можно:
+
+- забронировать текущий IP;
+- изменить забронированный IP;
+- снять бронь.
+
+Backend проверяет подсеть, gateway/network/broadcast, дубли, активную аренду другого MAC и IP контроллера домена. Изменение вступает в силу после DHCP renew клиента.
+
+## Удаление Домена и cleanup-audit
+
+Удаление Домена — отдельная защищённая операция. Требуется:
+
+```bash
+sudo control-center-samba-approve --remove
 ```
 
-Обе роли одновременно выключить нельзя. При включённом WAN LAN не создаёт второй default route; в LAN-only режиме LAN может использовать gateway/default route.
+и подтверждение в UI. Автоматическое удаление разрешается только если локально доказано, что DC единственный.
 
-## Samba AD-DC
+Перед destruction создаётся root-only recovery bundle. После удаления Control Center:
 
-Migration `003` добавляет readiness history и change plans. Проверяются hostname/FQDN, статический IPv4, NTP, обязательные APT-пакеты, свободное место, порты 53/88/389/445 и существующая Samba-конфигурация.
+- восстанавливает состояние до Domain provisioning;
+- возвращает standalone DNS/Storage, если они существовали;
+- сравнивает детерминированные pre-state fingerprints;
+- проверяет удаление generated `sam.ldb` и SYSVOL;
+- сохраняет cleanup-audit и recovery backup.
 
-API:
-
-```text
-GET/POST /api/samba/readiness
-GET/POST /api/samba/plan
-```
-
-1.0.10 **не выполняет** `samba-tool domain provision`. Production provisioning, DNS/Kerberos cutover, backup/rollback и acceptance будут включены только в следующем релизе после проверки подготовленного плана.
+DNS и Storage также выполняют cleanup-audit при собственном удалении.
 
 ## Установка
 
 ```bash
-git clone --depth 1 --branch release/1.0.10 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.11 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Для чистой установки Web UI стартует на:
+Чистая установка стартует на `http://SERVER_IP:8080`, если ранее не настроены другой порт/HTTPS.
 
-```text
-http://SERVER_IP:8080
-```
-
-## Acceptance
+## Проверка
 
 ```bash
-sudo bash scripts/acceptance-1.0.10.sh
+sudo bash scripts/acceptance-1.0.11.sh
 ```
 
 Ожидаемо:
 
 ```text
-VERSION 1.0.10
-BUILD   20260819.4
-PostgreSQL migration 003
-ACCEPTANCE 1.0.10: PASSED
+1.0.11
+20260819.5
+PostgreSQL migration 005
+ACCEPTANCE 1.0.11: PASSED
 ```
 
-## Наследование
+Для disposable integration runner используется `scripts/runtime-acceptance-1.0.11.sh`: он выполняет полный цикл standalone DNS/Storage → Domain → domain auth/DHCP → Domain removal → восстановление → DNS/Storage removal.
 
-Сохраняются пагинация 1.0.9, CPU/RAM Top, storage visualization, TLS, persistent Market statuses, DHCP lifecycle/recovery, PostgreSQL notifications, Update Center, Home/Professional, protected state и version/build-aware updater.
+## Uninstall панели
 
-## Безопасность
+Полный uninstall с удалением application state блокируется, пока установлены управляемые Domain/DNS/Storage. Сначала службы нужно удалить штатно через Маркет, чтобы выполнились cleanup-audits.
 
-Встроенная Web-аутентификация административной панели пока не реализована. Даже при HTTPS Web UI необходимо ограничивать доверенной LAN/VPN/firewall и не публиковать напрямую в Интернет.
+`--keep-data` позволяет удалить сам портал/runtime, сохранив роли и метаданные.

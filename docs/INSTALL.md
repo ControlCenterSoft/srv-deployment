@@ -1,141 +1,134 @@
-# Установка Control Center 1.0.10
+# Установка Control Center 1.0.11
 
-Production build: **20260819.4**, audit `passed`.
+Build: **20260819.5**.
 
 ## Установка / обновление
 
 ```bash
-git clone --depth 1 --branch release/1.0.10 https://github.com/filosoff31/srv-deployment.git
+git clone --depth 1 --branch release/1.0.11 https://github.com/filosoff31/srv-deployment.git
 cd srv-deployment
 sudo bash install/install.sh
 ```
 
-Целевая платформа: Ubuntu Server 26.04 LTS, systemd, Netplan, root/sudo и доступ к APT-репозиториям.
+Installer:
 
-Installer наследует package-repair и DHCP recovery предыдущих релизов, затем:
+1. обновляет Control Center payload;
+2. применяет PostgreSQL migrations до **005**;
+3. сохраняет Web port/SSL settings;
+4. включает Local/Domain auth architecture и `control-center-authd`;
+5. устанавливает lifecycle workers Domain/DNS/Storage/DHCP reservations;
+6. создаёт runtime directories `/run/control-center`, `/run/control-center-root`, `/run/control-center-auth`;
+7. включает systemd path watchers;
+8. выполняет health и migration checks.
 
-1. устанавливает payload 1.0.10;
-2. применяет PostgreSQL migrations до `003_samba_ad_dc_readiness.sql`;
-3. устанавливает retry-service `control-center-db-migrate.service`, чтобы migrations догнали после временной недоступности PostgreSQL;
-4. сохраняет текущие Web port/SSL/standard-mode при обновлении;
-5. устанавливает Web apply, hostname apply и single-role network helpers;
-6. выдаёт Web-службе только `CAP_NET_BIND_SERVICE` для 80/443;
-7. выполняет HTTP/HTTPS health-check.
+## Первый локальный вход
 
-## После установки
+Installer формирует группу:
+
+```text
+control-center-admins
+```
+
+Существующие обычные пользователи с `sudo`/`wheel` добавляются в неё. Root Web login запрещён.
+
+Если подходящего пользователя с паролем нет, installer создаёт `controladmin` с shell `/usr/sbin/nologin`, устанавливает криптографически случайный пароль и выводит его **один раз** в конце локальной установки. Пароль не сохраняется Control Center в открытом виде.
+
+После входа пароль можно сменить:
+
+```bash
+sudo passwd controladmin
+```
+
+## Проверка установки
 
 ```bash
 cat /opt/control-center/VERSION
 cat /opt/control-center/BUILD
 sudo -u control-center psql -d control_center -Atqc \
   "select version from control_center.schema_migrations order by version desc limit 1"
-sudo bash scripts/acceptance-1.0.10.sh
+sudo bash scripts/acceptance-1.0.11.sh
 ```
 
-Ожидается при доступной PostgreSQL:
+Ожидаемо:
 
 ```text
-1.0.10
-20260819.4
-003
-ACCEPTANCE 1.0.10: PASSED
+1.0.11
+20260819.5
+005
+ACCEPTANCE 1.0.11: PASSED
 ```
 
-## Web UI
+## Первоначальная настройка Домена
 
-Для чистой установки:
-
-```text
-http://SERVER_IP:8080
-```
-
-В **Настройки → Web-панель** доступны:
-
-- standard HTTP `80`;
-- standard HTTPS `443`;
-- custom HTTP/HTTPS `1024–65535`.
-
-Смена Web runtime в 1.0.10 не зависит от доступности PostgreSQL. Источник фактического состояния:
-
-```text
-/etc/control-center/web.env
-/var/lib/control-center-system/web-config.json
-```
-
-Если PostgreSQL временно недоступна, порт/SSL применяются и проходят локальный health-check. После восстановления БД GET Web settings выполняет reconciliation фактических параметров.
-
-При первом включении SSL создаётся self-signed certificate. Браузер может показать предупреждение доверия.
-
-## Переименование компьютера
-
-В **Настройки → Имя компьютера** можно изменить hostname. Операцию выполняет:
-
-```text
-/usr/local/sbin/control-center-hostname-apply
-```
-
-Перед изменением сохраняются rollback-копии `/etc/hostname` и `/etc/hosts`. Разрешено DNS-совместимое single-label имя длиной до 63 символов.
-
-## Сети
-
-WAN и LAN могут быть выключены по отдельности. Обе роли одновременно выключить нельзя. Поддерживаются WAN+LAN, WAN-only и LAN-only.
-
-## PostgreSQL
-
-Runtime DSN:
-
-```text
-dbname=control_center user=control-center host=/var/run/postgresql
-```
-
-Локальное подключение использует Unix socket/peer authentication. Пароль PostgreSQL в приложении не хранится.
-
-Migration `003` добавляет Samba AD-DC readiness history/change plans. `control-center-db-migrate.service` повторяет migration при временном DB failure до успешного завершения.
-
-## Samba AD-DC readiness
-
-Проверить подготовку без изменения доменной конфигурации:
+1. В **Сети** настройте Static IPv4 для LAN или WAN. LAN предпочтителен.
+2. При необходимости заранее установите DNS и/или Сетевое хранилище из Маркета. Это необязательно: Домен установит зависимости сам.
+3. В Маркете выберите **Домен → Установить**.
+4. Пройдите мастер Realm / NetBIOS / network role / DNS forwarder / dependencies.
+5. На сервере получите one-time code:
 
 ```bash
-PORT=$(sudo sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
-SSL=$(sudo sed -n 's/^CONTROL_CENTER_SSL=//p' /etc/control-center/web.env)
-if [[ "$SSL" == 1 ]]; then
-  curl -kfsS "https://127.0.0.1:${PORT}/api/samba/readiness" | python3 -m json.tool
-  curl -kfsS -X POST "https://127.0.0.1:${PORT}/api/samba/plan" | python3 -m json.tool
-else
-  curl -fsS "http://127.0.0.1:${PORT}/api/samba/readiness" | python3 -m json.tool
-  curl -fsS -X POST "http://127.0.0.1:${PORT}/api/samba/plan" | python3 -m json.tool
-fi
+sudo control-center-samba-approve
 ```
 
-1.0.10 не выполняет domain provisioning; целевой релиз этого этапа — 1.0.11.
+6. Введите пароль Domain Administrator, повтор пароля и код.
+7. Дождитесь итогового события в колокольчике.
 
-## Диагностика
+Если standalone DNS/Storage существовали, они сохраняются и переводятся в domain mode.
+
+Перед установкой пакетов Домена Control Center выполняет APT dry-run и фиксирует все пакеты, которые будут установлены, обновлены или удалены. Для уже установленных затрагиваемых пакетов сохраняются точная версия, APT manual/auto mark и точный rollback `.deb`. Если точный rollback подготовить нельзя, создание Домена блокируется до изменения системы.
+
+## Доменная авторизация
+
+После успешного provisioning на странице входа становится доступен режим **Доменная**. Bootstrap administrative group:
+
+```text
+Control Center Admins
+```
+
+Domain Administrator добавляется в неё автоматически. Создание группы, membership `Administrator` и SID resolution проверяются как обязательная часть provisioning. Остальные доменные пользователи по умолчанию имеют viewer-доступ до развития RBAC.
+
+## Удаление Домена
+
+Удаление выполняется из раздела Домена/Маркета, а не uninstall-скриптом.
+
+Перед удалением:
 
 ```bash
-systemctl status control-center --no-pager
-systemctl status control-center-db-migrate.service --no-pager
-systemctl status control-center-web-apply.path --no-pager
-systemctl status control-center-hostname-apply.path --no-pager
-journalctl -u control-center -n 200 --no-pager
-journalctl -u control-center-web-apply.service -n 150 --no-pager
-journalctl -u control-center-hostname-apply.service -n 100 --no-pager
-sudo cat /etc/control-center/web.env
-sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
+sudo control-center-samba-approve --remove
 ```
 
-Если меняется Web port или IP удалённо, внешний firewall/NAT/VPN должен разрешать новый адрес. Control Center проверяет локальный health, но не может проверить маршрут от удалённого браузера.
+В UI требуется отдельная фраза подтверждения. Операция разрешена только для единственного DC.
 
-## Удаление
+Перед destruction создаётся recovery backup. Затем Control Center восстанавливает точный pre-domain пакетный state — наличие пакетов, версии и APT manual/auto marks — после чего возвращает конфигурацию Samba/DNS/Kerberos/resolver/chrony/DHCP и выполняет fingerprint cleanup-audit.
 
-```bash
-sudo bash install/uninstall.sh
+Пакетный pre-state находится в `/var/lib/control-center-root/domain-package-prestate/` только пока Домен активен и удаляется после успешного применения при штатном removal.
+
+## DNS / Storage removal
+
+DNS и Storage нельзя удалять при активном Домене. После удаления Домена они могут быть удалены отдельно из Маркета; каждая операция выполняет cleanup-audit.
+
+Storage service removal сохраняет пользовательские данные.
+
+## Systemd
+
+Основные units:
+
+```text
+control-center.service
+control-center-authd.service
+control-center-samba-apply.path/service
+control-center-domain-destroy.path/service
+control-center-dns-apply.path/service
+control-center-storage-apply.path/service
+control-center-dhcp-reservations-apply.path/service
 ```
 
-С сохранением данных:
+## Uninstall панели
+
+Если Domain/DNS/Storage установлены, обычный uninstall с удалением application state блокируется. Сначала удалите роли штатно через Маркет.
+
+Сохранить роли/данные и удалить только панель/runtime:
 
 ```bash
 sudo bash install/uninstall.sh --keep-data
 ```
-
-См. `WEB-PORT.md`, `SAMBA-AD-DC.md`, `NETWORK.md`, `NOTIFICATIONS.md` и `TROUBLESHOOTING.md`.

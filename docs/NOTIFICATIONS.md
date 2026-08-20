@@ -1,114 +1,137 @@
-# Центр уведомлений — Control Center 1.0.10
+# Центр уведомлений — Control Center 1.0.11
 
-## Правило интерфейса
+Operational alerts отображаются в **колокольчике**. Рабочие карточки показывают состояние и краткий feedback текущего действия, а длительные фоновые/root события сохраняются в notification center.
 
-Operational alerts должны попадать в **колокольчик**, а не постоянно дублироваться длинными сообщениями внутри рабочих карточек.
-
-В карточках остаются:
-
-- фактические значения/статусы;
-- краткий feedback сразу после нажатия кнопки;
-- ошибки валидации пользовательского ввода.
-
-Длительные состояния, предупреждения и результаты фоновых/root-операций идут в центр уведомлений.
-
-## Источники 1.0.10
+## Источники
 
 `/api/notifications` агрегирует:
 
 - Network apply / rollback / rejected;
 - Market lifecycle;
-- DHCP configuration/service;
+- DHCP configuration/service и IP reservations;
+- DNS lifecycle;
+- Network Storage lifecycle;
+- Domain/DNS/Storage cleanup-audits;
 - лицензирование;
 - Control Center updates;
 - OS/package updates;
-- Web runtime: порт, HTTP/HTTPS, certificate apply/rollback;
+- Web runtime и SSL;
 - PostgreSQL unavailable/degraded;
-- переименование компьютера;
-- Samba AD-DC readiness.
+- hostname operations;
+- **Samba AD-DC readiness/provisioning/active/error/rollback**.
 
-Market history дополнительно сохраняется в:
+## Samba AD-DC
 
-```text
-/var/lib/control-center-system/market-events.jsonl
-```
-
-## PostgreSQL unavailable
-
-Если PostgreSQL недоступен, уведомление `PostgreSQL unavailable` всё равно появляется через degraded aggregation.
-
-В этот момент read/unread не может надёжно сохраняться server-side, однако сами operational alerts остаются видимыми. После восстановления PostgreSQL новые события снова синхронизируются в:
+Provisioning публикует события:
 
 ```text
-control_center.notification_events
+started   → создание домена началось
+active    → provisioning и acceptance успешно завершены
+error     → запрос/операция отклонены или завершились ошибкой
+rollback  → предыдущее состояние восстановлено
 ```
 
-## Web runtime
+Market worker history использует `module=samba`, поэтому связанные lifecycle events также видны как `market-samba`.
 
-После применения 80/443/custom port/SSL root helper пишет:
+Основной status-файл:
 
 ```text
-/var/lib/control-center-system/web-status.json
+/var/lib/control-center-system/samba-status.json
 ```
 
-Состояния `applied`, `rollback`, `rejected`, `error` конвертируются в события колокольчика.
-
-При недоступной PostgreSQL Web runtime может успешно примениться; пользователь получает отдельное уведомление о degraded DB sync, а не откат порта.
-
-## Hostname
-
-Результат переименования хранится в:
+Последний root log:
 
 ```text
-/var/lib/control-center-system/hostname-status.json
+/var/lib/control-center-system/samba-last.log
 ```
 
-`applied` создаёт успешное событие, `rollback/rejected/error` — ошибку.
+В уведомления не записываются Administrator password и одноразовый approval code.
 
-## Samba AD-DC readiness
+## DNS
 
-После проверки readiness:
+Standalone DNS публикует lifecycle-события установки, применения конфигурации, удаления и ошибки. При переходе в Domain mode источник DNS остаётся видимым, но provider меняется с Unbound на Samba Internal DNS.
 
-- blockers → error;
-- только warnings → info;
-- readiness без blocker/warning → ok.
+Основной status-файл:
 
-Сам provisioning в 1.0.10 отключён, поэтому уведомление readiness не означает, что домен уже создан.
+```text
+/var/lib/control-center-system/dns-status.json
+```
 
-## Цвет колокольчика
+После штатного удаления создаётся отдельное cleanup-событие. Оно считается успешным только при `clean=true` в cleanup-audit.
 
-- **красный** — непрочитанный `severity=error`;
-- **зелёный** — непрочитанные события без ошибок;
-- **нейтральный** — всё прочитано или событий нет.
+## Сетевое хранилище
+
+Storage публикует события установки, перехода standalone ↔ domain mode, удаления и ошибки. Пользовательские файлы при удалении самой службы не удаляются; cleanup notification отражает очистку управляемых runtime/config artifacts, а не уничтожение данных.
+
+Основной status-файл:
+
+```text
+/var/lib/control-center-system/storage-status.json
+```
+
+## DHCP и IP-бронирования
+
+DHCP публикует:
+
+```text
+install/remove        → lifecycle DHCP Server
+applied/error         → применение основной DHCP-конфигурации
+reserve/release       → применение IP-бронирования
+rollback/error        → откат неуспешной reservation-конфигурации
+```
+
+Status-файлы:
+
+```text
+/var/lib/control-center-system/dhcp-status.json
+/var/lib/control-center-system/dhcp-reservations-status.json
+```
+
+Секретных данных DHCP notification не содержит.
+
+## Cleanup-audit
+
+После удаления Domain, DNS и Storage Control Center сохраняет отдельное operational событие cleanup. Источники имеют префикс `cleanup-` и позволяют отличить «команда удаления завершилась» от «доказано отсутствие управляемых артефактов».
+
+Для Domain успешный cleanup дополнительно означает:
+
+- совпали deterministic pre-state fingerprints;
+- generated `sam.ldb` удалён, если его не было до provisioning;
+- generated SYSVOL удалён, если его не было до provisioning;
+- восстановлен точный package pre-state;
+- standalone DNS/Storage возвращены, если существовали до Domain.
+
+История cleanup доступна также через:
+
+```text
+GET /api/services/cleanup/audits
+```
+
+## PostgreSQL
+
+При доступной БД read/unread и events сохраняются server-side. При DB outage Control Center остаётся в degraded notification mode и не должен скрывать operational failures.
 
 ## API
 
 ```text
 GET  /api/notifications
 POST /api/notifications/read
-```
-
-Пример:
-
-```bash
-curl -fsS http://127.0.0.1:PORT/api/notifications | python3 -m json.tool
-```
-
-Отметить все:
-
-```bash
-curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d '{"all":true}' \
-  http://127.0.0.1:PORT/api/notifications/read
+GET  /api/services/cleanup/audits
 ```
 
 ## Диагностика
 
 ```bash
-sudo tail -n 50 /var/lib/control-center-system/market-events.jsonl 2>/dev/null || true
-sudo cat /var/lib/control-center-system/web-status.json 2>/dev/null || true
-sudo cat /var/lib/control-center-system/hostname-status.json 2>/dev/null || true
-sudo cat /var/lib/control-center-system/samba-readiness.json 2>/dev/null || true
+curl -fsS http://127.0.0.1:8080/api/notifications | python3 -m json.tool
+curl -fsS http://127.0.0.1:8080/api/services/cleanup/audits | python3 -m json.tool
+sudo cat /var/lib/control-center-system/samba-status.json 2>/dev/null || true
+sudo cat /var/lib/control-center-system/dns-status.json 2>/dev/null || true
+sudo cat /var/lib/control-center-system/storage-status.json 2>/dev/null || true
+sudo cat /var/lib/control-center-system/dhcp-status.json 2>/dev/null || true
+sudo cat /var/lib/control-center-system/dhcp-reservations-status.json 2>/dev/null || true
+sudo tail -n 100 /var/lib/control-center-system/samba-last.log 2>/dev/null || true
+sudo tail -n 100 /var/lib/control-center-system/market-events.jsonl 2>/dev/null || true
+sudo find /var/lib/control-center-system/cleanup-audits -maxdepth 1 -type f -print -exec cat {} \; 2>/dev/null || true
 sudo -u control-center psql -d control_center -c \
   'select source,title,state,severity,is_read,last_seen_at,message from control_center.notification_events order by last_seen_at desc limit 50;'
 ```

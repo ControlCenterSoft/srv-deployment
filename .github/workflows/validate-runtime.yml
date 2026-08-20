@@ -2,183 +2,155 @@ name: Validate Control Center runtime
 
 on:
   push:
-    branches:
-      - main
-      - 'release/**'
+    branches: [main, 'release/**']
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  bootstrap-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clean server without pre-created portal user
+        run: |
+          set -euo pipefail
+          # GitHub-hosted runners ship with an existing password-capable sudo
+          # account. A real root-only clean server does not. Lock every existing
+          # human sudo/wheel identity for this disposable job so the installer
+          # must exercise the documented controladmin bootstrap path instead of
+          # correctly adopting the runner account as an existing portal admin.
+          while IFS=: read -r user _ uid _; do
+            [[ "$uid" =~ ^[0-9]+$ ]] || continue
+            (( uid >= 1000 )) || continue
+            groups="$(id -nG "$user" 2>/dev/null || true)"
+            if grep -qwE '(sudo|wheel)' <<<"$groups"; then sudo passwd -l "$user" >/dev/null 2>&1 || true; fi
+          done </etc/passwd
+
+          OUT=/tmp/control-center-bootstrap-install.out
+          if ! sudo bash install/install.sh >"$OUT" 2>&1; then
+            sed -E 's/^(  Пароль: ).*/\1***REDACTED***/' "$OUT"
+            exit 1
+          fi
+
+      - name: Prove documented controladmin first login
+        run: |
+          set -euo pipefail
+          OUT=/tmp/control-center-bootstrap-install.out
+          USERNAME="$(sed -n 's/^  Логин:  //p' "$OUT" | tail -1)"
+          PASSWORD="$(sed -n 's/^  Пароль: //p' "$OUT" | tail -1)"
+          [[ "$USERNAME" == controladmin ]]
+          [[ ${#PASSWORD} -ge 20 ]]
+          echo "::add-mask::$PASSWORD"
+          echo 'CHECKPOINT bootstrap-output-ok'
+          getent passwd controladmin | awk -F: '$1=="controladmin" && $7=="/usr/sbin/nologin"{ok=1} END{exit !ok}'
+          echo 'CHECKPOINT bootstrap-account-ok'
+          id -nG controladmin | tr ' ' '\n' | grep -qx control-center-admins
+          echo 'CHECKPOINT bootstrap-group-ok'
+          sudo passwd -S controladmin | awk '$2=="P"{ok=1} END{exit !ok}'
+          echo 'CHECKPOINT bootstrap-password-status-ok'
+
+          python3 - "$USERNAME" "$PASSWORD" >/tmp/control-center-bootstrap-login.json <<'PY'
+          import json,sys
+          print(json.dumps({'mode':'local','username':sys.argv[1],'password':sys.argv[2]}))
+          PY
+          curl -fsS -c /tmp/control-center-bootstrap.cookies \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/control-center-bootstrap-login.json \
+            http://127.0.0.1:8080/api/auth/login >/tmp/control-center-bootstrap-login-result.json
+          echo 'CHECKPOINT bootstrap-login-http-ok'
+          python3 - /tmp/control-center-bootstrap-login-result.json <<'PY'
+          import json,sys
+          j=json.load(open(sys.argv[1]));assert j.get('ok') is True,j
+          PY
+          echo 'CHECKPOINT bootstrap-login-json-ok'
+          curl -fsS -b /tmp/control-center-bootstrap.cookies \
+            http://127.0.0.1:8080/api/auth/session | \
+            python3 -c "import json,sys;j=json.load(sys.stdin);assert j['authenticated'] and j['source']=='local' and j['role']=='admin' and j['username']=='controladmin'"
+          echo 'CHECKPOINT bootstrap-session-ok'
+
+          ! sudo grep -R -F --binary-files=without-match "$PASSWORD" \
+            /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root \
+            /etc/control-center /opt/control-center 2>/dev/null
+          echo 'CHECKPOINT bootstrap-no-plaintext-ok'
+          rm -f /tmp/control-center-bootstrap-login.json /tmp/control-center-bootstrap-login-result.json /tmp/control-center-bootstrap.cookies "$OUT"
+          unset PASSWORD
+
   runtime:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Prepare real local portal identities
+        run: |
+          set -euo pipefail
+          sudo useradd -m -s /bin/bash ccciadmin
+          sudo usermod -aG sudo ccciadmin
+          echo 'ccciadmin:CcLocal!Passw0rd-2026' | sudo chpasswd
+          sudo useradd -m -s /bin/bash ccviewer
+          echo 'ccviewer:CcViewer!Passw0rd-2026' | sudo chpasswd
 
       - name: Install release exactly as shipped
         run: |
           set -euo pipefail
           sudo bash install/install.sh
 
-      - name: Validate installed 1.0.10 and migration 003
+      - name: Run full Domain DNS Storage Auth DHCP lifecycle
+        env:
+          CC_TEST_ADMIN_USER: ccciadmin
+          CC_TEST_ADMIN_PASSWORD: CcLocal!Passw0rd-2026
+          CC_TEST_VIEWER_USER: ccviewer
+          CC_TEST_VIEWER_PASSWORD: CcViewer!Passw0rd-2026
+          CC_TEST_DOMAIN_PASSWORD: DomTest!Passw0rd-2026
         run: |
           set -euo pipefail
-          test "$(tr -d '[:space:]' </opt/control-center/VERSION)" = "1.0.10"
-          test "$(tr -d '[:space:]' </opt/control-center/BUILD)" = "20260819.4"
-          sudo grep -qx 'CONTROL_CENTER_PORT=8080' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_SSL=0' /etc/control-center/web.env
-          curl -fsS http://127.0.0.1:8080/api/health | python3 -m json.tool
-          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 003
-          systemctl is-active --quiet control-center
-          systemctl is-active --quiet control-center-hostname-apply.path
-          systemctl is-enabled --quiet control-center-db-migrate.service
-          systemctl cat control-center | grep -F 'AmbientCapabilities=CAP_NET_BIND_SERVICE'
-          curl -fsS http://127.0.0.1:8080/api/samba/readiness | python3 -c 'import json,sys;j=json.load(sys.stdin);assert j["details"]["provisioning_enabled"] is False'
+          sudo -E bash scripts/runtime-acceptance-1.0.11.sh
 
-      - name: Switch live runtime to custom HTTPS 8443 through API
+      - name: Final diagnostics on failure
+        if: failure()
         run: |
-          set -euo pipefail
-          sudo systemctl stop control-center-web-apply.path
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' \
-            -d '{"port":8443,"standard_port":false,"ssl_enabled":true}' \
-            http://127.0.0.1:8080/api/settings/web)
-          python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==8443 and j['ssl_enabled'] is True
-          PY
-          sudo /usr/local/sbin/control-center-web-apply
-          curl -kfsS https://127.0.0.1:8443/api/health | python3 -m json.tool
-          sudo openssl x509 -in /etc/control-center/tls/server.crt -noout -subject -issuer -dates -ext subjectAltName
-          test "$(sudo stat -c '%U:%G %a' /etc/control-center/tls/server.key)" = "root:control-center 640"
-          sudo grep -qx 'CONTROL_CENTER_PORT=8443' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_SSL=1' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_STANDARD_PORT=0' /etc/control-center/web.env
+          set +e
+          sudo systemctl status control-center control-center-authd control-center-samba-apply.service control-center-domain-destroy.service control-center-dns-apply.service control-center-storage-apply.service control-center-dhcp-server.service --no-pager || true
+          sudo journalctl -u control-center -u control-center-authd -u control-center-samba-apply.service -u control-center-domain-destroy.service -u control-center-dns-apply.service -u control-center-storage-apply.service -n 500 --no-pager || true
+          sudo cat /var/lib/control-center-system/samba-status.json 2>/dev/null || true
+          sudo cat /var/lib/control-center-system/samba-last.log 2>/dev/null || true
+          sudo find /var/lib/control-center-system/cleanup-audits -maxdepth 1 -type f -print -exec cat {} \; 2>/dev/null || true
+          dpkg --audit || true
 
-      - name: Switch live runtime to standard HTTP 80 through API
-        run: |
-          set -euo pipefail
-          R=$(curl -kfsS -X POST -H 'Content-Type: application/json' \
-            -d '{"port":8443,"standard_port":true,"ssl_enabled":false}' \
-            https://127.0.0.1:8443/api/settings/web)
-          python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==80 and j['standard_port'] is True
-          PY
-          sudo /usr/local/sbin/control-center-web-apply
-          curl -fsS http://127.0.0.1:80/api/health | python3 -m json.tool
-          sudo grep -qx 'CONTROL_CENTER_PORT=80' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_SSL=0' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_STANDARD_PORT=1' /etc/control-center/web.env
+          sudo rm -rf /tmp/control-center-ci-diagnostics
+          sudo install -d -m 0755 \
+            /tmp/control-center-ci-diagnostics/state \
+            /tmp/control-center-ci-diagnostics/journal \
+            /tmp/control-center-ci-diagnostics/acceptance
+          sudo chown -R "$USER:$USER" /tmp/control-center-ci-diagnostics
 
-      - name: Switch live runtime to standard HTTPS 443 through API
-        run: |
-          set -euo pipefail
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' \
-            -d '{"port":80,"standard_port":true,"ssl_enabled":true}' \
-            http://127.0.0.1:80/api/settings/web)
-          python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==443 and j['ssl_enabled'] is True
-          PY
-          sudo /usr/local/sbin/control-center-web-apply
-          curl -kfsS https://127.0.0.1:443/api/health | python3 -m json.tool
-          WEB=$(curl -kfsS https://127.0.0.1:443/api/settings/web)
-          python3 - "$WEB" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['runtime_port']==443 and j['runtime_ssl'] is True and j['runtime_standard_port'] is True
-          PY
+          for f in \
+            samba-status.json samba-last.log dns-status.json storage-status.json \
+            dhcp-status.json dhcp-reservations-status.json market-status.json; do
+            sudo test -f "/var/lib/control-center-system/$f" && sudo cp "/var/lib/control-center-system/$f" "/tmp/control-center-ci-diagnostics/state/$f" || true
+          done
+          sudo test -d /var/lib/control-center-system/modules && sudo cp -a /var/lib/control-center-system/modules /tmp/control-center-ci-diagnostics/state/modules || true
+          sudo test -d /var/lib/control-center-system/cleanup-audits && sudo cp -a /var/lib/control-center-system/cleanup-audits /tmp/control-center-ci-diagnostics/state/cleanup-audits || true
+          sudo find /tmp -maxdepth 1 -type f -name 'control-center-samba-*' -exec cp {} /tmp/control-center-ci-diagnostics/acceptance/ \; 2>/dev/null || true
 
-      - name: Prove Web port change works while PostgreSQL is unavailable
-        run: |
-          set -euo pipefail
-          sudo systemctl stop postgresql.service
-          sudo systemctl mask postgresql.service
-          ! sudo -u postgres pg_isready >/dev/null 2>&1
-          R=$(curl -kfsS -X POST -H 'Content-Type: application/json' \
-            -d '{"port":8081,"standard_port":false,"ssl_enabled":false}' \
-            https://127.0.0.1:443/api/settings/web)
-          python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['status']=='pending' and j['port']==8081
-          PY
-          sudo /usr/local/sbin/control-center-web-apply
-          HEALTH=$(curl -fsS http://127.0.0.1:8081/api/health)
-          python3 - "$HEALTH" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['database']=='degraded' and j['version']=='1.0.10'
-          PY
-          sudo grep -qx 'CONTROL_CENTER_PORT=8081' /etc/control-center/web.env
-          sudo grep -qx 'CONTROL_CENTER_SSL=0' /etc/control-center/web.env
-          sudo grep -q 'PostgreSQL временно недоступен' /var/lib/control-center-system/web-status.json
-          N=$(curl -fsS http://127.0.0.1:8081/api/notifications)
-          python3 - "$N" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert any(x.get('source')=='database' and x.get('severity')=='error' for x in j['items'])
-          PY
-          sudo systemctl unmask postgresql.service
-          sudo systemctl start postgresql.service
-          for _ in $(seq 1 30); do sudo -u postgres pg_isready >/dev/null 2>&1 && break; sleep 1; done
-          sudo -u postgres pg_isready
-          WEB=$(curl -fsS http://127.0.0.1:8081/api/settings/web)
-          python3 - "$WEB" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['runtime_port']==8081 and j['database_synced'] is True and j['database_error'] is None
-          PY
-          sudo -u control-center psql -d control_center -Atqc "select value::text from control_center.settings where key='web.port'" | grep -qx 8081
+          sudo journalctl -u control-center -u control-center-authd -u control-center-samba-apply.service -u control-center-domain-destroy.service -u control-center-dns-apply.service -u control-center-storage-apply.service --no-pager > /tmp/control-center-ci-diagnostics/journal/control-center.log 2>&1 || true
+          sudo systemctl status control-center control-center-authd control-center-samba-apply.service control-center-domain-destroy.service control-center-dns-apply.service control-center-storage-apply.service control-center-dhcp-server.service --no-pager > /tmp/control-center-ci-diagnostics/systemd-status.txt 2>&1 || true
+          dpkg --audit > /tmp/control-center-ci-diagnostics/dpkg-audit.txt 2>&1 || true
+          sudo chown -R "$USER:$USER" /tmp/control-center-ci-diagnostics
 
-      - name: Validate live hostname rename and rollback-ready restore
-        run: |
-          set -euo pipefail
-          sudo systemctl stop control-center-hostname-apply.path
-          ORIGINAL=$(hostname)
-          echo "$ORIGINAL" >/tmp/original-hostname
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' -d '{"hostname":"cc-ci110"}' http://127.0.0.1:8081/api/settings/hostname)
-          python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['status'] in ('pending','unchanged')
-          PY
-          if [[ "$(hostname)" != cc-ci110 ]]; then sudo /usr/local/sbin/control-center-hostname-apply; fi
-          test "$(hostname)" = cc-ci110
-          grep -Eq '^127\.0\.1\.1[[:space:]]+cc-ci110$' /etc/hosts
-          ORIGINAL=$(cat /tmp/original-hostname)
-          python3 - "$ORIGINAL" <<'PY'
-          import re,sys
-          assert re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',sys.argv[1]),sys.argv[1]
-          PY
-          R=$(curl -fsS -X POST -H 'Content-Type: application/json' --data "{\"hostname\":\"$ORIGINAL\"}" http://127.0.0.1:8081/api/settings/hostname)
-          sudo /usr/local/sbin/control-center-hostname-apply
-          test "$(hostname)" = "$ORIGINAL"
-          sudo cat /var/lib/control-center-system/hostname-status.json | grep -q 'applied'
-
-      - name: Validate Samba readiness and dry-run plan remain non-destructive
-        run: |
-          set -euo pipefail
-          R=$(curl -fsS http://127.0.0.1:8081/api/samba/readiness)
-          python3 - "$R" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['details']['installation_enabled'] is False and j['details']['provisioning_enabled'] is False
-          assert j['details']['next_release_target']=='1.0.11'
-          PY
-          P=$(curl -fsS -X POST http://127.0.0.1:8081/api/samba/plan)
-          python3 - "$P" <<'PY'
-          import json,sys
-          j=json.loads(sys.argv[1]);assert j['plan']['phase']=='dry-run-only';assert j['plan']['target_release']=='1.0.11';assert j['plan']['provisioning_enabled'] is False
-          PY
-          sudo -u control-center psql -d control_center -Atqc 'select count(*)>0 from control_center.ad_dc_readiness_runs' | grep -qx t
-          sudo -u control-center psql -d control_center -Atqc 'select count(*)>0 from control_center.ad_dc_change_plans' | grep -qx t
-          ! grep -R --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' -n 'samba-tool domain provision' /opt/control-center/app
-
-      - name: Run full installed acceptance
-        run: |
-          set -euo pipefail
-          sudo bash scripts/acceptance-1.0.10.sh
-
-      - name: Verify final health and package integrity
-        run: |
-          set -euo pipefail
-          test -z "$(dpkg --audit 2>&1 || true)"
-          systemctl is-active --quiet control-center
-          curl -fsS http://127.0.0.1:8081/api/health | python3 -m json.tool
-          sudo -u control-center psql -d control_center -Atqc "select version from control_center.schema_migrations order by version desc limit 1" | grep -qx 003
+      - name: Upload diagnostics artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-center-1.0.11-runtime-diagnostics
+          path: /tmp/control-center-ci-diagnostics
+          if-no-files-found: warn
+          retention-days: 7

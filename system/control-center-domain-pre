@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT=/var/lib/control-center-root
+SYSTEM=/var/lib/control-center-system
+RUN=/run/control-center
+CTX_DIR="$ROOT/domain-install-context"
+CTX="$ROOT/domain-install-context.json"
+PENDING="$RUN/samba-provision.json"
+DNS="$SYSTEM/modules/dns.json"
+STORAGE="$SYSTEM/modules/storage.json"
+SMB=/etc/samba/smb.conf
+install -d -o root -g root -m 0700 "$ROOT" "$CTX_DIR"
+rm -f "$CTX_DIR/dns.json" "$CTX_DIR/storage.json"
+[[ -s "$DNS" ]] && cp -a "$DNS" "$CTX_DIR/dns.json"
+[[ -s "$STORAGE" ]] && cp -a "$STORAGE" "$CTX_DIR/storage.json"
+
+if [[ -s "$STORAGE" && -s "$SMB" && -s "$PENDING" ]] && grep -q '^# Managed by Control Center Storage' "$SMB"; then
+  python3 - "$PENDING" <<'PY'
+import json,os,sys,tempfile
+p=sys.argv[1];j=json.load(open(p));j['replace_existing']=True;j['managed_storage_transition']=True
+fd,tmp=tempfile.mkstemp(prefix='.domain-request.',dir=os.path.dirname(p))
+with os.fdopen(fd,'w') as f:json.dump(j,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+os.replace(tmp,p);os.chmod(p,0o600)
+PY
+fi
+
+if [[ -s "$SMB" && ! -s "$STORAGE" ]]; then
+  ROLE="$(testparm -s --parameter-name='server role' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+  if grep -q 'active directory domain controller' <<<"$ROLE"; then
+    echo 'External Samba AD-DC detected; automatic takeover is forbidden.' >&2
+    exit 4
+  fi
+fi
+
+UNBOUND_ACTIVE=0;systemctl is-active --quiet unbound.service&&UNBOUND_ACTIVE=1||true
+SMBD_ACTIVE=0;systemctl is-active --quiet smbd.service&&SMBD_ACTIVE=1||true
+python3 - "$CTX" "$UNBOUND_ACTIVE" "$SMBD_ACTIVE" <<'PY'
+import hashlib,json,os,subprocess,sys,time
+p,unbound,smbd=sys.argv[1:]
+packages=['samba','samba-dsdb-modules','samba-vfs-modules','winbind','krb5-user','dnsutils','acl','attr','smbclient','chrony','unbound']
+# Only deterministic configuration/state is fingerprinted exactly. Samba TDB
+# runtime directories are intentionally excluded because an ordinary smbd start
+# mutates them; AD-specific artifacts are tracked separately below.
+paths=['/etc/samba','/etc/krb5.conf','/etc/resolv.conf','/etc/hosts','/etc/chrony','/etc/unbound/unbound.conf.d/control-center.conf','/etc/dnsmasq.d/control-center-dhcp.conf','/etc/dnsmasq.d/control-center-dhcp-reservations.conf','/var/lib/control-center-system/modules/dns.json','/var/lib/control-center-system/modules/storage.json']
+def installed(name):
+ r=subprocess.run(['dpkg-query','-W','-f=${Status}',name],text=True,capture_output=True)
+ return r.returncode==0 and 'install ok installed' in r.stdout
+def tree_hash(path):
+ h=hashlib.sha256();root=os.path.abspath(path)
+ if not os.path.lexists(root):return None
+ if os.path.islink(root):h.update(b'L\0'+os.readlink(root).encode());return h.hexdigest()
+ if os.path.isfile(root):
+  h.update(b'F\0')
+  with open(root,'rb') as f:
+   for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
+  return h.hexdigest()
+ for base,dirs,files in os.walk(root,topdown=True,followlinks=False):
+  dirs.sort();files.sort();h.update(b'D\0'+os.path.relpath(base,root).encode()+b'\0')
+  for name in files:
+   fp=os.path.join(base,name);h.update(b'P\0'+os.path.relpath(fp,root).encode()+b'\0')
+   if os.path.islink(fp):h.update(b'L\0'+os.readlink(fp).encode());continue
+   try:
+    with open(fp,'rb') as f:
+     for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
+   except OSError:h.update(b'!unreadable')
+ return h.hexdigest()
+data={
+ 'created_at':int(time.time()),'unbound_active':unbound=='1','smbd_active':smbd=='1',
+ 'dns_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/dns.json'),
+ 'storage_snapshot':os.path.exists('/var/lib/control-center-root/domain-install-context/storage.json'),
+ 'packages_preexisting':{x:installed(x) for x in packages},
+ 'prestate_fingerprints':{x:tree_hash(x) for x in paths},
+ 'prestate_artifacts':{'sam_ldb':os.path.exists('/var/lib/samba/private/sam.ldb'),'sysvol':os.path.exists('/var/lib/samba/sysvol')}
+}
+with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n')
+os.chmod(p,0o600)
+PY
+chown root:root "$CTX"
+if [[ "$UNBOUND_ACTIVE" == 1 ]];then systemctl stop unbound.service;fi

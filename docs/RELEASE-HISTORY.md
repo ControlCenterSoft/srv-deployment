@@ -2,6 +2,30 @@
 
 Авторитетное production-состояние определяется `../deployment.json`; подробности каждого релиза — каталогом `../releases/<version>/`.
 
+## 1.0.11 — 19.08.2026
+
+- активирован production lifecycle службы **Домен** на Samba AD-DC;
+- активированы отдельные службы **DNS** и **Сетевое хранилище** в Маркете;
+- DNS работает standalone на Unbound и автоматически переводится на Samba Internal DNS внутри Домена;
+- Сетевое хранилище работает standalone на Samba и автоматически переводится в доменный SMB;
+- Домен имеет обязательные зависимости DNS + Storage и автоматически активирует отсутствующие зависимости;
+- standalone-состояние DNS/Storage сохраняется перед Domain cutover и восстанавливается после штатного удаления Домена;
+- включена Local/Domain Web-аутентификация через isolated root `control-center-authd`; root Web login запрещён;
+- bootstrap authorization: `admin` / `viewer`, локальная группа `control-center-admins`, доменная группа `Control Center Admins`;
+- добавлен первоначальный мастер Домена: readiness → Realm/NetBIOS → dependencies → Administrator/approval → финальная проверка;
+- provisioning требует Static IPv4 и purpose-bound one-time code `sudo control-center-samba-approve`;
+- Domain Administrator password не сохраняется в PostgreSQL/persistent state и передаётся worker только через `/run`;
+- privileged worker повторно проверяет Realm/NetBIOS/interface/IP/network/forwarder/password/approval и фактический Static IPv4;
+- root-only pre-provision backup Samba/Kerberos/resolver/chrony/DHCP и automatic rollback;
+- acceptance: Samba config, SYSVOL ACL, domain info, DRS, DNS A/SRV, Kerberos, SMB, DNS/Storage dependencies и auth daemon;
+- после provisioning защищены hostname/interface/IP/prefix контроллера, DNS/Storage dependencies и AD-DNS invariant DHCP;
+- поддерживается guarded Domain removal только для доказанного единственного DC через отдельный `sudo control-center-samba-approve --remove`;
+- перед Domain destruction создаётся recovery bundle, после удаления восстанавливается pre-domain state и выполняется fingerprint cleanup-audit;
+- DNS и Storage выполняют собственные cleanup-audits; Storage service removal сохраняет пользовательские файлы;
+- DHCP получил список clients/leases, ONLINE/OFFLINE и validated IP reservations с изменением/снятием брони;
+- PostgreSQL migration `005`: RBAC bootstrap, service dependencies, DHCP reservations и cleanup audit history;
+- runtime CI выполняет реальный полный цикл standalone DNS/Storage → Domain → domain auth/DHCP → Domain removal/restore → DNS/Storage removal.
+
 ## 1.0.10 — 19.08.2026
 
 - Samba AD-DC readiness расширен до production preparation: migration `003`, package/disk/port/config checks и dry-run change plan;

@@ -10,7 +10,17 @@ MODULE_STATE="$SYSTEM_STATE/modules/dhcp.json"
 TARGET=/etc/dnsmasq.d/control-center-dhcp.conf
 BACKUP="$ROOT_STATE/control-center-dhcp.conf.rollback"
 RUNTIME=control-center-dhcp-server.service
+LOCK=/run/control-center-dhcp-apply.lock
+
+# A pending request may be noticed by systemd .path at the same moment a
+# privileged lifecycle worker invokes this helper synchronously. Serialize the
+# whole read/validate/apply/commit transaction and re-check pending only after
+# obtaining the lock. This prevents a second worker from reaching the final
+# cp after the first worker has already committed and removed the request.
+exec 7>"$LOCK"
+flock -w 120 7 || exit 75
 [[ -s "$PENDING" ]] || exit 0
+
 install -d -o root -g control-center -m 0750 "$SYSTEM_STATE" "$SYSTEM_STATE/modules"
 install -d -o root -g root -m 0700 "$ROOT_STATE"
 status(){ python3 - "$STATUS" "$1" "$2" <<'PY'

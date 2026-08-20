@@ -1,178 +1,164 @@
-# Samba AD-DC — подготовка Control Center 1.0.10
+# Домен / Samba AD-DC — Control Center 1.0.11
 
-## Статус
+## Назначение
 
-Control Center 1.0.10 — последний подготовительный этап перед включением production provisioning в следующем релизе.
+Служба **Домен** создаёт новый первичный Samba Active Directory Domain Controller и включает:
 
-В **1.0.10 установка Samba и `samba-tool domain provision` намеренно отключены**. Релиз выполняет только чтение состояния, readiness, формирование dry-run change plan и сохранение результатов.
+- Samba Internal DNS;
+- Kerberos;
+- LDAP;
+- SYSVOL / NETLOGON;
+- signed NTP через chrony;
+- обязательное доменное Сетевое хранилище;
+- Domain authentication для портала Control Center.
 
-Целевой релиз включения provisioning: **1.0.11**.
+## Обязательные зависимости
+
+Домен не может существовать без:
+
+```text
+DNS
+Сетевого хранилища
+```
+
+Если службы отсутствуют, они активируются автоматически. Если standalone DNS/Storage уже были установлены Control Center, они сохраняются в install-context и переводятся в domain mode.
+
+Автоматический takeover внешнего, неуправляемого AD-DC запрещён.
+
+## Readiness / initial wizard
+
+Проверяются:
+
+- hostname;
+- Realm и NetBIOS domain;
+- активная Static IPv4 роль;
+- time sync;
+- APT packages;
+- disk space;
+- listeners 53/88/389/445;
+- существующая Samba/DNS topology;
+- DNS forwarder;
+- отсутствие незавершённых DNS/Storage jobs.
+
+LAN предпочтителен. WAN требует отдельного подтверждения.
+
+## Provision approval
+
+```bash
+sudo control-center-samba-approve
+```
+
+Код purpose-bound, one-time, TTL 10 минут. В root runtime хранится только SHA-256.
+
+Administrator password не сохраняется в PostgreSQL/persistent state и не передаётся через `--adminpass`.
+
+## Provisioning
+
+Orchestrator:
+
+```text
+control-center-domain-pre
+control-center-samba-apply-core
+control-center-domain-post
+```
+
+`domain-pre` сохраняет DNS/Storage snapshots, deterministic fingerprints и останавливает standalone DNS для port-53 cutover.
+
+До пакетных изменений `control-center-samba-package-guard` моделирует реальную APT-транзакцию Domain provisioning. Для всех затрагиваемых пакетов фиксируются исходные presence/version и manual/auto mark. Для уже установленных пакетов заранее сохраняются точные rollback `.deb`. Если точную обратимость обеспечить нельзя, provisioning не начинается.
+
+Core создаёт root-only Samba backup, устанавливает packages, выполняет `samba-tool domain provision`, Kerberos/resolver/NTP cutover и acceptance.
+
+`domain-post` активирует обязательные DNS/Storage dependencies и bootstrap-группу `Control Center Admins`. Группа, membership `Administrator` и SID resolution являются обязательными: ошибка на этом этапе считается ошибкой provisioning и вызывает полный rollback.
+
+При любой ошибке pre-domain state восстанавливается.
+
+## Acceptance
+
+Успех требует:
+
+```text
+samba-tool testparm
+samba-tool ntacl sysvolcheck
+samba-tool domain info
+samba-tool drs showrepl --summary
+DNS A
+LDAP SRV
+Kerberos SRV
+kinit Administrator
+Administrator SID -> UID 0
+smbclient
+Control Center Admins -> Administrator membership
+DNS dependency health
+Storage dependency health
+portal auth daemon health
+```
+
+Provisioning использует RFC2307 schema extension. На самом AD-DC системное SID→Unix сопоставление остаётся функцией локального `idmap.ldb`. Перед SMB acceptance Control Center отдельно доказывает, что встроенный `Administrator` (RID 500) преобразуется в UID 0. Если конкретная Samba-сборка не выполняет built-in mapping при локальном RFC2307 lookup, Control Center отключает только `idmap_ldb:use rfc2307` lookup на DC, сохраняя NIS schema, перезапускает AD-DC и повторно требует корректное SID→UID 0 перед продолжением.
+
+## DHCP
+
+Если DHCP обслуживает interface контроллера, он автоматически выдаёт IP AD-DC как единственный DNS. Внешние DNS остаются Samba forwarders.
+
+## Ограничения активного DC
+
+Обычными настройками нельзя:
+
+- переименовать DC;
+- выключить его network role;
+- сменить Static на DHCP;
+- сменить interface/IP/prefix;
+- удалить DNS;
+- удалить Storage;
+- забронировать DC IP DHCP-клиенту.
+
+Такие изменения требуют отдельного будущего AD migration lifecycle.
+
+## Domain authentication
+
+После provisioning на портале доступен Domain login. `Administrator` добавляется в bootstrap-группу `Control Center Admins`; её membership даёт роль `admin`. Другие доменные пользователи получают `viewer` до перехода на granular RBAC.
+
+## Удаление Домена
+
+Поддерживается защищённое destruction для **единственного DC**.
+
+Получить отдельный removal code:
+
+```bash
+sudo control-center-samba-approve --remove
+```
+
+Дополнительно UI требует фразу `УДАЛИТЬ ДОМЕН`.
+
+Перед destruction создаётся:
+
+```text
+/var/lib/control-center-root/domain-destroy-backups/<timestamp>/
+```
+
+После успешного provisioning точный пакетный pre-state до удаления хранится root-only в:
+
+```text
+/var/lib/control-center-root/domain-package-prestate/
+```
+
+После этого удаление Домена:
+
+1. generated AD runtime удаляется;
+2. восстанавливает точные версии пакетов, их исходное наличие/отсутствие и APT manual/auto marks;
+3. восстанавливает pre-domain Samba/DNS/Kerberos/resolver/chrony/DHCP state;
+4. возвращает standalone DNS/Storage, если они существовали до Домена;
+5. ротирует portal session secret;
+6. выполняет cleanup-audit;
+7. сравнивает deterministic config fingerprints с состоянием до provisioning;
+8. требует отсутствия generated `sam.ldb` и SYSVOL, если их не было до Домена;
+9. удаляет пакетный recovery pre-state только после успешного его применения.
+
+Пакетный rollback намеренно не выполняет `autoremove`, чтобы не удалить зависимости, которые могут использоваться посторонним ПО.
+
+Recovery bundle destruction сохраняется намеренно как root-only аварийная копия.
 
 ## PostgreSQL
 
-Migration `002` сохраняется неизменной и содержит базовые таблицы:
+Migration 004 хранит AD lifecycle/health. Migration 005 добавляет RBAC/service dependency/cleanup schema.
 
-```text
-control_center.ad_dc_profiles
-control_center.ad_dc_nodes
-control_center.ad_dc_preflight_runs
-```
-
-Migration `003_samba_ad_dc_readiness.sql` добавляет:
-
-```text
-control_center.ad_dc_readiness_runs
-control_center.ad_dc_change_plans
-```
-
-и дополнительные поля readiness/planning в `ad_dc_profiles`.
-
-Секрет Administrator, Kerberos keys и другие секреты в этих таблицах не сохраняются.
-
-## Readiness API
-
-```text
-GET/POST /api/samba/readiness
-```
-
-Проверки разделены на **blocker** и **warning**.
-
-### Blocker
-
-- DNS-совместимое имя компьютера;
-- полноценный FQDN, не `.local`;
-- минимум один активный статический IPv4 на WAN или LAN;
-- подтверждённая синхронизация времени;
-- доступность обязательных APT-пакетов;
-- минимум 2 GiB свободного места на `/`.
-
-Обязательные пакеты readiness:
-
-```text
-samba
-samba-dsdb-modules
-samba-vfs-modules
-winbind
-krb5-user
-dnsutils
-acl
-attr
-```
-
-### Warning / будущий cutover
-
-Проверяются текущие listeners:
-
-```text
-53   DNS
-88   Kerberos
-389  LDAP
-445  SMB
-```
-
-Наличие listener не всегда блокирует подготовку, но обязательно входит в план cutover/rollback.
-
-Дополнительно фиксируются:
-
-- `systemd-resolved`;
-- Control Center DHCP/dnsmasq;
-- фактическая цель `/etc/resolv.conf`;
-- существующий `/etc/samba/smb.conf`;
-- установленная версия Samba;
-- активные WAN/LAN роли.
-
-## Dry-run plan
-
-```text
-GET/POST /api/samba/plan
-```
-
-API не изменяет Samba/DNS/Kerberos. Он формирует воспроизводимый change plan и SHA-256 плана.
-
-План содержит:
-
-1. обязательный набор пакетов;
-2. выбранную сетевую роль и planned IPv4;
-3. DNS backend `SAMBA_INTERNAL`;
-4. список backup targets;
-5. порядок service cutover;
-6. порядок rollback;
-7. acceptance-команды.
-
-Backup targets перед будущим provisioning:
-
-```text
-/etc/samba
-/etc/krb5.conf
-/etc/resolv.conf
-/etc/netplan/90-control-center.yaml
-/var/lib/samba
-```
-
-## План acceptance для 1.0.11
-
-После будущего provisioning должны пройти минимум:
-
-```text
-samba-tool domain info
-samba-tool drs showrepl
-kinit Administrator
-host -t SRV _ldap._tcp
-host -t SRV _kerberos._udp
-smbclient -L localhost
-timedatectl NTPSynchronized=yes
-```
-
-До прохождения этих проверок AD-DC не должен считаться успешно опубликованным.
-
-## Поддержка одной сетевой роли
-
-1.0.10 допускает работу Control Center:
-
-- WAN + LAN;
-- только WAN;
-- только LAN.
-
-Readiness AD-DC выбирает LAN как предпочтительную статическую роль. Если LAN выключен, допускается единственная статическая WAN-роль — метка роли не должна искусственно блокировать одноинтерфейсный сервер.
-
-## Имя компьютера
-
-В **Настройки → Имя компьютера** можно изменить hostname перед будущим provisioning. Разрешено single-label DNS-совместимое имя длиной 1–63 символа: латинские буквы, цифры и дефис.
-
-Изменение выполняется отдельным root-helper с backup `/etc/hostname`, `/etc/hosts` и rollback.
-
-## Почему provisioning отключён
-
-Provisioning AD-DC меняет критические компоненты сервера: DNS, Kerberos, LDAP, SMB, resolver, Samba database и SYSVOL. Поэтому 1.0.10 не содержит скрытого или экспериментального вызова `samba-tool domain provision`.
-
-1.0.11 должен добавить provisioning только вместе с:
-
-- отдельным privileged lifecycle worker;
-- секретом Administrator без plaintext в PostgreSQL;
-- backup до первого изменения;
-- DNS/resolver cutover;
-- rollback;
-- automated acceptance;
-- Market lifecycle status и уведомлениями.
-
-## Диагностика
-
-При HTTP:
-
-```bash
-PORT=$(sudo sed -n 's/^CONTROL_CENTER_PORT=//p' /etc/control-center/web.env)
-curl -fsS "http://127.0.0.1:${PORT}/api/samba/readiness" | python3 -m json.tool
-curl -fsS -X POST "http://127.0.0.1:${PORT}/api/samba/plan" | python3 -m json.tool
-```
-
-При self-signed HTTPS используйте `https://` и `curl -k`.
-
-PostgreSQL history:
-
-```bash
-sudo -u control-center psql -d control_center -c \
-  'select id,created_at,hostname,fqdn,ready,blockers,warnings from control_center.ad_dc_readiness_runs order by id desc limit 10;'
-
-sudo -u control-center psql -d control_center -c \
-  'select plan_id,state,checksum,created_at from control_center.ad_dc_change_plans order by created_at desc limit 10;'
-```
+Secrets в DB не сохраняются.

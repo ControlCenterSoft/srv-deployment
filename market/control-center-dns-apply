@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+STATE=/var/lib/control-center
+SYSTEM=/var/lib/control-center-system
+ROOT=/var/lib/control-center-root
+PENDING="$STATE/dns-pending.json"
+MODULE="$SYSTEM/modules/dns.json"
+SAMBA="$SYSTEM/modules/samba.json"
+STATUS="$SYSTEM/dns-status.json"
+CONF=/etc/unbound/unbound.conf.d/control-center.conf
+AUDITS="$SYSTEM/cleanup-audits"
+APT_LOCK=/run/control-center-apt.lock
+CTX="$ROOT/dns-install-context.json"
+CTX_ARCHIVE="$ROOT/dns-install-prestate.tar.gz"
+[[ -s "$PENDING" ]] || exit 0
+install -d -o root -g control-center -m 0750 "$SYSTEM" "$SYSTEM/modules" "$AUDITS"
+install -d -o root -g root -m 0700 "$ROOT"
+status(){ python3 - "$STATUS" "$1" "$2" "${3:-}" <<'PY'
+import json,sys,time,os,tempfile
+p,state,msg,detail=sys.argv[1:]
+d={'state':state,'message':msg,'detail':detail,'timestamp':int(time.time())}
+fd,tmp=tempfile.mkstemp(prefix='.dns-status.',dir=os.path.dirname(p))
+with os.fdopen(fd,'w') as f:json.dump(d,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+os.replace(tmp,p)
+PY
+chown root:control-center "$STATUS";chmod 0640 "$STATUS"; }
+write_module(){ python3 - "$MODULE" "$@" <<'PY'
+import json,sys,time,os,tempfile
+p,provider,explicit,owned,iface,ip,network,*forwarders=sys.argv[1:]
+d={'installed':True,'provider':provider,'explicit':explicit=='1','package_owned':owned=='1','interface':iface,'ipv4':ip,'network':network,'forwarders':forwarders,'dependency_by':[],'installed_at':int(time.time()),'prestate_context':'/var/lib/control-center-root/dns-install-context.json'}
+fd,tmp=tempfile.mkstemp(prefix='.dns-module.',dir=os.path.dirname(p))
+with os.fdopen(fd,'w') as f:json.dump(d,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+os.replace(tmp,p);os.chmod(p,0o640)
+PY
+chown root:control-center "$MODULE"; }
+service_state(){ systemctl "$1" unbound.service 2>/dev/null || true; }
+snapshot_prestate(){
+  [[ -s "$CTX" ]] && return 0
+  if [[ -e "$CONF" ]]; then
+    if grep -Fq '# Managed by Control Center DNS.' "$CONF"; then rm -f "$CONF"; else status rejected 'Файл Control Center DNS уже существует, но не принадлежит Control Center' "$CONF"; return 1; fi
+  fi
+  python3 - "$CTX" <<'PY'
+import json,os,subprocess,sys,time
+p=sys.argv[1]
+def cmd(a):
+ r=subprocess.run(a,text=True,capture_output=True);return r.returncode,r.stdout.strip()
+package=cmd(['dpkg-query','-W','-f=${Status}','unbound']);active=cmd(['systemctl','is-active','unbound.service']);enabled=cmd(['systemctl','is-enabled','unbound.service'])
+paths=['/etc/unbound','/var/lib/unbound','/var/log/unbound','/etc/default/unbound']
+data={'created_at':int(time.time()),'package_present':package[0]==0 and 'install ok installed' in package[1],'service_active':active[1],'service_enabled':enabled[1],'paths':{x:os.path.lexists(x) for x in paths}}
+with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n')
+os.chmod(p,0o600)
+PY
+  PATHS=();for p in etc/unbound var/lib/unbound var/log/unbound etc/default/unbound;do [[ -e "/$p" || -L "/$p" ]]&&PATHS+=("$p");done
+  if (( ${#PATHS[@]} ));then tar -C / --acls --xattrs -czpf "$CTX_ARCHIVE" "${PATHS[@]}";else tar -czpf "$CTX_ARCHIVE" --files-from /dev/null;fi
+  chmod 0600 "$CTX" "$CTX_ARCHIVE"
+}
+restore_prestate(){
+  [[ -s "$CTX" ]] || return 0
+  systemctl stop unbound.service >/dev/null 2>&1||true
+  rm -rf /etc/unbound /var/lib/unbound /var/log/unbound;rm -f /etc/default/unbound
+  [[ -s "$CTX_ARCHIVE" ]]&&tar -C / -xzpf "$CTX_ARCHIVE" --acls --xattrs
+  readarray -t PRESTATE < <(python3 - "$CTX" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print('1' if j.get('package_present') else '0');print(j.get('service_active',''));print(j.get('service_enabled',''))
+PY
+)
+  if [[ "${PRESTATE[0]}" == 1 ]];then
+    case "${PRESTATE[2]}" in enabled) systemctl enable unbound.service >/dev/null 2>&1||true;;disabled) systemctl disable unbound.service >/dev/null 2>&1||true;;masked) systemctl mask unbound.service >/dev/null 2>&1||true;;esac
+    if [[ "${PRESTATE[1]}" == active ]];then systemctl start unbound.service >/dev/null 2>&1||true;else systemctl stop unbound.service >/dev/null 2>&1||true;fi
+  fi
+}
+DOMAIN_ACTIVE=0
+if [[ -s "$SAMBA" ]] && python3 - "$SAMBA" <<'PY'
+import json,sys
+try:j=json.load(open(sys.argv[1]))
+except Exception:raise SystemExit(1)
+raise SystemExit(0 if j.get('managed') and j.get('state')=='active' else 1)
+PY
+then DOMAIN_ACTIVE=1; fi
+ACTION="$(python3 - "$PENDING" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print(str(j.get('action') or ''))
+PY
+)"
+
+if [[ "$ACTION" == configure ]]; then
+  readarray -t FORWARDERS < <(python3 - "$PENDING" <<'PY'
+import json,ipaddress,sys
+j=json.load(open(sys.argv[1]));f=j.get('forwarders') or []
+if not isinstance(f,list) or not f:raise SystemExit(2)
+for x in f:
+ ip=ipaddress.IPv4Address(str(x))
+ if ip.is_loopback or ip.is_multicast or ip.is_unspecified:raise SystemExit(3)
+ print(ip)
+PY
+) || { rm -f "$PENDING";status error 'DNS configuration rejected';exit 1; }
+  if [[ "$DOMAIN_ACTIVE" == 1 ]]; then
+    status applying 'Применение DNS forwarder Samba Internal DNS…'
+    BACKUP="$ROOT/smb.conf.dns.rollback";cp -a /etc/samba/smb.conf "$BACKUP"
+    if python3 - /etc/samba/smb.conf "${FORWARDERS[0]}" <<'PY'
+from pathlib import Path
+import re,sys
+p=Path(sys.argv[1]);value=sys.argv[2];lines=p.read_text(errors='replace').splitlines();out=[];in_global=False;done=False
+for line in lines:
+ s=line.strip()
+ if s.startswith('['):in_global=s.lower()=='[global]'
+ if in_global and re.match(r'^\s*dns\s+forwarder\s*=',line,re.I):
+  if not done:out.append(f'\tdns forwarder = {value}');done=True
+  continue
+ out.append(line)
+if not done:
+ for i,line in enumerate(out):
+  if line.strip().lower()=='[global]':out.insert(i+1,f'\tdns forwarder = {value}');done=True;break
+if not done:raise SystemExit('global section not found')
+p.write_text('\n'.join(out).rstrip()+'\n')
+PY
+    then
+      if samba-tool testparm >/dev/null 2>&1 && systemctl restart samba-ad-dc.service && systemctl is-active --quiet samba-ad-dc.service; then
+        python3 - "$SAMBA" "$MODULE" "${FORWARDERS[0]}" <<'PY'
+import json,sys,os,time
+sp,dp,f=sys.argv[1:];s=json.load(open(sp));s['dns_forwarder']=f;open(sp,'w').write(json.dumps(s,ensure_ascii=False,indent=2)+'\n');os.chmod(sp,0o640)
+try:d=json.load(open(dp))
+except Exception:d={}
+d.update({'installed':True,'provider':'samba_internal','forwarders':[f],'dependency_by':['domain'],'ipv4':s.get('ipv4'),'interface':s.get('interface'),'explicit':bool(d.get('explicit',False)),'package_owned':bool(d.get('package_owned',False)),'installed_at':d.get('installed_at') or int(time.time()),'prestate_context':d.get('prestate_context')})
+open(dp,'w').write(json.dumps(d,ensure_ascii=False,indent=2)+'\n');os.chmod(dp,0o640)
+PY
+        chown root:control-center "$SAMBA" "$MODULE";rm -f "$PENDING";status applied 'DNS forwarder Samba Internal DNS применён';exit 0
+      fi
+    fi
+    cp -a "$BACKUP" /etc/samba/smb.conf;systemctl restart samba-ad-dc.service >/dev/null 2>&1||true;rm -f "$PENDING";status rollback 'Ошибка DNS настройки. smb.conf восстановлен.';exit 1
+  fi
+  [[ -s "$MODULE" ]]||{ rm -f "$PENDING";status error 'DNS не установлен';exit 1; }
+  readarray -t META < <(python3 - "$MODULE" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print(j.get('interface',''));print(j.get('ipv4',''));print(j.get('network',''));print('1' if j.get('explicit') else '0');print('1' if j.get('package_owned') else '0')
+PY
+)
+  IFACE="${META[0]}";IP="${META[1]}";NETWORK="${META[2]}";EXPLICIT="${META[3]}";OWNED="${META[4]}";status applying 'Применение standalone DNS…'
+elif [[ "$ACTION" == install ]]; then
+  if [[ "$DOMAIN_ACTIVE" == 1 ]]; then
+    python3 - "$MODULE" "$SAMBA" <<'PY'
+import json,sys,os,time
+mp,sp=sys.argv[1:];s=json.load(open(sp))
+try:m=json.load(open(mp))
+except Exception:m={}
+m.update({'installed':True,'provider':'samba_internal','explicit':True,'package_owned':bool(m.get('package_owned',False)),'dependency_by':['domain'],'interface':s.get('interface'),'ipv4':s.get('ipv4'),'forwarders':[s.get('dns_forwarder')] if s.get('dns_forwarder') else [],'installed_at':m.get('installed_at') or int(time.time()),'prestate_context':m.get('prestate_context')})
+open(mp,'w').write(json.dumps(m,ensure_ascii=False,indent=2)+'\n');os.chmod(mp,0o640)
+PY
+    chown root:control-center "$MODULE";rm -f "$PENDING";status applied 'DNS отмечен как явно установленный; provider Samba Internal DNS';exit 0
+  fi
+  status installing 'Установка standalone DNS (Unbound)…'
+  snapshot_prestate||{ rm -f "$PENDING";exit 1; }
+  PRE="$(python3 - "$CTX" <<'PY'
+import json,sys
+print('1' if json.load(open(sys.argv[1])).get('package_present') else '0')
+PY
+)"
+  exec 8>"$APT_LOCK";flock -w 900 8||{ rm -f "$PENDING";status error 'Менеджер пакетов занят';exit 75; }
+  export DEBIAN_FRONTEND=noninteractive;apt-get update;apt-get install -y unbound dnsutils
+  readarray -t META < <(python3 - "$SYSTEM/network-config.json" <<'PY'
+import json,ipaddress,sys
+j=json.load(open(sys.argv[1]));chosen=None
+for role in ('lan','wan'):
+ c=j.get(role) or {}
+ if c.get('enabled',bool(c.get('interface'))) and c.get('method')=='static' and c.get('interface') and c.get('ip'):chosen=c;break
+if not chosen:raise SystemExit('Standalone DNS requires active Static IPv4 role')
+a=ipaddress.IPv4Interface(f"{chosen['ip']}/{int(chosen['mask'])}");print(chosen['interface']);print(a.ip);print(a.network)
+for d in chosen.get('dns') or []:
+ try:
+  x=ipaddress.IPv4Address(str(d))
+  if x!=a.ip and not x.is_loopback:print('F:'+str(x))
+ except Exception:pass
+PY
+) || { rm -f "$PENDING";status error 'Standalone DNS требует активную роль со Static IPv4';exit 1; }
+  IFACE="${META[0]}";IP="${META[1]}";NETWORK="${META[2]}";EXPLICIT=1;OWNED=$((1-PRE));FORWARDERS=();for x in "${META[@]:3}";do [[ "$x" == F:* ]]&&FORWARDERS+=("${x#F:}");done;[[ ${#FORWARDERS[@]} -gt 0 ]]||FORWARDERS=(1.1.1.1)
+else
+  [[ "$ACTION" == remove ]]||{ rm -f "$PENDING";status error 'Неизвестное действие DNS';exit 1; }
+  [[ "$DOMAIN_ACTIVE" == 0 ]]||{ rm -f "$PENDING";status rejected 'DNS является обязательной зависимостью активного Домена';exit 1; }
+  [[ -s "$MODULE" ]]||{ rm -f "$PENDING";status removed 'DNS уже отсутствует';exit 0; }
+  OWNED="$(python3 - "$MODULE" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]));print('1' if j.get('package_owned') else '0')
+PY
+)";status removing 'Удаление standalone DNS и восстановление pre-state…'
+  systemctl disable --now unbound.service >/dev/null 2>&1||true;rm -f "$CONF"
+  if [[ "$OWNED" == 1 ]];then exec 8>"$APT_LOCK";flock -w 900 8;export DEBIAN_FRONTEND=noninteractive;apt-get purge -y unbound;apt-get autoremove -y||true;fi
+  restore_prestate||true
+  rm -f "$MODULE" "$PENDING"
+  TS="$(date +%s)";AUDIT="$AUDITS/dns-$TS.json";RC=0
+  python3 - "$AUDIT" "$CONF" "$CTX" <<'PY' || RC=$?
+import json,os,subprocess,sys,time
+p,conf,ctxp=sys.argv[1:]
+def cmd(a):
+ r=subprocess.run(a,text=True,capture_output=True);return r.returncode,r.stdout.strip()
+try:ctx=json.load(open(ctxp))
+except Exception:ctx={}
+pkg=cmd(['dpkg-query','-W','-f=${Status}','unbound']);present=pkg[0]==0 and 'install ok installed' in pkg[1]
+active=cmd(['systemctl','is-active','unbound.service'])[1];enabled=cmd(['systemctl','is-enabled','unbound.service'])[1]
+checks={'control_config_removed':not os.path.exists(conf),'package_presence_restored':present==bool(ctx.get('package_present',False))}
+if ctx:
+ if ctx.get('package_present'):
+  checks['service_active_restored']=active==ctx.get('service_active')
+  checks['service_enabled_restored']=enabled==ctx.get('service_enabled')
+ else:
+  checks['unbound_inactive']=active!='active'
+ for path,was in (ctx.get('paths') or {}).items():checks['path:'+path]=(os.path.lexists(path)==bool(was))
+clean=all(checks.values());data={'service':'dns','action':'remove','clean':clean,'checks':checks,'timestamp':int(time.time()),'prestate_restored':bool(ctx),'allowed_remaining':['Control Center cleanup audit only','pre-existing DNS artifacts restored exactly by ownership/existence boundary']}
+with open(p,'w') as f:json.dump(data,f,ensure_ascii=False,indent=2);f.write('\n')
+os.chmod(p,0o640);raise SystemExit(0 if clean else 2)
+PY
+  chown root:control-center "$AUDIT";if [[ $RC -ne 0 ]];then status error 'DNS удалён, но cleanup-audit обнаружил отличие от pre-state' "$AUDIT";exit 1;fi
+  rm -f "$CTX" "$CTX_ARCHIVE" "$ROOT/control-center-unbound.rollback"
+  status removed 'DNS удалён. Pre-state восстановлен, cleanup-audit PASSED.' "$AUDIT";exit 0
+fi
+
+install -d -m 0755 /etc/unbound/unbound.conf.d
+TMP=$(mktemp /etc/unbound/unbound.conf.d/control-center.conf.XXXXXX);trap 'rm -f "$TMP"' EXIT
+{
+ echo '# Managed by Control Center DNS.';echo 'server:';echo "  interface: $IP";echo '  do-ip6: no';echo '  hide-identity: yes';echo '  hide-version: yes';echo '  qname-minimisation: yes';echo '  prefetch: yes';echo "  access-control: $NETWORK allow";echo '  access-control: 127.0.0.0/8 allow';echo 'forward-zone:';echo '  name: "."';for f in "${FORWARDERS[@]}";do echo "  forward-addr: $f";done
+}>"$TMP"
+chmod 0644 "$TMP";unbound-checkconf "$TMP" >/dev/null
+BACKUP="$ROOT/control-center-unbound.rollback";[[ -f "$CONF" ]]&&cp -a "$CONF" "$BACKUP"||rm -f "$BACKUP";mv "$TMP" "$CONF";trap - EXIT
+if systemctl enable --now unbound.service&&systemctl restart unbound.service&&systemctl is-active --quiet unbound.service;then write_module unbound "$EXPLICIT" "$OWNED" "$IFACE" "$IP" "$NETWORK" "${FORWARDERS[@]}";rm -f "$PENDING";status applied "Standalone DNS работает: $IP";exit 0;fi
+[[ -f "$BACKUP" ]]&&cp -a "$BACKUP" "$CONF"||rm -f "$CONF";systemctl restart unbound.service >/dev/null 2>&1||true;rm -f "$PENDING";status rollback 'Ошибка DNS. Предыдущая конфигурация восстановлена.';exit 1
