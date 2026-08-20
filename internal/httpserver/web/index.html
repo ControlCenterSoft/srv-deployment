@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Control Center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">Control Center</div>
+      <nav aria-label="Основная навигация">
+        <button class="nav-item active" data-page="overview">Обзор</button>
+        <button class="nav-item" data-page="market">Маркет</button>
+        <button class="nav-item" data-page="rbac">RBAC</button>
+        <button class="nav-item" data-page="system">Система</button>
+      </nav>
+    </aside>
+    <main class="content">
+      <header>
+        <div><span class="eyebrow">Control Center</span><h1 id="page-title">Обзор</h1></div>
+        <span id="health" class="status">Проверка…</span>
+      </header>
+      <section class="card">
+        <h2 id="card-title">Состояние платформы</h2>
+        <p id="card-text">Загрузка данных runtime…</p>
+        <dl class="facts">
+          <div><dt>Версия</dt><dd id="version">—</dd></div>
+          <div><dt>Commit</dt><dd id="commit">—</dd></div>
+          <div><dt>Readiness</dt><dd id="readiness">—</dd></div>
+        </dl>
+      </section>
+      <p class="note">1.0.0-alpha.1 — platform skeleton. Изменение системного состояния на этом этапе намеренно отключено.</p>
+    </main>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

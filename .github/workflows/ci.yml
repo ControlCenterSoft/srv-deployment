@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: Formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and API tests
+        run: go test ./...
+      - name: Installer syntax
+        run: bash -n install/install.sh install/uninstall.sh scripts/build.sh
+      - name: Build release binaries
+        env:
+          VERSION: 1.0.0-alpha.1+ci
+          COMMIT: ${{ github.sha }}
+        run: ./scripts/build.sh
+      - name: Smoke test
+        run: |
+          CONTROL_CENTER_LISTEN=127.0.0.1:18876 ./dist/control-center-linux-amd64 > /tmp/control-center.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:18876/api/v1/health >/dev/null; then break; fi
+            sleep 0.25
+          done
+          curl -fsS http://127.0.0.1:18876/api/v1/health
+          curl -fsS http://127.0.0.1:18876/api/v1/readiness
+          curl -fsS http://127.0.0.1:18876/api/v1/version
