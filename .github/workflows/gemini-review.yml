@@ -1,0 +1,139 @@
+name: Gemini Independent Review
+
+on:
+  pull_request:
+    branches: ['1.1.x']
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: ['1.1.x']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: gemini-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.7-flash' }}
+      GEMINI_GATE_LEVEL: ${{ vars.GEMINI_GATE_LEVEL || 'NONE' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Gemini configuration
+        id: config
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${GEMINI_API_KEY}" ]]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            {
+              echo '## Gemini independent review'
+              echo
+              echo 'Skipped: repository secret `GEMINI_API_KEY` is not configured.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Build review diff
+        if: steps.config.outputs.configured == 'true'
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == 'pull_request' ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            CHANGE_ID="PR #${{ github.event.pull_request.number }}"
+          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]]; then
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${GITHUB_SHA}"
+            CHANGE_ID="push ${GITHUB_SHA}"
+            if [[ "${BASE_SHA}" =~ ^0+$ ]]; then
+              BASE_SHA="${GITHUB_SHA}^"
+            fi
+          else
+            HEAD_SHA="${GITHUB_SHA}"
+            BASE_SHA="${GITHUB_SHA}^"
+            CHANGE_ID="manual ${GITHUB_SHA}"
+          fi
+          git diff --no-ext-diff --unified=40 "${BASE_SHA}" "${HEAD_SHA}" -- . > "$RUNNER_TEMP/gemini-review.diff"
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "change_id=${CHANGE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Gemini review
+        if: steps.config.outputs.configured == 'true'
+        id: gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        shell: bash
+        run: |
+          set -u
+          set +e
+          python3 scripts/gemini_review.py \
+            --diff-file "$RUNNER_TEMP/gemini-review.diff" \
+            --output-json "$RUNNER_TEMP/gemini-review.json" \
+            --output-md "$RUNNER_TEMP/gemini-review.md" \
+            --repository "$GITHUB_REPOSITORY" \
+            --change-id "${{ steps.diff.outputs.change_id }}" \
+            --sha "${{ steps.diff.outputs.head_sha }}" \
+            --model "$GEMINI_MODEL"
+          STATUS=$?
+          set -e
+          if [[ "$STATUS" -ne 0 ]]; then
+            echo 'review_ok=false' >> "$GITHUB_OUTPUT"
+            {
+              echo '## Gemini independent review'
+              echo
+              echo "**Model:** `${GEMINI_MODEL}`  "
+              echo '**Status:** `UNAVAILABLE`'
+            } > "$RUNNER_TEMP/gemini-review.md"
+            cat "$RUNNER_TEMP/gemini-review.md" >> "$GITHUB_STEP_SUMMARY"
+            GATE="${GEMINI_GATE_LEVEL^^}"
+            if [[ "$GATE" == 'NONE' || "$GATE" == 'OFF' || "$GATE" == 'DISABLED' ]]; then
+              exit 0
+            fi
+            exit "$STATUS"
+          fi
+          echo 'review_ok=true' >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/gemini-review.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce Gemini severity gate
+        if: steps.config.outputs.configured == 'true' && steps.gemini.outputs.review_ok == 'true'
+        env:
+          REVIEW_FILE: ${{ runner.temp }}/gemini-review.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          threshold = os.environ.get("GEMINI_GATE_LEVEL", "NONE").upper()
+          ranks = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "BLOCKER": 4}
+          if threshold in {"NONE", "OFF", "DISABLED"}:
+              raise SystemExit(0)
+          if threshold not in ranks:
+              raise SystemExit(f"Invalid GEMINI_GATE_LEVEL: {threshold}")
+          with open(os.environ["REVIEW_FILE"], encoding="utf-8") as fh:
+              review = json.load(fh)
+          blocked = [
+              finding for finding in review.get("findings", [])
+              if ranks.get(str(finding.get("severity", "")).upper(), 0) >= ranks[threshold]
+          ]
+          if blocked:
+              raise SystemExit(
+                  f"Gemini gate failed: {len(blocked)} finding(s) at {threshold} or above"
+              )
+          PY

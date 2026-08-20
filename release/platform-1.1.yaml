@@ -1,0 +1,48 @@
+schema: 1
+product: control-center
+line: 1.1.x
+status: development
+baseline:
+  version: 1.0.0
+  accepted_source_commit: 1b364ae88789696bf98537d21544de8a259d086d
+development:
+  version: 1.1.0-dev.1
+  integration_branch: 1.1.x
+  breaking_changes_allowed: false
+tracks:
+  implementation:
+    required: true
+  unit_contract_tests:
+    required: true
+  security_negative_tests:
+    required: true
+  independent_review:
+    provider: gemini
+    mode: advisory
+  external_research:
+    provider: perplexity
+    mode: untrusted-input
+  staging_acceptance:
+    required_for_release: true
+    arbitrary_ssh_commands: false
+    typed_entrypoint: scripts/staging-deploy.sh
+first_slice:
+  id: privileged-worker-foundation
+  adr: docs/adr/ADR-0005-privileged-worker.md
+  acceptance:
+    - typed_allowlisted_operations
+    - validated_inputs
+    - permission_negative_tests
+    - malformed_input_tests
+    - timeout_handling
+    - audit_correlation
+    - no_arbitrary_root_shell
+    - documented_repair_or_rollback
+release_gate:
+  - mandatory_ci_green
+  - exact_candidate_sha
+  - runtime_acceptance
+  - security_negative_acceptance
+  - repair_rollback_evidence
+  - immutable_artifacts
+  - canonical_release_metadata_updated
