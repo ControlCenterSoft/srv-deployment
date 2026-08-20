@@ -1,4 +1,4 @@
-"""Server-rendered, read-only Control Center Web UI shell."""
+"""Server-rendered Web UI Control Center в безопасном режиме только для чтения."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ def _safe(value: Any) -> str:
 def _status(value: Any) -> str:
     labels = {
         "planned": "Запланировано",
-        "bootstrap": "Bootstrap",
+        "bootstrap": "Начальная сборка",
         "development": "В разработке",
         "ready": "Готово",
-        "rc": "Release candidate",
+        "rc": "Кандидат в релиз",
         "released": "Выпущено",
         "not_run": "Не запускался",
         "pending": "В процессе",
@@ -57,23 +57,23 @@ def _overview(manifest: dict[str, Any]) -> str:
     <h1>Обзор</h1>
     <p class="lead">Единая точка управления сервером. На текущем этапе интерфейс работает только в безопасном режиме чтения.</p>
   </div>
-  <div class="release-chip">Release {_safe(release['version'])} · {_safe(_status(release['status']))}</div>
+  <div class="release-chip">Релиз {_safe(release['version'])} · {_safe(_status(release['status']))}</div>
 </section>
 <section class="grid">
-  {_card('Platform API', 'v1', f"{_status(api_contracts.get('status'))}; health/readiness/version/release")}
-  {_card('Installer', _status(installer.get('status')), 'Preflight, atomic install/repair и rollback')}
-  {_card('Acceptance', _status(release.get('acceptance')), 'Production-релиз не объявляется до passed')}
+  {_card('API платформы', 'v1', f"{_status(api_contracts.get('status'))}; health/readiness/version/release")}
+  {_card('Установщик', _status(installer.get('status')), 'Предварительная проверка, атомарная установка/восстановление и откат')}
+  {_card('Приёмка', _status(release.get('acceptance')), 'Production-релиз не объявляется до статуса «Пройден»')}
   {_card('Android Client', _status(clients.get('android_client', {}).get('status')), clients.get('android_client', {}).get('version', '—'))}
   {_card('Android Admin', _status(clients.get('android_admin', {}).get('status')), clients.get('android_admin', {}).get('version', '—'))}
-  {_card('Web portal', _status(clients.get('website', {}).get('status')), clients.get('website', {}).get('version', '—'))}
+  {_card('Web-портал', _status(clients.get('website', {}).get('status')), clients.get('website', {}).get('version', '—'))}
 </section>
 <section class="panel">
   <h2>Текущий безопасный контур</h2>
   <div class="rows">
-    <div><span>API health</span><code>/api/v1/health</code></div>
-    <div><span>Readiness</span><code>/api/v1/readiness</code></div>
-    <div><span>Version</span><code>/api/v1/version</code></div>
-    <div><span>Release metadata</span><code>/api/v1/release</code></div>
+    <div><span>Состояние API</span><code>/api/v1/health</code></div>
+    <div><span>Готовность</span><code>/api/v1/readiness</code></div>
+    <div><span>Версия</span><code>/api/v1/version</code></div>
+    <div><span>Метаданные релиза</span><code>/api/v1/release</code></div>
   </div>
 </section>
 """
@@ -82,7 +82,7 @@ def _overview(manifest: dict[str, Any]) -> str:
 def _market(manifest: dict[str, Any]) -> str:
     return """
 <section class="hero compact"><div><span class="eyebrow">Модули Control Center</span><h1>Маркет</h1>
-<p class="lead">Каталог устанавливаемых сервисов будет подключён после появления подписанных package metadata, dependency checks и безопасного privileged worker.</p></div></section>
+<p class="lead">Каталог устанавливаемых сервисов будет подключён после появления подписанных метаданных пакетов, проверок зависимостей и безопасного привилегированного worker.</p></div></section>
 <section class="panel"><h2>Сейчас</h2><p>Установка и удаление модулей из Web-процесса намеренно недоступны. Это предотвращает появление произвольного root execution до утверждения security-контракта.</p></section>
 """
 
@@ -91,10 +91,10 @@ def _rbac(manifest: dict[str, Any]) -> str:
     rbac = _feature(manifest, "rbac-foundation") or {"status": "planned"}
     return f"""
 <section class="hero compact"><div><span class="eyebrow">Доступ и полномочия</span><h1>RBAC</h1>
-<p class="lead">Server-side роли и permissions. Клиентская видимость элементов никогда не считается авторизацией.</p></div><div class="release-chip">{_safe(_status(rbac.get('status')))}</div></section>
+<p class="lead">Серверные роли и разрешения. Клиентская видимость элементов никогда не считается авторизацией.</p></div><div class="release-chip">{_safe(_status(rbac.get('status')))}</div></section>
 <section class="grid two">
-  {_card('Viewer', 'read-only', 'Просмотр разрешённых данных без privileged операций')}
-  {_card('Admin', 'server-side', 'Административные действия будут разрешаться только после проверки сессии, permission и audit policy')}
+  {_card('Viewer', 'только чтение', 'Просмотр разрешённых данных без привилегированных операций')}
+  {_card('Admin', 'проверка на сервере', 'Административные действия будут разрешаться только после проверки сессии, разрешения и политики аудита')}
 </section>
 """
 
@@ -105,11 +105,11 @@ def _system(manifest: dict[str, Any]) -> str:
     diagnostics = _feature(manifest, "diagnostics-foundation") or {"status": "planned"}
     return f"""
 <section class="hero compact"><div><span class="eyebrow">Состояние платформы</span><h1>Система</h1>
-<p class="lead">Версия, readiness, диагностика и фундамент обновлений — без прямой передачи root-команд из браузера.</p></div></section>
+<p class="lead">Версия, готовность, диагностика и фундамент обновлений — без прямой передачи root-команд из браузера.</p></div></section>
 <section class="grid">
-  {_card('Release', release['version'], f"{_status(release['status'])}; acceptance: {_status(release['acceptance'])}")}
-  {_card('Diagnostics', _status(diagnostics.get('status')), 'Ограниченный диагностический контур без секретов')}
-  {_card('Updates', _status(update.get('status')), 'Staging, atomic switch и post-update acceptance')}
+  {_card('Релиз', release['version'], f"{_status(release['status'])}; приёмка: {_status(release['acceptance'])}")}
+  {_card('Диагностика', _status(diagnostics.get('status')), 'Ограниченный диагностический контур без секретов')}
+  {_card('Обновления', _status(update.get('status')), 'Подготовка, атомарное переключение и проверка после обновления')}
 </section>
 """
 
@@ -149,5 +149,5 @@ def render_ui(path: str, manifest: dict[str, Any]) -> str:
 <body>
 <header><div class="top"><a class="brand" href="/overview">Control Center</a><nav>{nav}</nav></div></header>
 <main>{body}</main>
-<footer><div>Control Center · Release {_safe(manifest['release']['version'])} · интерфейс чтения</div></footer>
+<footer><div>Control Center · Релиз {_safe(manifest['release']['version'])} · интерфейс чтения</div></footer>
 </body></html>"""
