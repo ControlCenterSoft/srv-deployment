@@ -1,0 +1,74 @@
+name: verify-safe-stable-final-v1
+
+on:
+  push:
+    branches: ["ops/stable-1.0.0-real-host-safe-final-v1"]
+
+permissions:
+  contents: read
+  statuses: write
+
+env:
+  STABLE_SHA: 1b364ae88789696bf98537d21544de8a259d086d
+  LAUNCHER_COMMIT: 2599c4b9522a864eaddde6debdcaca2816042140
+  LAUNCHER_BLOB_SHA1: 2c3ad6c1822258ba136440c726b6ffd7646d6e69
+  SAFE_SCRIPT_SHA256: 90c72a1f5c2b25894bdc5243c5d2f5b329c4093831b234188a2140928df28f9a
+  STATUS_CONTEXT: control-center/stable-real-host-safe-final
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch immutable safe final wrapper
+        run: |
+          set -Eeuo pipefail
+          url="https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/${LAUNCHER_COMMIT}/ops/stable-1.0.0-real-host-safe-final-v1/run-verified.sh"
+          curl -fsSL "$url" -o /tmp/run-verified.sh
+          size="$(wc -c < /tmp/run-verified.sh | tr -d ' ')"
+          actual="$({ printf 'blob %s\0' "$size"; cat /tmp/run-verified.sh; } | sha1sum | awk '{print $1}')"
+          test "$actual" = "$LAUNCHER_BLOB_SHA1"
+          bash -n /tmp/run-verified.sh
+      - name: Rebuild exact safe orchestrator
+        run: |
+          set -Eeuo pipefail
+          sudo env STABLE_SAFE_BUILD_ONLY=1 OUTPUT_SAFE=/tmp/stable-safe.sh bash /tmp/run-verified.sh
+          sudo chown "$USER:$USER" /tmp/stable-safe.sh
+          bash -n /tmp/stable-safe.sh
+          actual="$(sha256sum /tmp/stable-safe.sh | awk '{print $1}')"
+          test "$actual" = "$SAFE_SCRIPT_SHA256"
+          grep -Fq 'RC_VERSION="1.0.0"' /tmp/stable-safe.sh
+          grep -Fq 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-safe.sh
+          grep -Fq 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-safe.sh
+          grep -Fq 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-safe.sh
+          grep -Fq 'scripts/stable-update-acceptance.sh' /tmp/stable-safe.sh
+          ! grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-safe.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('/tmp/stable-safe.sh').read_text()
+          start=src.index('recover_exact_rc() {\n')
+          next_fn=src.index('on_error() {',start)
+          end=src.rfind('}',start,next_fn)+1
+          block=src[start:end]
+          assert '$BETA_PACKAGE' in block
+          assert '$RC_PACKAGE' not in block
+          assert 'recovery-accepted-rc1' in block
+          assert 'verify-release' in block
+          assert 'CONTROL_CENTER_BINARY="$recovery_dir/control-center"' in block
+          assert 'systemctl reset-failed control-center.service' in block
+          print('FINAL_SAFE_RECOVERY=PASSED')
+          PY
+          echo "$actual  /tmp/stable-safe.sh"
+      - name: Publish final safe wrapper verification
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          STATE=failure; DESCRIPTION='Final safe stable wrapper verification failed'
+          if [[ "$JOB_STATUS" == success ]]; then STATE=success; DESCRIPTION="$SAFE_SCRIPT_SHA256"; fi
+          export STATE DESCRIPTION
+          python3 - <<'PY' >/tmp/status.json
+          import json,os
+          print(json.dumps({"state":os.environ["STATE"],"context":os.environ["STATUS_CONTEXT"],"description":os.environ["DESCRIPTION"],"target_url":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"}))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${STABLE_SHA}" --data-binary @/tmp/status.json >/dev/null
