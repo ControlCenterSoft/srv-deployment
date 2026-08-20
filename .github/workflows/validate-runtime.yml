@@ -22,6 +22,18 @@ jobs:
       - name: Install clean server without pre-created portal user
         run: |
           set -euo pipefail
+          # GitHub-hosted runners ship with an existing password-capable sudo
+          # account. A real root-only clean server does not. Lock every existing
+          # human sudo/wheel identity for this disposable job so the installer
+          # must exercise the documented controladmin bootstrap path instead of
+          # correctly adopting the runner account as an existing portal admin.
+          while IFS=: read -r user _ uid _; do
+            [[ "$uid" =~ ^[0-9]+$ ]] || continue
+            (( uid >= 1000 )) || continue
+            groups="$(id -nG "$user" 2>/dev/null || true)"
+            if grep -qwE '(sudo|wheel)' <<<"$groups"; then sudo passwd -l "$user" >/dev/null 2>&1 || true; fi
+          done </etc/passwd
+
           OUT=/tmp/control-center-bootstrap-install.out
           if ! sudo bash install/install.sh >"$OUT" 2>&1; then
             sed -E 's/^(  Пароль: ).*/\1***REDACTED***/' "$OUT"
