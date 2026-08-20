@@ -1,0 +1,70 @@
+name: verify-stable-safe-final
+
+on:
+  push:
+    branches: ["ops/stable-1.0.0-real-host-safe-final"]
+
+permissions:
+  contents: read
+  statuses: write
+
+env:
+  STATUS_CONTEXT: control-center/stable-real-host-safe-builder
+  STABLE_SHA: 1b364ae88789696bf98537d21544de8a259d086d
+
+jobs:
+  build-safe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build safe stable orchestrator
+        run: |
+          set -Eeuo pipefail
+          sudo env STABLE_SAFE_BUILD_ONLY=1 OUTPUT_SAFE=/tmp/stable-safe.sh bash ops/stable-1.0.0-real-host-safe-final/base-launcher.sh
+          sudo chown "$USER:$USER" /tmp/stable-safe.sh
+          bash -n /tmp/stable-safe.sh
+          echo '=== SAFE SHA256 ==='
+          sha256sum /tmp/stable-safe.sh
+          echo '=== SAFE RECOVERY ==='
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('/tmp/stable-safe.sh').read_text()
+          start=src.index('recover_exact_rc() {\n')
+          end=src.index('\n}\n\non_error() {',start)+3
+          print(src[start:end])
+          PY
+      - name: Verify exact stable and accepted RC identities
+        run: |
+          set -Eeuo pipefail
+          grep -F 'RC_VERSION="1.0.0"' /tmp/stable-safe.sh
+          grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-safe.sh
+          grep -F 'RC_AMD64_SHA256="341f6a49646f92aca72692730ea61278cc03bfc1689d029d7a7ce573554fa735"' /tmp/stable-safe.sh
+          grep -F 'RC_ARM64_SHA256="5e6e959f39bd4cb554e902908863c92eb5c697f4d99b55ca97fa4735ec9419fe"' /tmp/stable-safe.sh
+          grep -F 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-safe.sh
+          grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-safe.sh
+          grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-safe.sh
+          ! grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-safe.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-1.0.0-safe-real-host-orchestrator
+          path: /tmp/stable-safe.sh
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish safe builder status on frozen stable SHA
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          STATE=failure; DESCRIPTION='Safe stable real-host builder failed'
+          if [[ "$JOB_STATUS" == success ]]; then STATE=success; DESCRIPTION='Safe stable real-host builder passed'; fi
+          export STATE DESCRIPTION
+          python3 - <<'PY' >/tmp/status.json
+          import json,os
+          print(json.dumps({"state":os.environ["STATE"],"context":os.environ["STATUS_CONTEXT"],"description":os.environ["DESCRIPTION"],"target_url":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"}))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${STABLE_SHA}" --data-binary @/tmp/status.json >/dev/null
