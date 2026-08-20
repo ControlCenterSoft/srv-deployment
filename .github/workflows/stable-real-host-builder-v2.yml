@@ -1,4 +1,4 @@
-name: stable-real-host-orchestrator-builder-v3
+name: stable-real-host-orchestrator-final-verification
 
 on:
   push:
@@ -10,49 +10,48 @@ permissions:
 
 env:
   STABLE_SHA: 1b364ae88789696bf98537d21544de8a259d086d
-  LAUNCHER_COMMIT: 44b358dc736998df42eca016324ea6de86e68fb4
-  LAUNCHER_BLOB_SHA1: 7a3bcf32152fae84ecb499072628223775aefcc3
-  STATUS_CONTEXT: control-center/stable-real-host-builder
+  LAUNCHER_COMMIT: 91fdb0a4ed5a8d781787926f575269c6bd6beabb
+  LAUNCHER_BLOB_SHA1: 7665827ace6b0e9ab8d7dd920ba75e55024ecd22
+  EXPECTED_ORCHESTRATOR_SHA256: d2b8c4428d3a0a9716bd09f94ec92aac235df59da78abf13897a533bbab18b84
+  STATUS_CONTEXT: control-center/stable-real-host-final
 
 jobs:
-  build-only:
+  verify-final:
     runs-on: ubuntu-24.04
-    outputs:
-      orchestrator_sha: ${{ steps.build.outputs.sha }}
     steps:
-      - name: Fetch immutable stable launcher
+      - name: Fetch immutable final wrapper
         run: |
-          url="https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/${LAUNCHER_COMMIT}/ops/stable-1.0.0-real-host-acceptance-v1/run-verified.sh"
-          curl -fsSL "$url" -o /tmp/launcher.sh
-          size="$(wc -c < /tmp/launcher.sh | tr -d ' ')"
-          actual="$({ printf 'blob %s\0' "$size"; cat /tmp/launcher.sh; } | sha1sum | awk '{print $1}')"
+          url="https://raw.githubusercontent.com/ControlCenterSoft/srv-deployment/${LAUNCHER_COMMIT}/ops/stable-1.0.0-real-host-acceptance-final/run-verified.sh"
+          curl -fsSL "$url" -o /tmp/final-wrapper.sh
+          size="$(wc -c < /tmp/final-wrapper.sh | tr -d ' ')"
+          actual="$({ printf 'blob %s\0' "$size"; cat /tmp/final-wrapper.sh; } | sha1sum | awk '{print $1}')"
           test "$actual" = "$LAUNCHER_BLOB_SHA1"
-      - name: Build exact orchestrator
+          bash -n /tmp/final-wrapper.sh
+      - name: Rebuild exact pinned orchestrator
         id: build
         run: |
-          sudo env STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-v1.sh bash /tmp/launcher.sh
-          sudo bash -n /tmp/stable-v1.sh
-          sha="$(sudo sha256sum /tmp/stable-v1.sh | awk '{print $1}')"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          sudo grep -F 'RC_VERSION="1.0.0"' /tmp/stable-v1.sh
-          sudo grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-v1.sh
-          sudo grep -F 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-v1.sh
-          sudo grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-v1.sh
-          sudo grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-v1.sh
-          ! sudo grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-v1.sh
-          echo "$sha  /tmp/stable-v1.sh"
-      - name: Publish result
+          sudo env STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-final.sh bash /tmp/final-wrapper.sh
+          sudo bash -n /tmp/stable-final.sh
+          actual="$(sudo sha256sum /tmp/stable-final.sh | awk '{print $1}')"
+          test "$actual" = "$EXPECTED_ORCHESTRATOR_SHA256"
+          sudo grep -F 'RC_VERSION="1.0.0"' /tmp/stable-final.sh
+          sudo grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-final.sh
+          sudo grep -F 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-final.sh
+          sudo grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-final.sh
+          sudo grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-final.sh
+          ! sudo grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-final.sh
+          echo "$actual  /tmp/stable-final.sh"
+      - name: Publish final wrapper verification
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           JOB_STATUS: ${{ job.status }}
-          ORCHESTRATOR_SHA: ${{ steps.build.outputs.sha }}
         run: |
           STATE=failure
-          DESCRIPTION='Stable real-host orchestrator build failed'
-          if [[ "$JOB_STATUS" == success && -n "$ORCHESTRATOR_SHA" ]]; then
+          DESCRIPTION='Final stable real-host wrapper verification failed'
+          if [[ "$JOB_STATUS" == success ]]; then
             STATE=success
-            DESCRIPTION="$ORCHESTRATOR_SHA"
+            DESCRIPTION="$EXPECTED_ORCHESTRATOR_SHA256"
           fi
           export STATE DESCRIPTION
           python3 - <<'PY' >/tmp/status.json
