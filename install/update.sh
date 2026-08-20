@@ -105,9 +105,14 @@ post_acceptance() {
   return 1
 }
 
+# A failed candidate can exhaust systemd's start-rate limiter before the updater
+# regains control. Clear only this unit's failure/rate state before each controlled
+# transition so a verified target is not blocked by stale candidate failures.
+systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true
 if ! systemctl restart "$SERVICE" || ! post_acceptance; then
   log "post-update acceptance failed; rolling back to $old_target"
   atomic_link "$old_target" "$CURRENT_LINK"
+  systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true
   systemctl restart "$SERVICE" >/dev/null 2>&1 || true
   for _ in {1..20}; do
     if curl -fsS --max-time 2 "${BASE_URL}/api/v1/health" >/dev/null 2>&1; then break; fi

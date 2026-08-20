@@ -120,6 +120,10 @@ if [[ -f "$STATE_DIR/bootstrap-admin.secret" ]]; then chmod 0600 "$STATE_DIR/boo
 atomic_link "$release_rel" "$CURRENT_LINK"
 systemctl daemon-reload
 systemctl enable control-center.service >/dev/null
+# A previous intentionally or genuinely broken runtime may have exhausted systemd's
+# start-rate limiter. This is a controlled operator transition to a verified current
+# release, so clear only the unit failure/rate state before starting it.
+systemctl reset-failed control-center.service >/dev/null 2>&1 || true
 systemctl restart control-center.service
 for _ in {1..24}; do
   if curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/health" >/dev/null 2>&1 && curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/readiness" | grep -Fq '"ready":true'; then
