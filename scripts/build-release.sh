@@ -7,7 +7,7 @@ export GOTOOLCHAIN=local
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-META="$ROOT/release/1.0.0-rc.1.env"
+META="$ROOT/release/1.0.0.env"
 [[ -f "$META" ]] || { echo "ERROR: release metadata missing: $META" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "$META"
@@ -40,7 +40,7 @@ BUILT_AT="$(date -u -d "@$COMMIT_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
 }
 actual_go="$(go env GOVERSION)"
 [[ "$actual_go" == "go$RELEASE_GO_VERSION" ]] || {
-  printf 'ERROR: rc.1 requires Go %s, got %s\n' "$RELEASE_GO_VERSION" "$actual_go" >&2
+  printf 'ERROR: release %s requires Go %s, got %s\n' "$RELEASE_VERSION" "$RELEASE_GO_VERSION" "$actual_go" >&2
   exit 1
 }
 
