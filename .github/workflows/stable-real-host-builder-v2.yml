@@ -12,7 +12,7 @@ env:
   STABLE_SHA: 1b364ae88789696bf98537d21544de8a259d086d
   RC_V7_COMMIT: fe579e3f38e18bf1fc56a93699489b762206427d
   RC_V7_BLOB_SHA1: 65625a24659540df4226cf60134365f18b2917cd
-  STATUS_CONTEXT: control-center/stable-real-host-builder
+  STATUS_CONTEXT: control-center/stable-builder-inspect
 
 jobs:
   inspect:
@@ -29,3 +29,31 @@ jobs:
           bash -n /tmp/rc-v7.sh
           echo '=== RC V7 UPDATE ACCEPTANCE ANCHORS ==='
           grep -n -C 2 'rc1-update-acceptance.sh' /tmp/rc-v7.sh
+      - name: Publish inspection status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          STATE=failure
+          DESCRIPTION='RC v7 builder anchor inspection failed'
+          if [[ "$JOB_STATUS" == success ]]; then
+            STATE=success
+            DESCRIPTION='RC v7 builder anchors inspected'
+          fi
+          export STATE DESCRIPTION
+          python3 - <<'PY' >/tmp/status.json
+          import json, os
+          print(json.dumps({
+            'state':os.environ['STATE'],
+            'context':os.environ['STATUS_CONTEXT'],
+            'description':os.environ['DESCRIPTION'],
+            'target_url':f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${STABLE_SHA}" \
+            --data-binary @/tmp/status.json
