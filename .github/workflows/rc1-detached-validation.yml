@@ -162,14 +162,32 @@ jobs:
             sudo journalctl -u control-center.service -n 120 --no-pager || true
             exit 1
           fi
-      - name: Clean install layout assertion
+      - name: Current symlink assertion
         run: |
+          sudo ls -ld /usr/local/lib/control-center /usr/local/lib/control-center/current /usr/local/lib/control-center/releases || true
+          readlink /usr/local/lib/control-center/current || true
           test -L /usr/local/lib/control-center/current
+      - name: Current binary assertion
+        run: |
+          sudo ls -l /usr/local/lib/control-center/current/control-center || true
+          stat -c '%a %U:%G %n' /usr/local/lib/control-center/current/control-center || true
           test -x /usr/local/lib/control-center/current/control-center
+      - name: Updater assertion
+        run: |
+          sudo ls -l /usr/local/sbin/control-center-update || true
+          stat -c '%a %U:%G %n' /usr/local/sbin/control-center-update || true
           test -x /usr/local/sbin/control-center-update
+      - name: Update trust assertion
+        run: |
+          sudo ls -l /etc/control-center/update-public-key.pem || true
+          stat -c '%a %U:%G %n' /etc/control-center/update-public-key.pem || true
           test -f /etc/control-center/update-public-key.pem
-          printf 'current=%s\n' "$(readlink /usr/local/lib/control-center/current)"
+      - name: Directory modes assertion
+        run: |
           stat -c '%a %U:%G %n' /etc/control-center /var/lib/control-center /var/log/control-center
+          test "$(stat -c %a /etc/control-center)" = 750
+          test "$(stat -c %a /var/lib/control-center)" = 750
+          test "$(stat -c %a /var/log/control-center)" = 750
       - name: Clean install environment assertion
         run: |
           sudo cat /etc/control-center/control-center.env
@@ -187,9 +205,6 @@ jobs:
             sleep 0.5
           done
           curl -fsS http://127.0.0.1:8876/api/v1/readiness
-          test "$(stat -c %a /etc/control-center)" = 750
-          test "$(stat -c %a /var/lib/control-center)" = 750
-          test "$(stat -c %a /var/log/control-center)" = 750
       - name: Authentication and RBAC acceptance
         run: sudo ./scripts/auth-acceptance.sh
       - name: Operations and diagnostics acceptance
