@@ -14,15 +14,15 @@ class OpsBootstrapTests(unittest.TestCase):
     def test_private_source_is_pinned_to_exact_commit(self):
         match = re.search(r'^DIAG_COMMIT="([0-9a-f]{40})"$', self.text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual("82a9ce8a3858512770c56dd09855d464fade7d93", match.group(1))
+        self.assertEqual("2ea76c60cc6ce80a0594867004c32669f5f3944e", match.group(1))
 
     def test_all_bootstrap_files_have_exact_pinned_git_blob_ids(self):
         expected = {
             "agent/ccops_agent_v2.py": "8ee6a3001016e1f127cb6050b77a80eee186823c",
-            "agent/ccops_agent_v3.py": "049cfc3be85a9ee6ad40e4cf23ff7b9adf34101e",
+            "agent/ccops_agent_v3.py": "00fbfdde35425b97d46015b5794a38e3343dabc7",
             "agent/ccops_broker.py": "dcbeb90b5e78e2c77545a2a56468cd86e8a7327e",
-            "agent/ccops_socket_broker.py": "59ff293d449f09ffbd29dde552da847f1c967b20",
-            "install/install-ops-v3.sh": "4ea9a38fb51e7e4422f0649aa33da82b35f08394",
+            "agent/ccops_socket_broker.py": "d2245532af47b5ef12fcfc0a0cf1e88a9ff9a1dc",
+            "install/install-ops-v3.sh": "4c82ab9c86ab2f1c9651de41e20934ef340672c4",
         }
         for path, blob in expected.items():
             self.assertIn(f'"{path}": ("{path}", "{blob}")', self.text)
@@ -40,7 +40,7 @@ class OpsBootstrapTests(unittest.TestCase):
         self.assertIn("ccops_agent_v3.py", self.text)
         self.assertIn("ccops_socket_broker.py", self.text)
         self.assertIn("install-ops-v3.sh", self.text)
-        self.assertIn("OPS_AGENT_VERSION=1.1.2", self.text)
+        self.assertIn("OPS_AGENT_VERSION=1.1.3", self.text)
         self.assertIn("ROOT_BOUNDARY=unix-so-peercred-root-broker", self.text)
         self.assertIn("SUDO_REQUIRED=false", self.text)
 
