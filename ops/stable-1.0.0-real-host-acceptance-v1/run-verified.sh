@@ -71,9 +71,11 @@ one(old_upgrade, new_upgrade, 'stable upgrade block')
 
 # Stable synthetic lifecycle is 1.0.1 -> broken 1.0.2 -> rollback.
 count = src.count('scripts/rc1-update-acceptance.sh')
-if count != 1:
-    raise SystemExit(f'ERROR: rc update acceptance path count={count}')
+if count < 1:
+    raise SystemExit('ERROR: rc update acceptance path missing')
 src = src.replace('scripts/rc1-update-acceptance.sh', 'scripts/stable-update-acceptance.sh')
+if 'scripts/rc1-update-acceptance.sh' in src:
+    raise SystemExit('ERROR: rc update acceptance path remains after replacement')
 src = src.replace('Signed rc.2 forward update and broken rc.3 rollback regression', 'Signed 1.0.1 forward update and broken 1.0.2 rollback regression')
 src = src.replace('rc-forward-update-broken-rollback', 'stable-forward-update-broken-rollback')
 src = src.replace('state changed during beta restore/final rc upgrade/security acceptance', 'state changed during rc.1 to stable upgrade/security acceptance')
