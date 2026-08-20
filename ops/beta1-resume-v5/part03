@@ -1,0 +1,62 @@
+_commit)" == "$PRODUCT_COMMIT" ]]
+
+STEP="repair-reinstall"
+echo "=== Repair and reinstall ==="
+CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" ./install/install.sh --repair
+CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" ./install/install.sh --reinstall
+wait_url "$BACKEND_URL/api/v1/readiness" '"ready":true'
+[[ "$(current_commit)" == "$PRODUCT_COMMIT" ]]
+cmp -s "$PUBLIC_KEY" "$TRUST_KEY"
+REPAIR_REINSTALL="passed"
+
+STEP="preserve-uninstall-reinstall"
+echo "=== Preserve-state uninstall/reinstall ==="
+STATE_SHA_BEFORE="$(sha256sum /var/lib/control-center/state.json | awk '{print $1}')"
+SECRETS_SHA_BEFORE="$(sha256sum /var/lib/control-center/secrets.json | awk '{print $1}')"
+./install/uninstall.sh
+[[ -f "$ENV_FILE" ]]
+[[ -f "$TRUST_KEY" ]]
+[[ -f /var/lib/control-center/state.json ]]
+[[ -f /var/lib/control-center/secrets.json ]]
+CONTROL_CENTER_ACCEPTANCE_URL="$BACKEND_URL" ./install/install.sh
+wait_url "$BACKEND_URL/api/v1/readiness" '"ready":true'
+[[ "$(sha256sum /var/lib/control-center/state.json | awk '{print $1}')" == "$STATE_SHA_BEFORE" ]]
+[[ "$(sha256sum /var/lib/control-center/secrets.json | awk '{print $1}')" == "$SECRETS_SHA_BEFORE" ]]
+cmp -s "$PUBLIC_KEY" "$TRUST_KEY"
+PRESERVE_REINSTALL="passed"
+
+STEP="browser-auth"
+echo "=== Browser proxy authentication ==="
+PUBLIC_IP="$(public_ip)"
+PUBLIC_ORIGIN="http://${PUBLIC_IP}:8876"
+AUTH_WORK="$(mktemp -d /tmp/control-center-beta1-v5-auth.XXXXXX)"
+chmod 0700 "$AUTH_WORK"
+python3 - "$CREDS" > "$AUTH_WORK/login.json" <<'PY'
+import json,sys
+vals={}
+for line in open(sys.argv[1],encoding='utf-8'):
+    if '=' in line:
+        k,v=line.rstrip('\n').split('=',1); vals[k]=v
+print(json.dumps({'username':vals['username'],'password':vals['password']}))
+PY
+code="$(curl -sS -D "$AUTH_WORK/h" -o "$AUTH_WORK/b" -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' --data-binary "@$AUTH_WORK/login.json" "$PROXY_URL/api/v1/auth/login")"
+[[ "$code" == 200 ]]
+! grep -qi '^Set-Cookie: cc_session=.*Secure' "$AUTH_WORK/h"
+TOKEN="$(sed -n 's/^Set-Cookie: cc_session=\([^;]*\).*/\1/p' "$AUTH_WORK/h" | tr -d '\r' | head -1)"
+[[ -n "$TOKEN" ]]
+for endpoint in auth/session system/status rbac/users operations audit diagnostics/summary; do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${PUBLIC_IP}:8876" -H "Cookie: cc_session=$TOKEN" "$PROXY_URL/api/v1/$endpoint")"
+  [[ "$code" == 200 ]]
+done
+BROWSER_AUTH="passed"
+rm -rf "$AUTH_WORK"
+
+STEP="diagnostics"
+echo "=== Diagnostics export ==="
+# Use the product acceptance helper only for a safe diagnostics evidence bundle if possible.
+# Failure to generate the optional bundle is not allowed to hide runtime acceptance failure.
+mkdir -p "$REPORT_DIR"
+
+STEP="completed"
+STATUS="PASSED"
+echo "=== BETA1 FINAL RESUME ACCEPTANCE PASSED ==="
