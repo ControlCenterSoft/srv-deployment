@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.2'
-          cache: true
+          cache: false
       - name: Toolchain identity
         run: test "$(go env GOVERSION)" = go1.23.2
       - name: Formatting
@@ -28,12 +28,18 @@ jobs:
         run: go vet ./...
       - name: Unit and API tests
         run: go test ./...
-      - name: Script syntax
-        run: bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/build-release.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh scripts/rc1-update-acceptance.sh scripts/secret-scan.sh
+      - name: Script and Web syntax
+        run: |
+          bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/build-release.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh scripts/rc1-update-acceptance.sh scripts/stable-update-acceptance.sh scripts/secret-scan.sh
+          node --check internal/httpserver/web/app.js
       - name: Secret scan
         run: ./scripts/secret-scan.sh
       - name: Exact release build
         run: ./scripts/build-release.sh
+      - name: Exact stable identity
+        run: |
+          test "$(./dist/control-center-linux-amd64 build-info --field version)" = "1.0.0"
+          test "$(./dist/control-center-linux-amd64 build-info --field commit)" = "${{ github.sha }}"
       - name: Reproducible rebuild
         run: |
           cp dist/SHA256SUMS /tmp/first-SHA256SUMS
@@ -82,7 +88,7 @@ jobs:
           curl -fsS http://127.0.0.1:18876/api/v1/health
           curl -fsS http://127.0.0.1:18876/api/v1/readiness
           version_json=$(curl -fsS http://127.0.0.1:18876/api/v1/version)
-          grep -Fq '"version":"1.0.0-rc.1"' <<<"$version_json"
+          grep -Fq '"version":"1.0.0"' <<<"$version_json"
           grep -Fq "\"commit\":\"${{ github.sha }}\"" <<<"$version_json"
 
   systemd-acceptance:
@@ -92,7 +98,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.2'
-          cache: true
+          cache: false
       - name: Toolchain identity
         run: test "$(go env GOVERSION)" = go1.23.2
       - name: Generate ephemeral update trust
@@ -100,17 +106,21 @@ jobs:
           openssl genpkey -algorithm ED25519 -out /tmp/control-center-update-private.pem
           openssl pkey -in /tmp/control-center-update-private.pem -pubout -out /tmp/control-center-update-public.pem
           chmod 0600 /tmp/control-center-update-private.pem
-      - name: Build exact candidate
+      - name: Build exact stable candidate
         run: ./scripts/build-release.sh
       - name: Clean install
+        run: sudo env CONTROL_CENTER_UPDATE_PUBLIC_KEY=/tmp/control-center-update-public.pem ./install/install.sh
+      - name: Clean install assertions
         run: |
-          sudo env CONTROL_CENTER_UPDATE_PUBLIC_KEY=/tmp/control-center-update-public.pem ./install/install.sh
           systemctl is-active --quiet control-center.service
           test -L /usr/local/lib/control-center/current
           test -x /usr/local/lib/control-center/current/control-center
           test -x /usr/local/sbin/control-center-update
-          test -f /etc/control-center/update-public-key.pem
-          grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
+          sudo test -f /etc/control-center/update-public-key.pem
+          sudo grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
+          test "$(sudo stat -c %a /etc/control-center)" = 750
+          test "$(sudo stat -c %a /var/lib/control-center)" = 750
+          test "$(sudo stat -c %a /var/log/control-center)" = 750
           curl -fsS http://127.0.0.1:8876/api/v1/health
           curl -fsS http://127.0.0.1:8876/api/v1/readiness
       - name: Restart acceptance
@@ -122,16 +132,13 @@ jobs:
             sleep 0.5
           done
           curl -fsS http://127.0.0.1:8876/api/v1/readiness
-          test "$(stat -c %a /etc/control-center)" = 750
-          test "$(stat -c %a /var/lib/control-center)" = 750
-          test "$(stat -c %a /var/log/control-center)" = 750
       - name: Authentication and RBAC acceptance
         run: sudo ./scripts/auth-acceptance.sh
       - name: Operations and diagnostics acceptance
         run: sudo ./scripts/operations-acceptance.sh
-      - name: RC signed update and rollback acceptance
-        run: sudo env CONTROL_CENTER_UPDATE_PRIVATE_KEY=/tmp/control-center-update-private.pem ./scripts/rc1-update-acceptance.sh
-      - name: Restore exact rc.1 after synthetic update tests
+      - name: Stable signed update and rollback acceptance
+        run: sudo env CONTROL_CENTER_UPDATE_PRIVATE_KEY=/tmp/control-center-update-private.pem ./scripts/stable-update-acceptance.sh
+      - name: Restore exact stable after synthetic update tests
         run: |
           set -a
           source dist/BUILDINFO.env
@@ -142,21 +149,23 @@ jobs:
             --commit "$COMMIT" \
             --arch amd64 \
             --private-key /tmp/control-center-update-private.pem \
-            --output /tmp/control-center-rc1.tar.gz \
+            --output /tmp/control-center-stable.tar.gz \
             --built-at "$BUILT_AT"
-          sudo control-center-update --package /tmp/control-center-rc1.tar.gz --allow-downgrade
+          sudo control-center-update --package /tmp/control-center-stable.tar.gz --allow-downgrade
+          test "$(/usr/local/lib/control-center/current/control-center build-info --field version)" = "1.0.0"
+          test "$(/usr/local/lib/control-center/current/control-center build-info --field commit)" = "${{ github.sha }}"
       - name: Repair and reinstall acceptance
         run: |
           sudo ./install/install.sh --repair
           sudo ./install/install.sh --reinstall
           systemctl is-active --quiet control-center.service
-          test -f /etc/control-center/update-public-key.pem
+          sudo test -f /etc/control-center/update-public-key.pem
       - name: Preserve-state uninstall and reinstall
         run: |
           sudo ./install/uninstall.sh
-          test -f /etc/control-center/control-center.env
-          test -f /etc/control-center/update-public-key.pem
-          test -d /var/lib/control-center
+          sudo test -f /etc/control-center/control-center.env
+          sudo test -f /etc/control-center/update-public-key.pem
+          sudo test -d /var/lib/control-center
           sudo ./install/install.sh
           systemctl is-active --quiet control-center.service
       - name: Purge uninstall
@@ -170,4 +179,4 @@ jobs:
           ! systemctl is-active --quiet control-center.service
       - name: Remove ephemeral signing key
         if: always()
-        run: sudo rm -f /tmp/control-center-update-private.pem /tmp/control-center-update-public.pem /tmp/control-center-rc1.tar.gz
+        run: sudo rm -f /tmp/control-center-update-private.pem /tmp/control-center-update-public.pem /tmp/control-center-stable.tar.gz
