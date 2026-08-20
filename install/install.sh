@@ -57,6 +57,7 @@ preflight() {
   [[ "${EUID}" -eq 0 ]] || die "installer must run as root"
   [[ -f "${MANIFEST}" ]] || die "deployment.json is missing"
   [[ -f "${ROOT_DIR}/api/server.py" ]] || die "api/server.py is missing"
+  [[ -f "${ROOT_DIR}/api/ui.py" ]] || die "api/ui.py is missing"
   [[ -f "${ROOT_DIR}/install/control-center-api.service" ]] || die "systemd unit template is missing"
 
   local command
@@ -99,6 +100,7 @@ source_id() {
   {
     sha256sum "${ROOT_DIR}/deployment.json"
     sha256sum "${ROOT_DIR}/api/server.py"
+    sha256sum "${ROOT_DIR}/api/ui.py"
     sha256sum "${ROOT_DIR}/install/control-center-api.service"
   } | sha256sum | awk '{print $1}'
 }
@@ -177,6 +179,7 @@ install_or_repair() {
     install -o root -g "${APP_GROUP}" -m 0640 \
       "${ROOT_DIR}/api/__init__.py" \
       "${ROOT_DIR}/api/server.py" \
+      "${ROOT_DIR}/api/ui.py" \
       "${STAGING_DIR}/api/"
     install -o root -g "${APP_GROUP}" -m 0640 \
       "${ROOT_DIR}/deployment.json" \
@@ -209,6 +212,7 @@ install_or_repair() {
   log "Control Center installed successfully."
   log "Release: ${release_id}"
   log "Current: ${release_dir}"
+  log "Web UI: http://127.0.0.1:8876/overview"
   log "API: http://127.0.0.1:8876/api/v1/health"
 }
 
