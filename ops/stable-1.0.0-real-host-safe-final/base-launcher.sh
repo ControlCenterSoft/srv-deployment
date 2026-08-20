@@ -32,12 +32,13 @@ import sys
 
 src = Path(sys.argv[1]).read_text()
 start_marker = 'recover_exact_rc() {\n'
-end_marker = '\n}\n\non_error() {'
 if src.count(start_marker) != 1:
     raise SystemExit('ERROR: recovery function start is not unique')
 start = src.index(start_marker)
-end_start = src.index(end_marker, start)
-end = end_start + 3
+next_fn = src.index('on_error() {', start)
+end = src.rfind('}', start, next_fn) + 1
+if end <= start:
+    raise SystemExit('ERROR: recovery function end not found')
 old = src[start:end]
 for required in ('$RC_PACKAGE', 'control-center-update', 'install/install.sh'):
     if required not in old:
@@ -91,7 +92,10 @@ from pathlib import Path
 import sys
 src=Path(sys.argv[1]).read_text()
 start=src.index('recover_exact_rc() {\n')
-end=src.index('\n}\n\non_error() {',start)+3
+next_fn=src.index('on_error() {',start)
+end=src.rfind('}',start,next_fn)+1
+if end <= start:
+    raise SystemExit('ERROR: safe recovery function end not found')
 block=src[start:end]
 required=(
   '$BETA_PACKAGE', '--allow-downgrade', 'recovery-accepted-rc1',
