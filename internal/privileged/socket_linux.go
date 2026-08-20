@@ -120,12 +120,12 @@ func (s *SocketServer) HandleConn(ctx context.Context, conn *net.UnixConn) error
 	if sink, ok := s.Audit.(failClosedAuditSink); ok {
 		if err := sink.Begin(AuditEvent{
 			OperationID: envelope.Request.ID,
-			ActorID: envelope.Request.ActorID,
-			Type: envelope.Request.Type,
-			Status: "started",
-			ExitCode: -1,
-			StartedAt: startedAt,
-			FinishedAt: startedAt,
+			ActorID:     envelope.Request.ActorID,
+			Type:        envelope.Request.Type,
+			Status:      "started",
+			ExitCode:    -1,
+			StartedAt:   startedAt,
+			FinishedAt:  startedAt,
 		}); err != nil {
 			return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeAuditUnavailable, "audit sink unavailable")
 		}
@@ -160,14 +160,14 @@ func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure,
 	}
 	return s.Audit.Record(AuditEvent{
 		OperationID: req.ID,
-		ActorID: req.ActorID,
-		Type: req.Type,
-		Status: status,
-		ExitCode: result.ExitCode,
-		ErrorCode: errorCode,
-		StartedAt: startedAt,
-		FinishedAt: finishedAt,
-		DurationMS: duration.Milliseconds(),
+		ActorID:     req.ActorID,
+		Type:        req.Type,
+		Status:      status,
+		ExitCode:    result.ExitCode,
+		ErrorCode:   errorCode,
+		StartedAt:   startedAt,
+		FinishedAt:  finishedAt,
+		DurationMS:  duration.Milliseconds(),
 	})
 }
 
