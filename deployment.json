@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "product": "control-center",
-  "updated_at": "2026-08-20T09:36:00Z",
+  "updated_at": "2026-08-20T09:46:00Z",
   "release": {
     "version": "1.0.0",
     "channel": "development",
@@ -19,8 +19,8 @@
     {
       "id": "web-ui-shell",
       "title_ru": "Web UI",
-      "summary_ru": "Каркас интерфейса Обзор / Маркет / RBAC / Система.",
-      "status": "planned"
+      "summary_ru": "Server-rendered каркас Обзор / Маркет / RBAC / Система реализуется в безопасном read-only режиме без JavaScript и privileged actions.",
+      "status": "development"
     },
     {
       "id": "api-contracts",
