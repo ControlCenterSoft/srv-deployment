@@ -16,8 +16,8 @@ type AuditEvent struct {
 	DurationMS  int64     `json:"duration_ms"`
 }
 
-// AuditSink принимает нормализованные события. Persistent implementation
-// будет подключена отдельным release slice вместе с worker process packaging.
+// AuditSink принимает нормализованные события для in-process наблюдаемости.
+// Он не используется как доказательство durable audit.
 type AuditSink interface {
 	Record(AuditEvent)
 }
@@ -28,4 +28,12 @@ func (f AuditSinkFunc) Record(event AuditEvent) {
 	if f != nil {
 		f(event)
 	}
+}
+
+// DurableAuditSink является обязательным fail-closed контуром worker daemon.
+// Ready вызывается до privileged execution; RecordDurable обязан вернуть
+// успех только после устойчивой записи события.
+type DurableAuditSink interface {
+	Ready() error
+	RecordDurable(AuditEvent) error
 }
