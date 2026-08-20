@@ -3,7 +3,10 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LEGACY="$ROOT_DIR/install/install-1.0.11-build5.sh"
 TARGET_BUILD=20260820.1
+TMP=""
 [[ -x "$LEGACY" ]] || { echo "Missing preserved 1.0.11 installer: $LEGACY" >&2; exit 1; }
+cleanup_wrapper(){ [[ -n "$TMP" ]] && rm -f "$TMP" || true; }
+trap cleanup_wrapper EXIT
 
 # Compatibility contract inherited from the preserved production installer:
 # control-center-authd.service control-center-domain-destroy.path control-center-dns-apply.path
@@ -12,11 +15,15 @@ TARGET_BUILD=20260820.1
 # openssl rand -base64 27 | chpasswd
 # printf '  Пароль: %s\n'
 
-bash "$LEGACY" "$@"
+# Keep the proven 1.0.11 installer logic, but execute a same-directory temporary
+# copy whose build identity is consistently advanced to 20260820.1. Keeping the
+# temporary file beside the legacy installer preserves its ROOT_DIR resolution.
+TMP="$(mktemp "$ROOT_DIR/install/.install-1.0.11-20260820.1.XXXXXX")"
+sed 's/20260819\.5/20260820.1/g' "$LEGACY" >"$TMP"
+chmod 0755 "$TMP"
+bash "$TMP" "$@"
 
-# Build 20260820.1 is a payload-only hotfix over 1.0.11. The preserved installer
-# performs the full privileged lifecycle, then this wrapper commits the new
-# immutable build identity so the production updater can compare builds reliably.
+# Assert the immutable build identity after the complete privileged lifecycle.
 printf '%s\n' "$TARGET_BUILD" >/opt/control-center/BUILD
 chmod 0644 /opt/control-center/BUILD
 
