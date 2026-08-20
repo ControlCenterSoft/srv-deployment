@@ -11,7 +11,7 @@ Required repository secret:
 Optional repository variables:
 
 - `GEMINI_MODEL` — model name. Default: `gemini-3.6-flash`.
-- `GEMINI_GATE_LEVEL` — minimum severity that fails the review check. Default: `HIGH`. Accepted values: `BLOCKER`, `HIGH`, `MEDIUM`, `LOW`, `NONE`.
+- `GEMINI_GATE_LEVEL` — minimum severity that fails the review check. Default: `NONE` (advisory-only). Accepted values: `BLOCKER`, `HIGH`, `MEDIUM`, `LOW`, `NONE`.
 
 Do not commit the API key to the repository, deployment manifest, server configuration, workflow YAML, issue, or pull request.
 
@@ -26,9 +26,16 @@ For pull requests it:
 3. Treats the complete diff as untrusted data and explicitly rejects instructions embedded in source code, comments, strings, filenames, or documentation.
 4. Requests a structured review with `BLOCKER`, `HIGH`, `MEDIUM`, and `LOW` severities.
 5. Updates one persistent PR comment rather than creating a new comment on every synchronization.
-6. Fails the check when a finding meets or exceeds `GEMINI_GATE_LEVEL`.
+6. Runs advisory-only by default because AI severity classification can contain false positives.
+7. Optionally fails the check when a finding meets or exceeds an explicitly configured `GEMINI_GATE_LEVEL`.
 
-For pushes to `main`, the same result is written to the GitHub Actions job summary and the severity gate is enforced.
+For pushes to `main`, the same result is written to the GitHub Actions job summary. The optional severity gate is enforced only when `GEMINI_GATE_LEVEL` is set to a blocking level.
+
+## Validation policy
+
+Gemini findings are evidence, not authority. A finding should be validated against repository code, runtime behavior, CI results, or authoritative external documentation before remediation or release blocking.
+
+The reviewer prompt explicitly instructs Gemini not to claim that packages, models, dependencies, or GitHub Action versions do not exist solely from model memory. This prevents stale model knowledge from being treated as release evidence.
 
 ## Security boundaries
 
@@ -38,6 +45,7 @@ For pushes to `main`, the same result is written to the GitHub Actions job summa
 - Pull requests from forks do not receive repository secrets and therefore cannot invoke Gemini with the repository API key.
 - Gemini output is treated as review evidence only. It is never executed as shell, Python, deployment metadata, or configuration.
 - The submitted diff is capped before transmission to bound request size and cost.
+- Review-comment lookup is paginated without truncating a live pipeline, avoiding `SIGPIPE` failures under `pipefail`.
 
 ## Local tests
 
