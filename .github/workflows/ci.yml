@@ -24,10 +24,10 @@ jobs:
       - name: Unit and API tests
         run: go test ./...
       - name: Installer and acceptance syntax
-        run: bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh
+        run: bash -n install/install.sh install/uninstall.sh install/update.sh scripts/build.sh scripts/auth-acceptance.sh scripts/operations-acceptance.sh scripts/update-acceptance.sh scripts/rc1-update-acceptance.sh
       - name: Build release binaries
         env:
-          VERSION: 1.0.0-beta.1+ci
+          VERSION: 1.0.0-rc.1+ci
           COMMIT: ${{ github.sha }}
         run: ./scripts/build.sh
       - name: Release signature smoke
@@ -36,19 +36,21 @@ jobs:
           openssl pkey -in /tmp/control-center-update-private.pem -pubout -out /tmp/control-center-update-public.pem
           go run ./cmd/release-tool package \
             --binary ./dist/control-center-linux-amd64 \
-            --version 1.0.0-beta.1+ci \
+            --version 1.0.0-rc.1+ci \
             --commit "${{ github.sha }}" \
             --arch amd64 \
             --private-key /tmp/control-center-update-private.pem \
             --output /tmp/control-center-release.tar.gz
           mkdir /tmp/release-check
           tar -xzf /tmp/control-center-release.tar.gz -C /tmp/release-check
+          test "$(find /tmp/release-check -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ' -)" = "control-center manifest.json manifest.sig"
           ./dist/control-center-linux-amd64 verify-release \
             --manifest /tmp/release-check/manifest.json \
             --signature /tmp/release-check/manifest.sig \
             --public-key /tmp/control-center-update-public.pem \
             --artifact /tmp/release-check/control-center \
             --field release-id
+          rm -f /tmp/control-center-update-private.pem
       - name: Runtime smoke
         run: |
           state_dir=$(mktemp -d)
@@ -63,7 +65,9 @@ jobs:
           done
           curl -fsS http://127.0.0.1:18876/api/v1/health
           curl -fsS http://127.0.0.1:18876/api/v1/readiness
-          curl -fsS http://127.0.0.1:18876/api/v1/version
+          version_json=$(curl -fsS http://127.0.0.1:18876/api/v1/version)
+          grep -Fq '"version":"1.0.0-rc.1+ci"' <<<"$version_json"
+          grep -Fq "\"commit\":\"${{ github.sha }}\"" <<<"$version_json"
 
   systemd-acceptance:
     runs-on: ubuntu-24.04
@@ -80,7 +84,7 @@ jobs:
           chmod 0600 /tmp/control-center-update-private.pem
       - name: Build candidate
         env:
-          VERSION: 1.0.0-beta.1+ci
+          VERSION: 1.0.0-rc.1+ci
           COMMIT: ${{ github.sha }}
         run: ./scripts/build.sh
       - name: Clean install
@@ -91,7 +95,9 @@ jobs:
           test -x /usr/local/lib/control-center/current/control-center
           test -x /usr/local/sbin/control-center-update
           test -f /etc/control-center/update-public-key.pem
+          grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
           curl -fsS http://127.0.0.1:8876/api/v1/health
+          curl -fsS http://127.0.0.1:8876/api/v1/readiness
       - name: Restart acceptance
         run: |
           sudo systemctl restart control-center.service
@@ -108,8 +114,8 @@ jobs:
         run: sudo ./scripts/auth-acceptance.sh
       - name: Operations and diagnostics acceptance
         run: sudo ./scripts/operations-acceptance.sh
-      - name: Signed update and rollback acceptance
-        run: sudo env CONTROL_CENTER_UPDATE_PRIVATE_KEY=/tmp/control-center-update-private.pem ./scripts/update-acceptance.sh
+      - name: RC signed update and rollback acceptance
+        run: sudo env CONTROL_CENTER_UPDATE_PRIVATE_KEY=/tmp/control-center-update-private.pem ./scripts/rc1-update-acceptance.sh
       - name: Repair and reinstall acceptance
         run: |
           sudo ./install/install.sh --repair
@@ -133,3 +139,6 @@ jobs:
           test ! -e /usr/local/lib/control-center
           test ! -e /usr/local/sbin/control-center-update
           ! systemctl is-active --quiet control-center.service
+      - name: Remove ephemeral signing key
+        if: always()
+        run: sudo rm -f /tmp/control-center-update-private.pem /tmp/control-center-update-public.pem
