@@ -45,14 +45,26 @@ PY
 then rm -f "$APPROVAL";status rejected 'Одноразовый код удаления отсутствует, истёк или имеет другое назначение';exit 1;fi
 rm -f "$APPROVAL";unset CODE
 
-# Destruction is allowed only for a provably single-DC topology.
-DC_COUNT="$(/usr/bin/python3 - <<'PY'
+# Destruction is allowed only for a provably single-DC topology. Use Samba's
+# SamDB wrapper rather than a raw ldb.Ldb handle: sam.ldb relies on DSDB modules
+# and the Configuration naming context is where nTDSDSA server objects live.
+TOPOLOGY_ERR="$(mktemp /tmp/control-center-domain-topology.XXXXXX)"
+DC_COUNT="$(/usr/bin/python3 - <<'PY' 2>"$TOPOLOGY_ERR"
 import ldb
-p='/var/lib/samba/private/sam.ldb';db=ldb.Ldb(p)
-r=db.search(base='',scope=ldb.SCOPE_SUBTREE,expression='(objectClass=nTDSDSA)',attrs=['dn'])
+from samba.auth import system_session
+from samba.param import LoadParm
+from samba.samdb import SamDB
+lp=LoadParm();lp.load('/etc/samba/smb.conf')
+db=SamDB(url='/var/lib/samba/private/sam.ldb',session_info=system_session(),lp=lp)
+base=db.get_config_basedn()
+r=db.search(base=base,scope=ldb.SCOPE_SUBTREE,expression='(objectClass=nTDSDSA)',attrs=['dn'])
 print(len(r))
 PY
-)" || { status rejected 'Не удалось проверить количество контроллеров домена. Удаление заблокировано.';exit 1; }
+)" || {
+  DETAIL="$(tail -c 2000 "$TOPOLOGY_ERR" 2>/dev/null||true)";rm -f "$TOPOLOGY_ERR"
+  status rejected 'Не удалось проверить количество контроллеров домена. Удаление заблокировано.' "$DETAIL";exit 1
+}
+rm -f "$TOPOLOGY_ERR"
 [[ "$DC_COUNT" =~ ^[0-9]+$ && "$DC_COUNT" -eq 1 ]] || { status rejected "Обнаружено контроллеров домена: $DC_COUNT. Автоматическое уничтожение разрешено только для единственного DC.";exit 1; }
 [[ -s "$CTX" ]] || { status rejected 'Отсутствует install-context Домена; невозможно доказать безопасное восстановление исходного состояния.';exit 1; }
 
