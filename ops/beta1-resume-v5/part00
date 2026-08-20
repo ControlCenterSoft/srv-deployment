@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+PRODUCT_REPO="https://github.com/ControlCenterSoft/srv-deployment.git"
+PRODUCT_COMMIT="b3b7cd7d3a1985bbe02b392bce5e26d5bf0cf39c"
+PRODUCT_VERSION="1.0.0-beta.1"
+BACKEND_URL="http://127.0.0.1:8877"
+PROXY_URL="http://127.0.0.1:8876"
+DIAG_SSH="git@github.com:ControlCenterSoft/control-center-server-diagnostics..git"
+DIAG_HTTPS="https://github.com/ControlCenterSoft/control-center-server-diagnostics..git"
+WORK="/opt/control-center-beta1-resume-v5"
+SRC="$WORK/source"
+REPORT_DIR="$WORK/report"
+REPORT="$REPORT_DIR/report.txt"
+FULL_LOG="$REPORT_DIR/full.log"
+DIAG_BUNDLE="$REPORT_DIR/control-center-diagnostics.tar.gz"
+CREDS="/root/control-center-admin-credentials.txt"
+TRUST_KEY="/etc/control-center/update-public-key.pem"
+ENV_FILE="/etc/control-center/control-center.env"
+KEY_DIR="$WORK/test-update-trust"
+PRIVATE_KEY="$KEY_DIR/update-private.pem"
+PUBLIC_KEY="$KEY_DIR/update-public.pem"
+BETA1_PACKAGE="$WORK/beta1.tar.gz"
+BETA2_PACKAGE="$WORK/beta2.tar.gz"
+BROKEN_PACKAGE="$WORK/beta3-broken.tar.gz"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+HOST="$(hostname -s 2>/dev/null || hostname)"
+HOST_SAFE="$(printf '%s' "$HOST" | tr -cs 'A-Za-z0-9._-' '-')"
+REPORT_BRANCH="reports/${HOST_SAFE}/${TS}-beta1-resume-v5"
+STATUS="FAILED"
+STEP="preflight"
+START_LIMIT_REGRESSION="not-run"
+REPAIR_REINSTALL="not-run"
+PRESERVE_REINSTALL="not-run"
+BROWSER_AUTH="not-run"
+TRUST_RESTORED="not-run"
+
+[[ $EUID -eq 0 ]] || { echo "Run as root" >&2; exit 1; }
+mkdir -p "$REPORT_DIR" "$KEY_DIR"
+chmod 0700 "$WORK" "$REPORT_DIR" "$KEY_DIR"
+: > "$FULL_LOG"
+exec > >(tee -a "$FULL_LOG") 2>&1
+
+wait_url() {
+  local url="$1" needle="${2:-}" body
+  for _ in {1..80}; do
+    if body="$(curl -fsS --max-time 2 "$url" 2>/dev/null)"; then
+      if [[ -z "$needle" ]] || grep -Fq "$needle" <<<"$body"; then return 0; fi
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+current_version() {
+  /usr/local/lib/control-center/current/control-center build-info --field version 2>/dev/null || true
+}
+
+current_commit() {
+  /usr/local/lib/control-center/current/control-center build-info --field commit 2>/dev/null || true
+}
+
+public_ip() {
+  local ip
+  ip="$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  [[ -n "$ip" ]] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf '%s' "$ip"
+}
+
+restore_trust() {
+  if [[ -f "$WORK/trust.before" ]]; then
+    install -o root -g root -m 0644 "$WORK/trust.before" "$TRUST_KEY"
+    TRUST_RESTORED="previous-key"
+  elif [[ -f "$WORK/trust.was-absent" ]]; then
+    rm -f -- "$TRUST_KEY"
+    TRUST_RESTORED="removed-test-key"
+  fi
+}
+
+best_effort_restore_beta1() {
+  if [[ -f "$BETA1_PACKAGE" && -x /usr/local/sbin/control-center-update && -f "$PUBLIC_KEY" ]]; then
+    if [[ "$(current_version)" != "$PRODUCT_VERSION" || "$(current_commit)" != "$PRODUCT_COMMIT" ]]; then
+      CONTROL_CENTER_UPDATE_HEALTH_URL="$BACKEND_URL" /usr/local/sbin/control-center-update --package "$BETA1_PACKAGE" --allow-downgrade >/dev/null 2>&1 || true
+    fi
+  fi
+  systemctl reset-failed control-center.service >/dev/null 2>&1 || true
+  systemctl start control-center.service >/dev/null 2>&1 || true
+}
+
+push_report() {
+  command -v git >/dev/null 2>&1 || { echo "REPORT_SENT=NO"; return 0; }
+  local remote="" ssh_cmd="" tmp
+  if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8' git ls-remote "$DIAG_SSH" >/dev/null 2>&1; then
+    remote="$DIAG_SSH"
+    ssh_cmd="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8"
+  elif GIT_TERMINAL_PROMPT=0 git ls-remote "$DIAG_HTTPS" >/dev/null 2>&1; then
+    remote="$DIAG_HTTPS"
+  else
+    echo "REPORT_SENT=NO"
+    return 0
+  fi
+  tmp="$(mktemp -d /tmp/control-center-beta1-v5-report.XXXXXX)"
+  if [[ -n "$ssh_cmd" ]]; then
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" git clone -q "$remote" "$tmp/repo" || { rm -rf "$tmp"; echo "REPORT_SENT=NO"; return 0; }
+  else
+    GIT_TERMINAL_PROMPT=0 git clone -q "$remote" "$tmp/repo" || { rm -rf "$tmp"; echo "REPORT_SENT=NO"; return 0; }
+  fi
+  cd "$tmp/repo"
+  git checkout -q -b "$REPORT_BRANCH"
+  mkdir -p "reports/$HOST_SAFE/$TS"
+  cp "$REPORT" "reports/$HOST_SAFE/$TS/report.txt"
+  [[ ! -f "$DIAG_BUNDLE" ]] || cp "$DIAG_BU
