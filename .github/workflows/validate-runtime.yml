@@ -37,9 +37,13 @@ jobs:
           [[ "$USERNAME" == controladmin ]]
           [[ ${#PASSWORD} -ge 20 ]]
           echo "::add-mask::$PASSWORD"
+          echo 'CHECKPOINT bootstrap-output-ok'
           getent passwd controladmin | awk -F: '$1=="controladmin" && $7=="/usr/sbin/nologin"{ok=1} END{exit !ok}'
+          echo 'CHECKPOINT bootstrap-account-ok'
           id -nG controladmin | tr ' ' '\n' | grep -qx control-center-admins
+          echo 'CHECKPOINT bootstrap-group-ok'
           sudo passwd -S controladmin | awk '$2=="P"{ok=1} END{exit !ok}'
+          echo 'CHECKPOINT bootstrap-password-status-ok'
 
           python3 - "$USERNAME" "$PASSWORD" >/tmp/control-center-bootstrap-login.json <<'PY'
           import json,sys
@@ -49,17 +53,21 @@ jobs:
             -H 'Content-Type: application/json' \
             --data-binary @/tmp/control-center-bootstrap-login.json \
             http://127.0.0.1:8080/api/auth/login >/tmp/control-center-bootstrap-login-result.json
+          echo 'CHECKPOINT bootstrap-login-http-ok'
           python3 - /tmp/control-center-bootstrap-login-result.json <<'PY'
           import json,sys
           j=json.load(open(sys.argv[1]));assert j.get('ok') is True,j
           PY
+          echo 'CHECKPOINT bootstrap-login-json-ok'
           curl -fsS -b /tmp/control-center-bootstrap.cookies \
             http://127.0.0.1:8080/api/auth/session | \
             python3 -c "import json,sys;j=json.load(sys.stdin);assert j['authenticated'] and j['source']=='local' and j['role']=='admin' and j['username']=='controladmin'"
+          echo 'CHECKPOINT bootstrap-session-ok'
 
           ! sudo grep -R -F --binary-files=without-match "$PASSWORD" \
             /var/lib/control-center /var/lib/control-center-system /var/lib/control-center-root \
             /etc/control-center /opt/control-center 2>/dev/null
+          echo 'CHECKPOINT bootstrap-no-plaintext-ok'
           rm -f /tmp/control-center-bootstrap-login.json /tmp/control-center-bootstrap-login-result.json /tmp/control-center-bootstrap.cookies "$OUT"
           unset PASSWORD
 
