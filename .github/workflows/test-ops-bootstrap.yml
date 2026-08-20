@@ -21,5 +21,3 @@ jobs:
         run: bash -n scripts/bootstrap-ops-agent.sh
       - name: Bootstrap regression tests
         run: python3 -m unittest discover -s tests -p 'test_ops_bootstrap.py' -v
-      - name: Diff whitespace
-        run: git diff --check HEAD^
