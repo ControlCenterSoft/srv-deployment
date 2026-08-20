@@ -60,7 +60,7 @@ preflight() {
   [[ -f "${ROOT_DIR}/install/control-center-api.service" ]] || die "systemd unit template is missing"
 
   local command
-  for command in python3 systemctl useradd getent install cp mv ln readlink sha256sum; do
+  for command in python3 systemctl useradd groupadd getent install cp mv ln readlink sha256sum awk mktemp rm chmod chown; do
     command -v "${command}" >/dev/null 2>&1 || die "required command is missing: ${command}"
   done
 
@@ -171,6 +171,8 @@ install_or_repair() {
 
   if [[ ! -d "${release_dir}" ]]; then
     STAGING_DIR="$(mktemp -d "${BASE_DIR}/.staging.XXXXXX")"
+    chown root:"${APP_GROUP}" "${STAGING_DIR}"
+    chmod 0750 "${STAGING_DIR}"
     install -d -o root -g "${APP_GROUP}" -m 0750 "${STAGING_DIR}/api"
     install -o root -g "${APP_GROUP}" -m 0640 \
       "${ROOT_DIR}/api/__init__.py" \
