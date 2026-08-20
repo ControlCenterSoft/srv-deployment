@@ -154,14 +154,28 @@ jobs:
           ./scripts/build-release.sh
           grep -Fq "$RC_AMD64_SHA256" dist/SHA256SUMS
       - name: Clean install
+        run: sudo env CONTROL_CENTER_UPDATE_PUBLIC_KEY=/tmp/control-center-update-public.pem ./install/install.sh
+      - name: Clean install service assertion
         run: |
-          sudo env CONTROL_CENTER_UPDATE_PUBLIC_KEY=/tmp/control-center-update-public.pem ./install/install.sh
-          systemctl is-active --quiet control-center.service
+          if ! systemctl is-active --quiet control-center.service; then
+            sudo systemctl status control-center.service --no-pager -l || true
+            sudo journalctl -u control-center.service -n 120 --no-pager || true
+            exit 1
+          fi
+      - name: Clean install layout assertion
+        run: |
           test -L /usr/local/lib/control-center/current
           test -x /usr/local/lib/control-center/current/control-center
           test -x /usr/local/sbin/control-center-update
           test -f /etc/control-center/update-public-key.pem
+          printf 'current=%s\n' "$(readlink /usr/local/lib/control-center/current)"
+          stat -c '%a %U:%G %n' /etc/control-center /var/lib/control-center /var/log/control-center
+      - name: Clean install environment assertion
+        run: |
+          sudo cat /etc/control-center/control-center.env
           grep -qx 'CONTROL_CENTER_LISTEN=127.0.0.1:8876' /etc/control-center/control-center.env
+      - name: Clean install HTTP assertion
+        run: |
           curl -fsS http://127.0.0.1:8876/api/v1/health
           curl -fsS http://127.0.0.1:8876/api/v1/readiness
       - name: Restart acceptance
