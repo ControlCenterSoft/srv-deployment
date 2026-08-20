@@ -16,16 +16,19 @@ type AuditEvent struct {
 	DurationMS  int64     `json:"duration_ms"`
 }
 
-// AuditSink принимает нормализованные события. Persistent implementation
-// будет подключена отдельным release slice вместе с worker process packaging.
+// AuditSink принимает нормализованные события и обязан подтверждать их
+// устойчивую запись до возврата nil. Ошибка sink обрабатывается fail-closed
+// на границе privileged worker.
 type AuditSink interface {
-	Record(AuditEvent)
+	Record(AuditEvent) error
 }
 
+// AuditSinkFunc сохраняет совместимый удобный adapter для in-memory tests.
 type AuditSinkFunc func(AuditEvent)
 
-func (f AuditSinkFunc) Record(event AuditEvent) {
+func (f AuditSinkFunc) Record(event AuditEvent) error {
 	if f != nil {
 		f(event)
 	}
+	return nil
 }

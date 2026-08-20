@@ -25,6 +25,11 @@ type SocketServer struct {
 	Audit           AuditSink
 }
 
+type failClosedAuditSink interface {
+	AuditSink
+	Begin(AuditEvent) error
+}
+
 func NewSocketServer(engine *Engine, allowedUIDs []uint32) (*SocketServer, error) {
 	if engine == nil {
 		return nil, fmt.Errorf("%w: engine is required", ErrInvalidRequest)
@@ -112,18 +117,34 @@ func (s *SocketServer) HandleConn(ctx context.Context, conn *net.UnixConn) error
 	}
 
 	startedAt := time.Now().UTC()
+	if sink, ok := s.Audit.(failClosedAuditSink); ok {
+		if err := sink.Begin(AuditEvent{
+			OperationID: envelope.Request.ID,
+			ActorID: envelope.Request.ActorID,
+			Type: envelope.Request.Type,
+			Status: "started",
+			ExitCode: -1,
+			StartedAt: startedAt,
+			FinishedAt: startedAt,
+		}); err != nil {
+			return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeAuditUnavailable, "audit sink unavailable")
+		}
+	}
+
 	result, execErr := s.Engine.Execute(ctx, envelope.Request)
 	finishedAt := time.Now().UTC()
 	failure := failureFor(execErr)
-	s.recordAudit(envelope.Request, result, failure, startedAt, finishedAt)
+	if err := s.recordAudit(envelope.Request, result, failure, startedAt, finishedAt); err != nil {
+		return s.writeFailure(conn, result, ErrorCodeAuditUnavailable, "audit completion unavailable")
+	}
 
 	response := ResponseEnvelope{Version: ProtocolVersion, Result: result, Error: failure}
 	return json.NewEncoder(conn).Encode(response)
 }
 
-func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure, startedAt, finishedAt time.Time) {
+func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure, startedAt, finishedAt time.Time) error {
 	if s.Audit == nil {
-		return
+		return nil
 	}
 	errorCode := ""
 	if failure != nil {
@@ -137,25 +158,21 @@ func (s *SocketServer) recordAudit(req Request, result Result, failure *Failure,
 	if duration < 0 {
 		duration = 0
 	}
-	s.Audit.Record(AuditEvent{
+	return s.Audit.Record(AuditEvent{
 		OperationID: req.ID,
-		ActorID:     req.ActorID,
-		Type:        req.Type,
-		Status:      status,
-		ExitCode:    result.ExitCode,
-		ErrorCode:   errorCode,
-		StartedAt:   startedAt,
-		FinishedAt:  finishedAt,
-		DurationMS:  duration.Milliseconds(),
+		ActorID: req.ActorID,
+		Type: req.Type,
+		Status: status,
+		ExitCode: result.ExitCode,
+		ErrorCode: errorCode,
+		StartedAt: startedAt,
+		FinishedAt: finishedAt,
+		DurationMS: duration.Milliseconds(),
 	})
 }
 
 func (s *SocketServer) writeFailure(conn *net.UnixConn, result Result, code, message string) error {
-	return json.NewEncoder(conn).Encode(ResponseEnvelope{
-		Version: ProtocolVersion,
-		Result:  result,
-		Error:   &Failure{Code: code, Message: message},
-	})
+	return json.NewEncoder(conn).Encode(ResponseEnvelope{Version: ProtocolVersion, Result: result, Error: &Failure{Code: code, Message: message}})
 }
 
 func peerUID(conn *net.UnixConn) (uint32, error) {
@@ -163,11 +180,8 @@ func peerUID(conn *net.UnixConn) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	var (
-		uid      uint32
-		innerErr error
-	)
+	var uid uint32
+	var innerErr error
 	if err := raw.Control(func(fd uintptr) {
 		cred, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 		if err != nil {
@@ -204,15 +218,12 @@ func ListenUnix(path string, mode os.FileMode) (*net.UnixListener, error) {
 	return listener, nil
 }
 
-// bytesReader avoids accepting a streaming sequence of JSON documents while keeping a bounded payload.
 type staticReader struct {
 	payload []byte
 	offset  int
 }
 
-func bytesReader(payload []byte) *staticReader {
-	return &staticReader{payload: payload}
-}
+func bytesReader(payload []byte) *staticReader { return &staticReader{payload: payload} }
 
 func (r *staticReader) Read(p []byte) (int, error) {
 	if r.offset >= len(r.payload) {

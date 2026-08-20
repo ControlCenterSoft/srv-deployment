@@ -14,6 +14,7 @@ const (
 	ErrorCodeTimeout              = "timeout"
 	ErrorCodeExecutionFailed      = "execution_failed"
 	ErrorCodeProtocol             = "protocol_error"
+	ErrorCodeAuditUnavailable     = "audit_unavailable"
 )
 
 type Envelope struct {
