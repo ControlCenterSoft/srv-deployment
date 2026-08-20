@@ -1,6 +1,0 @@
-{
-  "product": "Control Center",
-  "release": "1.0.4",
-  "channel": "production",
-  "components": ["reference-ui", "market-dhcp", "dhcp-config", "network", "rbac", "settings", "auto-update"]
-}

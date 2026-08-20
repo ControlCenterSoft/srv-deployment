@@ -1,7 +1,0 @@
-{
-  "product": "Control Center",
-  "release": "1.0.0",
-  "channel": "production",
-  "upgrade_from": "clean install",
-  "components": ["web-ui", "system-api", "network-api", "market-catalog", "local-rbac", "installer", "documentation"]
-}
