@@ -4,51 +4,86 @@ Status: accepted
 
 ## Context
 
-Stable 1.0.0 принят как exact immutable baseline. Новая линия 1.1.x должна развиваться быстрее, не разрушая принятые runtime/API/data contracts и не превращая Web/API в универсальный root execution surface.
+Stable 1.0.0 принят как exact immutable baseline. Линия 1.1.x должна давать короткую обратную
+связь на feature-ветках, но сохранять полный release-grade acceptance на интеграционной ветке.
+Тяжёлые multi-arch/reproducibility/runtime проверки на каждом commit создают лишний цикл ожидания
+и не повышают качество docs-only или узких изменений.
 
 ## Decision
 
-Линия 1.1.x развивается в отдельной интеграционной ветке `1.1.x`.
+`1.1.x` является интеграционной веткой разработки. `main` остаётся frozen production baseline
+1.0.0 до отдельного promotion решения.
 
-Каждая функция проходит параллельные обязательные дорожки:
+Работа разбивается на короткие ветки `feature/1.1-*`. Одна ветка должна представлять один
+проверяемый вертикальный срез. Большие функциональные области делятся на backend/API, UI,
+tests/negative tests и integration work, когда эти части можно проверять независимо.
 
-1. implementation — backend/frontend/platform code;
-2. tests — unit/contract/negative tests;
-3. security — static checks, secret scan, permission-negative review;
-4. independent review — Gemini как advisory evidence;
-5. integration — сборка linux/amd64 и linux/arm64;
-6. acceptance — exact candidate SHA, staging, runtime/security/recovery evidence.
+### Tier 1 — Fast CI
 
-Короткие feature-ветки создаются от актуальной `1.1.x` и возвращаются в неё только после mandatory development gate.
+На feature-ветках и pull request в `1.1.x` выполняется path-based fast gate:
 
-Stable `main` остаётся источником принятого production baseline 1.0.0 до отдельного release-governance решения.
+- всегда: stable-ancestor policy, frozen production pointer, `git diff --check`, secret scan;
+- Go paths: `gofmt`, `go vet`, `go test`;
+- shell/install paths: `bash -n`;
+- AI integration paths: Python compile + regression tests;
+- runtime paths: один быстрый `linux/amd64` build;
+- docs-only changes не запускают runtime build.
+
+Неиспользуемые jobs должны быть `skipped`, а не имитироваться пустыми тяжёлыми проверками.
+
+### Tier 2 — Full candidate acceptance
+
+Каждый успешно интегрированный push в `1.1.x` автоматически становится ephemeral release
+candidate `1.1.0-rc.<run-number>` и проходит:
+
+- exact candidate SHA validation;
+- полный deterministic test set;
+- reproducible `linux/amd64` и `linux/arm64` build;
+- повторную воспроизводимость принятого stable 1.0.0;
+- disposable root/systemd install, health/readiness, signed update, rollback, auth,
+  operations и repair acceptance;
+- signed staging package;
+- real test-server staging, когда staging transport secrets настроены.
+
+Отсутствие remote staging credentials не блокирует повседневную разработку, но обязано быть
+явно отражено как `REMOTE_STAGING=NOT_CONFIGURED`. Production promotion без реального staging
+evidence запрещён.
 
 ## AI roles
 
-- ChatGPT — orchestration, architecture, implementation integration and release decision support.
-- Gemini — independent code review only; output is untrusted advisory evidence.
-- Perplexity — external research/fact-checking; findings are untrusted research input and require source validation.
-- Deterministic CI/tests — authoritative automated evidence for syntax, contracts, builds and reproducible checks.
+- ChatGPT — orchestration, architecture, implementation integration, branch/PR/release coordination.
+- Gemini — independent code review; external, untrusted, advisory evidence.
+- Perplexity — web-grounded external research: current upstream docs, compatibility,
+  deprecations, migrations and relevant security advisories.
+- Deterministic CI/tests — authoritative correctness evidence.
 
-AI output never executes directly as shell, deployment metadata, privileged operation or configuration.
+Perplexity integration uses the current official Sonar API contract. AI output never becomes shell,
+deployment metadata, privileged operation or configuration without deterministic validation.
 
-## Security boundary
+## Merge policy
 
-Privileged system changes follow ADR-0005: typed allowlisted operations, validated inputs, bounded execution and auditable operation IDs. Arbitrary shell fragments from Web/API/AI output are prohibited.
+Feature PRs target only `1.1.x`. The orchestrator may enable GitHub auto-merge only after the PR
+has the mandatory fast gate attached. Gemini and Perplexity remain independent evidence streams;
+provider unavailability must not silently weaken deterministic gates.
 
-Remote staging remains fail-closed until the repository contains a versioned typed `scripts/staging-deploy.sh` contract. Missing staging implementation is a blocker, not a reason to fall back to arbitrary SSH commands.
+No feature branch writes directly to `main`. Production metadata changes occur only in an explicit
+release-promotion change after full acceptance and real-server evidence.
 
-## Release behavior
+## Staging security boundary
 
-A development build is not a release. Production promotion requires:
+Remote staging uses the versioned `scripts/staging-deploy.sh` entrypoint. The entrypoint accepts only:
 
-- exact candidate commit;
-- mandatory CI green;
-- runtime/security/negative acceptance;
-- repair/rollback evidence;
-- immutable artifacts and checksums/signatures where applicable;
-- explicit update of canonical release metadata.
+- exact signed candidate package;
+- exact candidate version;
+- exact 40-hex candidate SHA;
+- pinned SSH host key and fixed staging identity.
+
+It does not accept an arbitrary command. The remote operation is limited to the installed
+`control-center-update` updater plus fixed health/readiness/version checks. Candidate packages use a
+dedicated staging signing key, separate from production update trust.
 
 ## Consequences
 
-Development work can run in parallel and receive feedback earlier while the accepted 1.0.0 production identity remains reproducible and recoverable.
+Feature feedback is substantially shorter because unrelated multi-arch/reproducibility/runtime work
+is removed from each commit. Integration pushes still receive release-grade evidence. Accepted 1.0.0
+remains reproducible and untouched until a separately validated production promotion.

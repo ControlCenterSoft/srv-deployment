@@ -1,36 +1,60 @@
-name: Control Center 1.1.x Acceptance
+name: Control Center 1.1.x Full Acceptance
 
 on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact candidate commit SHA
+        required: true
+        type: string
+      candidate_version:
+        description: Release-candidate semantic version
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: 'Exact candidate commit SHA'
+        description: Exact candidate commit SHA
         required: true
+        type: string
+      candidate_version:
+        description: Release-candidate semantic version
+        required: true
+        default: 1.1.0-rc.1
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: control-center-1.1-acceptance
+  group: control-center-1.1-acceptance-${{ inputs.candidate_sha }}
   cancel-in-progress: false
 
+env:
+  GOTOOLCHAIN: local
+  GO_VERSION: '1.23.2'
+  CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+
 jobs:
-  candidate:
-    name: Candidate validation
+  full-validation:
+    name: Full deterministic validation
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23.2'
+          go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Exact candidate identity
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.candidate_sha }}"
+      - name: Exact identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          [[ "$CANDIDATE_VERSION" =~ ^1\.1\.0-rc\.[0-9]+$ ]]
+          test "$(go env GOVERSION)" = "go${GO_VERSION}"
       - name: Deterministic gates
         run: |
           set -Eeuo pipefail
@@ -38,39 +62,281 @@ jobs:
           go vet ./...
           go test ./...
           bash -n install/*.sh scripts/*.sh
+          python3 -m py_compile scripts/*.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
           ./scripts/secret-scan.sh
-          python3 -m unittest discover -s tests -p 'test_gemini_review.py' -v
+          git diff --check
 
-  staging-contract:
-    name: Staging deployment contract
-    needs: [candidate]
+  baseline-immutability:
+    name: Stable 1.0.0 reproducibility
+    needs: [full-validation]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_sha }}
-      - name: Require typed staging entrypoint
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Rebuild exact accepted 1.0.0
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -x scripts/staging-deploy.sh || {
-            echo "STAGING=BLOCKED"
-            echo "A versioned typed scripts/staging-deploy.sh is required before remote staging may be enabled."
-            echo "Arbitrary SSH/root command execution is prohibited."
-            exit 1
-          }
+          git merge-base --is-ancestor 1b364ae88789696bf98537d21544de8a259d086d HEAD
+          git worktree add --detach /tmp/control-center-1.0.0 1b364ae88789696bf98537d21544de8a259d086d
+          cd /tmp/control-center-1.0.0
+          ./scripts/build-release.sh
+          set -a
+          source dist/BUILDINFO.env
+          set +a
+          test "$VERSION" = 1.0.0
+          test "$COMMIT" = 1b364ae88789696bf98537d21544de8a259d086d
+          test "$AMD64_SHA256" = 341f6a49646f92aca72692730ea61278cc03bfc1689d029d7a7ce573554fa735
+          test "$ARM64_SHA256" = 5e6e959f39bd4cb554e902908863c92eb5c697f4d99b55ca97fa4735ec9419fe
 
-  acceptance:
-    name: Acceptance summary
+  reproducible-build:
+    name: Reproducible ${{ matrix.arch }}
+    needs: [full-validation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build twice and compare
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUILT_AT="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          for pass in 1 2; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.arch }}" \
+              go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${CANDIDATE_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+              -o "dist/control-center-${{ matrix.arch }}-${pass}" ./cmd/control-center
+          done
+          cmp "dist/control-center-${{ matrix.arch }}-1" "dist/control-center-${{ matrix.arch }}-2"
+          sha256sum "dist/control-center-${{ matrix.arch }}-1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: control-center-${{ env.CANDIDATE_VERSION }}-${{ matrix.arch }}
+          path: dist/control-center-${{ matrix.arch }}-1
+          if-no-files-found: error
+          retention-days: 14
+
+  disposable-runtime:
+    name: Disposable runtime / update / rollback
+    needs: [full-validation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUILT_AT="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${CANDIDATE_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o dist/control-center-linux-amd64 ./cmd/control-center
+      - name: Generate disposable update trust
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/update-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/update-private.pem" -pubout -out "$RUNNER_TEMP/update-public.pem"
+      - name: Install and exercise runtime lifecycle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cleanup() {
+            sudo bash install/uninstall.sh >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sudo env \
+            CONTROL_CENTER_BINARY="$GITHUB_WORKSPACE/dist/control-center-linux-amd64" \
+            CONTROL_CENTER_UPDATE_PUBLIC_KEY="$RUNNER_TEMP/update-public.pem" \
+            bash install/install.sh
+          curl -fsS http://127.0.0.1:8876/api/v1/health
+          curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"ready":true'
+          sudo env CONTROL_CENTER_UPDATE_PRIVATE_KEY="$RUNNER_TEMP/update-private.pem" \
+            bash scripts/update-acceptance.sh
+          sudo bash scripts/auth-acceptance.sh
+          sudo bash scripts/operations-acceptance.sh
+          sudo env \
+            CONTROL_CENTER_BINARY="$GITHUB_WORKSPACE/dist/control-center-linux-amd64" \
+            CONTROL_CENTER_UPDATE_PUBLIC_KEY="$RUNNER_TEMP/update-public.pem" \
+            bash install/install.sh --repair
+
+  staging-package:
+    name: Prepare staging candidate
+    needs: [full-validation, reproducible-build, disposable-runtime, baseline-immutability]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      configured: ${{ steps.config.outputs.configured }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Detect remote staging configuration
+        id: config
+        env:
+          STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+          STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+          STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+          STAGING_SIGNING_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for name in STAGING_HOST STAGING_USER STAGING_SSH_KEY STAGING_KNOWN_HOSTS STAGING_SIGNING_KEY; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if ((${#missing[@]})); then
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            {
+              echo '## Remote staging'
+              echo
+              echo "Not configured: ${missing[*]}"
+              echo 'Disposable runtime acceptance remains authoritative for development, but production promotion must not proceed without real-server staging evidence.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build signed staging package
+        if: steps.config.outputs.configured == 'true'
+        env:
+          STAGING_SIGNING_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUILT_AT="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          printf '%s\n' "$STAGING_SIGNING_KEY" > "$RUNNER_TEMP/staging-private.pem"
+          chmod 0600 "$RUNNER_TEMP/staging-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/staging-private.pem" -pubout -out dist/staging-public.pem
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${CANDIDATE_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o dist/control-center-linux-amd64 ./cmd/control-center
+          go run ./cmd/release-tool package \
+            --binary dist/control-center-linux-amd64 \
+            --version "$CANDIDATE_VERSION" \
+            --channel beta \
+            --commit "$CANDIDATE_SHA" \
+            --arch amd64 \
+            --private-key "$RUNNER_TEMP/staging-private.pem" \
+            --output dist/control-center-staging.tar.gz \
+            --built-at "$BUILT_AT"
+          sha256sum dist/control-center-staging.tar.gz > dist/control-center-staging.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        if: steps.config.outputs.configured == 'true'
+        with:
+          name: control-center-staging-${{ env.CANDIDATE_VERSION }}
+          path: |
+            dist/control-center-staging.tar.gz
+            dist/control-center-staging.tar.gz.sha256
+            dist/staging-public.pem
+          if-no-files-found: error
+          retention-days: 7
+
+  remote-staging:
+    name: Real test-server staging
+    if: needs.staging-package.outputs.configured == 'true'
+    needs: [staging-package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: control-center-staging-${{ env.CANDIDATE_VERSION }}
+          path: staging
+      - name: Configure pinned SSH transport
+        env:
+          STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$HOME/.ssh/id_control_center_staging"
+          chmod 0600 "$HOME/.ssh/id_control_center_staging"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+      - name: Deploy exact signed candidate
+        env:
+          CONTROL_CENTER_STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+          CONTROL_CENTER_STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+          CONTROL_CENTER_STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
+          CONTROL_CENTER_STAGING_SSH_KEY_FILE: ${{ env.HOME }}/.ssh/id_control_center_staging
+          CONTROL_CENTER_STAGING_KNOWN_HOSTS_FILE: ${{ env.HOME }}/.ssh/known_hosts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ./scripts/staging-deploy.sh \
+            --package staging/control-center-staging.tar.gz \
+            --public-key staging/staging-public.pem \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --candidate-sha "$CANDIDATE_SHA"
+
+  acceptance-summary:
+    name: Candidate acceptance summary
     if: ${{ always() }}
-    needs: [candidate, staging-contract]
+    needs: [full-validation, baseline-immutability, reproducible-build, disposable-runtime, staging-package, remote-staging]
     runs-on: ubuntu-24.04
     steps:
-      - name: Fail closed
+      - name: Evaluate
         env:
-          CANDIDATE: ${{ needs.candidate.result }}
-          STAGING: ${{ needs.staging-contract.result }}
+          FULL: ${{ needs.full-validation.result }}
+          BASELINE: ${{ needs.baseline-immutability.result }}
+          REPRO: ${{ needs.reproducible-build.result }}
+          RUNTIME: ${{ needs.disposable-runtime.result }}
+          STAGING_PACKAGE: ${{ needs.staging-package.result }}
+          STAGING_CONFIGURED: ${{ needs.staging-package.outputs.configured }}
+          REMOTE: ${{ needs.remote-staging.result }}
+        shell: bash
         run: |
-          test "$CANDIDATE" = success
-          test "$STAGING" = success
+          set -Eeuo pipefail
+          test "$FULL" = success
+          test "$BASELINE" = success
+          test "$REPRO" = success
+          test "$RUNTIME" = success
+          test "$STAGING_PACKAGE" = success
+          if [[ "$STAGING_CONFIGURED" == true ]]; then
+            test "$REMOTE" = success
+            echo 'REMOTE_STAGING=PASSED' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'REMOTE_STAGING=NOT_CONFIGURED' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo 'LOCAL_FULL_ACCEPTANCE=PASSED' >> "$GITHUB_STEP_SUMMARY"
