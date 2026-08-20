@@ -55,15 +55,31 @@ if ! samba-tool group listmembers 'Control Center Admins' 2>/dev/null | grep -Fx
   samba-tool group addmembers 'Control Center Admins' Administrator >/dev/null
 fi
 samba-tool group listmembers 'Control Center Admins' | grep -Fxiq 'Administrator'
-wbinfo --name-to-sid "${DOMAIN}\\Administrator" >/dev/null
+ADMINISTRATOR_SID="$(wbinfo --name-to-sid "${DOMAIN}\\Administrator" | awk '{print $1}')"
+[[ "$ADMINISTRATOR_SID" =~ ^S-1-5-21-.*-500$ ]]
+[[ "$(wbinfo --sid-to-uid "$ADMINISTRATOR_SID")" == 0 ]]
 wbinfo --name-to-sid "${DOMAIN}\\Control Center Admins" >/dev/null
 
-python3 - "$SAMBA" "$DNS" "$STORAGE" "$CTX" "$DOMAIN" "$IP" "$IFACE" "$FORWARDER" "$SHARE" "$DATA" "$DNS_EXPLICIT" "$DNS_OWNED" "$STORAGE_EXPLICIT" "$STORAGE_OWNED" <<'PY'
+# These checks require privileged access to Samba private state. Keep that
+# privilege in the root lifecycle worker and persist only the boolean acceptance
+# evidence for the unprivileged Web health endpoint.
+samba-tool ntacl sysvolcheck >/dev/null
+samba-tool drs showrepl --summary >/dev/null
+ROOT_ACCEPTED_AT="$(date +%s)"
+
+python3 - "$SAMBA" "$DNS" "$STORAGE" "$CTX" "$DOMAIN" "$IP" "$IFACE" "$FORWARDER" "$SHARE" "$DATA" "$DNS_EXPLICIT" "$DNS_OWNED" "$STORAGE_EXPLICIT" "$STORAGE_OWNED" "$ROOT_ACCEPTED_AT" <<'PY'
 import json,sys,time,os
-sp,dp,fp,ctxp,domain,ip,iface,fwd,share,path,dexp,downed,fexp,fowned=sys.argv[1:]
+sp,dp,fp,ctxp,domain,ip,iface,fwd,share,path,dexp,downed,fexp,fowned,root_accepted_at=sys.argv[1:]
 s=json.load(open(sp));ctx=json.load(open(ctxp));now=int(time.time())
 s['dependencies']={'dns':{'required':True,'explicit_before':dexp=='1','standalone_preserved':bool(ctx.get('dns_snapshot'))},'storage':{'required':True,'explicit_before':fexp=='1','standalone_preserved':bool(ctx.get('storage_snapshot'))},'install_context':ctxp}
 s['portal_auth']={'local':True,'domain':True,'admin_group':'Control Center Admins','rbac_mode':'bootstrap','auth_daemon':'control-center-authd'}
+s['root_acceptance']={
+ 'recorded_at':int(root_accepted_at),
+ 'replication':True,
+ 'sysvol':True,
+ 'portal_domain_admin_group':True,
+ 'administrator_sid_uid0':True,
+}
 open(sp,'w').write(json.dumps(s,ensure_ascii=False,indent=2)+'\n');os.chmod(sp,0o640)
 d={'installed':True,'provider':'samba_internal','explicit':dexp=='1','package_owned':downed=='1','dependency_by':['domain'],'interface':iface,'ipv4':ip,'forwarders':[fwd] if fwd else [],'installed_at':now,'standalone_preserved':bool(ctx.get('dns_snapshot'))}
 f={'installed':True,'provider':'samba_ad_dc','mode':'domain','explicit':fexp=='1','package_owned':fowned=='1','dependency_by':['domain'],'share_name':share,'path':path,'rbac_ready':True,'access_model':'domain-users','installed_at':now,'standalone_preserved':bool(ctx.get('storage_snapshot'))}

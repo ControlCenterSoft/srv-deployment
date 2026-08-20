@@ -48,9 +48,20 @@ def _protected_dir_probe(path: Path):
         return False
 
 
+def _root_acceptance_check(evidence, key, message):
+    recorded_at = int(evidence.get('recorded_at') or 0)
+    return {
+        'ok': evidence.get(key) is True and recorded_at > 0,
+        'value': {
+            'source': 'privileged-domain-activation-acceptance',
+            'recorded_at': recorded_at,
+        },
+        'message': message,
+    }
+
+
 def register(app, main):
     original_readiness = release_111._readiness
-    original_health = release_111._quick_health
 
     def readiness_dependencies_111(main_arg, body=None, persist=True):
         body = dict(body or {})
@@ -166,11 +177,65 @@ def register(app, main):
     release_111._readiness = readiness_dependencies_111
 
     def health_dependencies_111(main_arg, persist=True):
-        payload = original_health(main_arg, persist=False)
         module = main_arg._read_json(release_111.SAMBA_MODULE, {})
         if not module.get('managed') or module.get('state') != 'active':
-            return payload
-        checks = dict(payload.get('checks') or {})
+            return {
+                'healthy': False,
+                'state': 'not-provisioned',
+                'checks': {},
+                'details': module,
+                'checked_at': int(time.time()),
+            }
+
+        ip = str(module.get('ipv4') or '')
+        realm = str(module.get('realm') or '').lower()
+        fqdn = str(module.get('fqdn') or '')
+        evidence = module.get('root_acceptance') if isinstance(module.get('root_acceptance'), dict) else {}
+        checks = {}
+
+        rc, out, err = main_arg._run(['systemctl', 'is-active', 'samba-ad-dc.service'], 4)
+        checks['service'] = {
+            'ok': rc == 0 and out.strip() == 'active',
+            'value': out.strip() or err.strip(),
+            'message': 'samba-ad-dc active',
+        }
+        rc, out, err = main_arg._run(['samba-tool', 'domain', 'info', ip], 8)
+        checks['domain_info'] = {
+            'ok': rc == 0,
+            'value': out[-1500:] if out else err[-1500:],
+            'message': 'Live unprivileged domain discovery',
+        }
+
+        # DRS, SYSVOL and directory-group inspection require access to Samba's
+        # private LDB and must never be granted to the Web service account.
+        # They are therefore revalidated by the privileged activation worker
+        # immediately before it marks the Domain active. The Web endpoint
+        # consumes only that root-owned module evidence and combines it with
+        # live unprivileged service/DNS checks.
+        checks['replication'] = _root_acceptance_check(
+            evidence,
+            'replication',
+            'DRS replication accepted by privileged Domain activation worker',
+        )
+        checks['sysvol'] = _root_acceptance_check(
+            evidence,
+            'sysvol',
+            'SYSVOL ACL accepted by privileged Domain activation worker',
+        )
+
+        for key, record in [
+            ('dns_a', fqdn),
+            ('dns_ldap', f'_ldap._tcp.{realm}'),
+            ('dns_kerberos', f'_kerberos._udp.{realm}'),
+        ]:
+            qtype = 'A' if key == 'dns_a' else 'SRV'
+            rc, out, err = main_arg._run(['host', '-W', '3', '-t', qtype, record, ip], 6)
+            checks[key] = {
+                'ok': rc == 0,
+                'value': out.strip() or err.strip(),
+                'message': f'DNS {qtype} {record}',
+            }
+
         dns = main_arg._read_json(DNS_MODULE, {})
         storage = main_arg._read_json(STORAGE_MODULE, {})
         checks['dns_dependency'] = {
@@ -201,14 +266,30 @@ def register(app, main):
             'message': 'Domain SMB storage dependency; protected path is validated by the root lifecycle worker and trusted module state.',
         }
         rc, out, err = main_arg._run(['systemctl', 'is-active', 'control-center-authd.service'], 4)
-        checks['portal_auth_daemon'] = {'ok': rc == 0 and out.strip() == 'active', 'value': out.strip() or err.strip(), 'message': 'Local/domain portal auth daemon'}
-        rc, out, err = main_arg._run(['samba-tool', 'group', 'show', 'Control Center Admins'], 8)
-        checks['portal_domain_admin_group'] = {'ok': rc == 0, 'value': out[-1200:] if out else err[-1200:], 'message': 'Domain bootstrap admin group'}
+        checks['portal_auth_daemon'] = {
+            'ok': rc == 0 and out.strip() == 'active',
+            'value': out.strip() or err.strip(),
+            'message': 'Local/domain portal auth daemon',
+        }
+        checks['portal_domain_admin_group'] = _root_acceptance_check(
+            evidence,
+            'portal_domain_admin_group',
+            'Domain bootstrap admin group accepted by privileged Domain activation worker',
+        )
+        checks['administrator_sid_uid0'] = _root_acceptance_check(
+            evidence,
+            'administrator_sid_uid0',
+            'Built-in Administrator SID-to-UID mapping accepted by privileged Domain activation worker',
+        )
+
         healthy = all(bool(v.get('ok')) for v in checks.values())
-        payload['checks'] = checks
-        payload['healthy'] = healthy
-        payload['state'] = 'healthy' if healthy else 'degraded'
-        payload['checked_at'] = int(time.time())
+        payload = {
+            'healthy': healthy,
+            'state': 'healthy' if healthy else 'degraded',
+            'checks': checks,
+            'details': module,
+            'checked_at': int(time.time()),
+        }
         if persist:
             try:
                 module['health_state'] = payload['state']
