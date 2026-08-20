@@ -112,18 +112,30 @@ func (s *SocketServer) HandleConn(ctx context.Context, conn *net.UnixConn) error
 		return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeProtocol, "unsupported protocol version")
 	}
 
+	startedAt := time.Now().UTC()
 	if s.DurableAudit != nil {
 		if err := s.DurableAudit.Ready(); err != nil {
 			return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeAuditUnavailable, "durable audit sink unavailable")
 		}
+		if err := s.DurableAudit.RecordDurable(AuditEvent{
+			OperationID: envelope.Request.ID,
+			ActorID:     envelope.Request.ActorID,
+			Type:        envelope.Request.Type,
+			Status:      "started",
+			ExitCode:    -1,
+			StartedAt:   startedAt,
+			FinishedAt:  startedAt,
+			DurationMS:  0,
+		}); err != nil {
+			return s.writeFailure(conn, Result{ID: envelope.Request.ID, Type: envelope.Request.Type, Status: "failed", ExitCode: -1}, ErrorCodeAuditUnavailable, "durable audit intent failed")
+		}
 	}
 
-	startedAt := time.Now().UTC()
 	result, execErr := s.Engine.Execute(ctx, envelope.Request)
 	finishedAt := time.Now().UTC()
 	failure := failureFor(execErr)
 	if err := s.recordAudit(envelope.Request, result, failure, startedAt, finishedAt); err != nil {
-		return s.writeFailure(conn, result, ErrorCodeAuditUnavailable, "durable audit record failed")
+		return s.writeFailure(conn, result, ErrorCodeAuditUnavailable, "durable audit completion failed")
 	}
 
 	response := ResponseEnvelope{Version: ProtocolVersion, Result: result, Error: failure}
