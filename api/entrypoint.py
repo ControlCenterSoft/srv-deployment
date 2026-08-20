@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Control Center service entrypoint: migrate/verify state before HTTP start."""
+"""Точка входа сервиса Control Center: миграция и проверка state до запуска HTTP."""
 
 from __future__ import annotations
 
