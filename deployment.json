@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "product": "control-center",
-  "updated_at": "2026-08-20T09:50:00Z",
+  "updated_at": "2026-08-20T09:54:00Z",
   "release": {
     "version": "1.0.0",
     "channel": "development",
@@ -32,6 +32,12 @@
       "id": "rbac-foundation",
       "title_ru": "RBAC foundation",
       "summary_ru": "Server-side роли viewer/admin, permission policy, scrypt password hashing, hashed session-token primitives и secret-redacting audit envelope реализуются до включения reachable auth flow.",
+      "status": "development"
+    },
+    {
+      "id": "config-store",
+      "title_ru": "Configuration store",
+      "summary_ru": "SQLite schema v1 с forward-only migrations, accounts/sessions/settings/audit, отдельной границей для secrets и миграцией до запуска HTTP.",
       "status": "development"
     },
     {
