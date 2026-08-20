@@ -122,7 +122,7 @@ systemctl daemon-reload
 systemctl enable control-center.service >/dev/null
 systemctl restart control-center.service
 for _ in {1..24}; do
-  if curl -fsS --max-time 2 ${ACCEPTANCE_URL}/api/v1/health >/dev/null 2>&1 && curl -fsS --max-time 2 ${ACCEPTANCE_URL}/api/v1/readiness | grep -Fq '"ready":true'; then
+  if curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/health" >/dev/null 2>&1 && curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/readiness" | grep -Fq '"ready":true'; then
     trap - ERR
     rm -f -- "$LEGACY_BINARY"
     log "$MODE completed; current=$release_rel"

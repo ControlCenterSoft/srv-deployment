@@ -4,7 +4,7 @@ Validation date: 2026-08-20
 
 ## Passed locally
 - `gofmt` validation passed for all Go sources.
-- `go test ./...` passed, including strict release-manifest/SemVer tests and the Web `[hidden]` regression contract.
+- `go test ./...` passed, including strict release-manifest/SemVer tests, overflow-safe arbitrarily large numeric SemVer ordering, artifact/platform/schema negative verification, and the Web `[hidden]` regression contract.
 - `go vet ./...` passed.
 - Shell syntax passed for installer, uninstaller, updater, build and all acceptance scripts.
 - `node --check internal/httpserver/web/app.js` passed.
@@ -65,8 +65,12 @@ beta.1 remains an **implementation candidate**, not an accepted release, until a
 4. update-trust preservation across repair/reinstall/non-purge uninstall;
 5. signed newer-version update;
 6. same-version rejection;
-7. tampered signed metadata rejection;
-8. correctly signed broken candidate followed by automatic rollback and recovery;
-9. final diagnostics/evidence export.
+7. candidate-byte tamper rejection before candidate execution;
+8. strict package-whitelist rejection;
+9. signed wrong-architecture rejection;
+10. signed downgrade rejection;
+11. tampered signed metadata rejection;
+12. correctly signed broken candidate followed by automatic rollback and recovery;
+13. final diagnostics/evidence export.
 
 GitHub push-triggered CI must also be treated as external evidence; a branch publication alone is not proof that Actions passed.

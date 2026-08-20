@@ -93,9 +93,9 @@ post_acceptance() {
   local version_body readiness_body
   for _ in {1..24}; do
     if systemctl is-active --quiet "$SERVICE" && \
-       curl -fsS --max-time 2 ${BASE_URL}/api/v1/health >/dev/null 2>&1; then
-      readiness_body="$(curl -fsS --max-time 2 ${BASE_URL}/api/v1/readiness 2>/dev/null || true)"
-      version_body="$(curl -fsS --max-time 2 ${BASE_URL}/api/v1/version 2>/dev/null || true)"
+       curl -fsS --max-time 2 "${BASE_URL}/api/v1/health" >/dev/null 2>&1; then
+      readiness_body="$(curl -fsS --max-time 2 "${BASE_URL}/api/v1/readiness" 2>/dev/null || true)"
+      version_body="$(curl -fsS --max-time 2 "${BASE_URL}/api/v1/version" 2>/dev/null || true)"
       if grep -Fq '"ready":true' <<<"$readiness_body" && grep -Fq "\"version\":\"$target_version\"" <<<"$version_body"; then
         return 0
       fi
@@ -110,7 +110,7 @@ if ! systemctl restart "$SERVICE" || ! post_acceptance; then
   atomic_link "$old_target" "$CURRENT_LINK"
   systemctl restart "$SERVICE" >/dev/null 2>&1 || true
   for _ in {1..20}; do
-    if curl -fsS --max-time 2 ${BASE_URL}/api/v1/health >/dev/null 2>&1; then break; fi
+    if curl -fsS --max-time 2 "${BASE_URL}/api/v1/health" >/dev/null 2>&1; then break; fi
     sleep 0.25
   done
   die "update rolled back after failed post-update acceptance"

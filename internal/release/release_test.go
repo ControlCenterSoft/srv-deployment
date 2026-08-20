@@ -64,6 +64,8 @@ func TestCompareVersions(t *testing.T) {
 		{"1.0.0", "1.0.0", 0},
 		{"1.1.0", "1.0.9", 1},
 		{"1.0.0-beta.2+build1", "1.0.0-beta.2+build2", 0},
+		{"999999999999999999999999999999.0.0", "2.0.0", 1},
+		{"1.0.0-beta.999999999999999999999999999999", "1.0.0-beta.2", 1},
 	}
 	for _, tc := range cases {
 		got, err := CompareVersions(tc.a, tc.b)
@@ -127,5 +129,81 @@ func TestStrictSemVerValidation(t *testing.T) {
 		if _, err := parseSemVer(version); err == nil {
 			t.Fatalf("invalid version %q accepted", version)
 		}
+	}
+}
+
+func TestVerifyRejectsArtifactPlatformAndSchemaMismatch(t *testing.T) {
+	dir := t.TempDir()
+	artifact := []byte("signed candidate")
+	artifactPath := filepath.Join(dir, "control-center")
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubDER, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubPath := filepath.Join(dir, "public.pem")
+	if err := os.WriteFile(pubPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	sigPath := filepath.Join(dir, "manifest.sig")
+
+	writeFixture := func(m Manifest, body []byte) {
+		t.Helper()
+		if err := os.WriteFile(artifactPath, body, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		manifestBytes, err := json.MarshalIndent(m, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestBytes = append(manifestBytes, '\n')
+		if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sigPath, ed25519.Sign(priv, manifestBytes), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := Manifest{
+		Schema: 1, Product: "Control Center", Version: "1.0.0-beta.1", Channel: "beta",
+		Commit: "0123456789abcdef0123456789abcdef01234567", BuiltAt: "2026-08-20T00:00:00Z",
+		OS: "linux", Arch: "amd64", StateSchemaMin: 1, StateSchemaMax: 1,
+		Artifact: Artifact{Name: "control-center", SHA256: sha256Bytes(artifact), Size: int64(len(artifact))},
+	}
+	writeFixture(base, artifact)
+	if _, err := Verify(manifestPath, sigPath, pubPath, artifactPath, "linux", "amd64", 1); err != nil {
+		t.Fatalf("valid fixture rejected: %v", err)
+	}
+
+	writeFixture(base, append(append([]byte{}, artifact...), '!'))
+	if _, err := Verify(manifestPath, sigPath, pubPath, artifactPath, "linux", "amd64", 1); err == nil {
+		t.Fatal("artifact size/digest mismatch was accepted")
+	}
+
+	wrongDigest := base
+	wrongDigest.Artifact.SHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	writeFixture(wrongDigest, artifact)
+	if _, err := Verify(manifestPath, sigPath, pubPath, artifactPath, "linux", "amd64", 1); err == nil {
+		t.Fatal("artifact SHA-256 mismatch was accepted")
+	}
+
+	wrongArch := base
+	wrongArch.Arch = "arm64"
+	writeFixture(wrongArch, artifact)
+	if _, err := Verify(manifestPath, sigPath, pubPath, artifactPath, "linux", "amd64", 1); err == nil {
+		t.Fatal("wrong architecture was accepted")
+	}
+
+	wrongSchema := base
+	wrongSchema.StateSchemaMin = 2
+	wrongSchema.StateSchemaMax = 2
+	writeFixture(wrongSchema, artifact)
+	if _, err := Verify(manifestPath, sigPath, pubPath, artifactPath, "linux", "amd64", 1); err == nil {
+		t.Fatal("incompatible state schema was accepted")
 	}
 }

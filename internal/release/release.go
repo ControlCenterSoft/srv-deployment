@@ -14,7 +14,6 @@ import (
 	"os"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -170,7 +169,7 @@ func Verify(manifestPath, signaturePath, publicKeyPath, artifactPath, expectedOS
 }
 
 type semVersion struct {
-	major, minor, patch int
+	major, minor, patch string
 	pre                 []string
 }
 
@@ -179,9 +178,9 @@ func parseSemVer(s string) (semVersion, error) {
 	if matches == nil {
 		return semVersion{}, fmt.Errorf("invalid semantic version: %s", s)
 	}
-	major, _ := strconv.Atoi(matches[1])
-	minor, _ := strconv.Atoi(matches[2])
-	patch, _ := strconv.Atoi(matches[3])
+	major := matches[1]
+	minor := matches[2]
+	patch := matches[3]
 	pre, err := validateIdentifiers(matches[4], true)
 	if err != nil {
 		return semVersion{}, fmt.Errorf("invalid semantic version: %s", s)
@@ -222,6 +221,34 @@ func validateIdentifiers(raw string, prerelease bool) ([]string, error) {
 	return parts, nil
 }
 
+func compareNumericIdentifier(a, b string) int {
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func CompareVersions(a, b string) (int, error) {
 	av, err := parseSemVer(a)
 	if err != nil {
@@ -231,12 +258,9 @@ func CompareVersions(a, b string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	for _, pair := range [][2]int{{av.major, bv.major}, {av.minor, bv.minor}, {av.patch, bv.patch}} {
-		if pair[0] < pair[1] {
-			return -1, nil
-		}
-		if pair[0] > pair[1] {
-			return 1, nil
+	for _, pair := range [][2]string{{av.major, bv.major}, {av.minor, bv.minor}, {av.patch, bv.patch}} {
+		if cmp := compareNumericIdentifier(pair[0], pair[1]); cmp != 0 {
+			return cmp, nil
 		}
 	}
 	if len(av.pre) == 0 && len(bv.pre) == 0 {
@@ -260,19 +284,15 @@ func CompareVersions(a, b string) (int, error) {
 			return 1, nil
 		}
 		a, b := av.pre[i], bv.pre[i]
-		ai, aerr := strconv.Atoi(a)
-		bi, berr := strconv.Atoi(b)
+		aNumeric, bNumeric := isDigits(a), isDigits(b)
 		switch {
-		case aerr == nil && berr == nil:
-			if ai < bi {
-				return -1, nil
+		case aNumeric && bNumeric:
+			if cmp := compareNumericIdentifier(a, b); cmp != 0 {
+				return cmp, nil
 			}
-			if ai > bi {
-				return 1, nil
-			}
-		case aerr == nil && berr != nil:
+		case aNumeric && !bNumeric:
 			return -1, nil
-		case aerr != nil && berr == nil:
+		case !aNumeric && bNumeric:
 			return 1, nil
 		default:
 			if a < b {
