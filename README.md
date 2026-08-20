@@ -1,23 +1,74 @@
 # Control Center
 
 Baseline: **1.0.0**  
-Current development milestone: **1.0.0-alpha.3 — Operations, Audit & Diagnostics Foundation**
+Current development milestone: **1.0.0-beta.1 — Safe Update Foundation**
 
 Control Center is being rebuilt from a clean baseline. Previous implementation, release history and architecture are not part of the active product unless explicitly re-adopted through the new governance process.
 
-## alpha.3
+## beta.1
 
-This milestone extends alpha.2 with persistent operation tracking, correlated audit events, extended runtime status and a bounded diagnostics export. Diagnostics are generated from an explicit whitelist and never collect arbitrary filesystem paths or authentication secrets.
+beta.1 preserves the accepted authentication, RBAC, state, operations, audit and diagnostics foundations and adds cryptographically verified local updates with atomic activation and automatic rollback.
+
+### Release layout
+
+```text
+/usr/local/lib/control-center/releases/<release-id>/
+/usr/local/lib/control-center/current -> releases/<release-id>
+/usr/local/lib/control-center/previous -> releases/<release-id>
+/usr/local/lib/control-center/staging/
+/usr/local/sbin/control-center-update
+/etc/control-center/update-public-key.pem
+```
+
+The systemd service executes `/usr/local/lib/control-center/current/control-center`. Release binaries are stored root-owned and non-writable during normal operation.
+
+### Signed update model
+
+Update packages contain exactly:
+
+```text
+manifest.json
+manifest.sig
+control-center
+```
+
+`manifest.json` is signed with Ed25519 and binds the release version, commit, platform, state-schema compatibility, artifact byte size and SHA-256. The currently installed trusted runtime verifies the signature and artifact before candidate code is executed.
+
+Only an update **public** key is installed on the managed host. A production private signing key must never be committed, shipped inside release artifacts or installed on the server.
+
+### Create a signed package
+
+For development/CI, generate or supply an Ed25519 PKCS#8 private key and run:
+
+```bash
+go run ./cmd/release-tool package \
+  --binary ./dist/control-center-linux-amd64 \
+  --version 1.0.0-beta.1 \
+  --commit <release-commit-sha> \
+  --arch amd64 \
+  --private-key /secure/path/update-private.pem \
+  --output /tmp/control-center-release.tar.gz
+```
+
+### Apply an update
+
+After provisioning the matching public key at `/etc/control-center/update-public-key.pem`:
+
+```bash
+sudo control-center-update --package /path/to/control-center-release.tar.gz
+```
+
+Same-version and downgrade attempts are rejected by default. `--allow-downgrade` is reserved for an explicit controlled rollback and does not bypass signature, digest, platform or state-schema checks.
 
 ### First administrator
 
-The installer bootstraps a local `admin` account only when the state store contains no users. The generated credential is **not printed to logs**. It is stored at:
+The installer bootstraps a local `admin` only when state contains no users. The generated credential is stored root-readable at:
 
 ```text
 /var/lib/control-center/bootstrap-admin.secret
 ```
 
-Read it with root privileges, sign in, and change the initial password. The bootstrap secret is deleted automatically after a successful password change.
+It is removed after the first successful password change.
 
 ### Local development
 
@@ -27,17 +78,18 @@ CONTROL_CENTER_STATE_DIR=$(mktemp -d) go run ./cmd/control-center bootstrap-admi
 CONTROL_CENTER_STATE_DIR=<same-dir> CONTROL_CENTER_LOG_DIR=$(mktemp -d) go run ./cmd/control-center
 ```
 
-The runtime binds to `127.0.0.1:8876` by default. Browser session cookies are `Secure`, so browser deployment is expected to use HTTPS termination while the application itself remains loopback-only.
+The secure product default remains `127.0.0.1:8876` with `Secure` browser session cookies. HTTP/IP exposure used on the temporary test host is an ops-only test configuration and is not the beta.1 production default.
 
 ### Build and validation
 
 ```bash
 ./scripts/build.sh
-./scripts/auth-acceptance.sh        # on an installed test host
+./scripts/auth-acceptance.sh        # installed test host
 ./scripts/operations-acceptance.sh  # after Auth/RBAC acceptance
+./scripts/update-acceptance.sh      # root/systemd host with ephemeral test signing key
 ```
 
-Release binaries are written to `dist/` for linux/amd64 and linux/arm64.
+Release binaries are built statically for linux/amd64 and linux/arm64.
 
 ### Install / repair / uninstall
 
@@ -48,8 +100,8 @@ sudo ./install/install.sh --reinstall
 sudo ./install/uninstall.sh
 ```
 
-Use `sudo ./install/uninstall.sh --purge` only for explicit destructive removal of configuration and state.
+Provide an update public key during install with `CONTROL_CENTER_UPDATE_PUBLIC_KEY=/path/public.pem`. Non-purge uninstall preserves configuration/state/trust; `--purge` is explicitly destructive.
 
 ## Architecture decisions
 
-See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0001 through ADR-0004 and ADR-0007 are accepted for the implemented foundation; privileged-worker and update-integrity decisions remain proposed until their implementation milestones.
+See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0006 is accepted by beta.1 and defines signed metadata, trusted verification, immutable releases, atomic activation and rollback.
