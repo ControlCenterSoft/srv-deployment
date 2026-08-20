@@ -1,6 +1,6 @@
 # Control Center 1.0.11
 
-Build **20260819.5**. Статус до финальной публикации: **production candidate**.
+Build **20260820.1**. Статус: **production hotfix candidate**.
 
 ## Состав релиза
 
@@ -15,6 +15,7 @@ Build **20260819.5**. Статус до финальной публикации:
 9. DNS/Storage выполняют cleanup-audit при удалении; Storage сохраняет пользовательские файлы.
 10. DHCP показывает clients и управляет IP reservations.
 11. Migration **005** создаёт RBAC bootstrap, service dependencies, DHCP reservations и cleanup history.
+12. Build **20260820.1** исправляет Market UI regression: legacy refresh больше не может подменить действия Домена, DNS и Сетевого хранилища no-op обработчиками.
 
 ## Domain wizard
 
