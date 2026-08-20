@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "enabled": true,
+  "id": "bootstrap-diagnostics-v1",
+  "script_sha": "4452b6ffa9808d6dbea858421b87c3372b7fe713",
+  "script_path": "ops/chatssh/jobs/bootstrap-diagnostics.sh",
+  "sha256": "461651c8e5a0d4dcd28654a2c31b294445ef902a8c139dd5a484c4c5c6d0af15",
+  "timeout_seconds": 120
+}
