@@ -29,7 +29,19 @@ Security primitives are implemented and tested before any login endpoint becomes
 - `__Host-cc_session` cookie contract with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute
 - bounded audit envelope with recursive redaction of password/token/cookie/API-key fields
 
-This is a **foundation**, not a completed authentication system. Persistent accounts/sessions, login/logout endpoints, CSRF/origin checks, rate limits and privileged authorization are not enabled yet.
+This is a **foundation**, not a completed authentication system. Reachable login/logout endpoints, CSRF/origin checks, rate limits and privileged authorization are not enabled yet.
+
+### State/configuration store schema v1
+The service now has a SQLite state foundation under `/var/lib/control-center/state.db` in production:
+
+- explicit schema migration table; only forward migration is allowed
+- startup refuses a database with a newer unsupported schema
+- local `accounts` table stores approved password hashes, not plaintext credentials
+- `sessions` accepts only SHA-256 token digests, never raw session tokens
+- ordinary `settings` rejects secret-like keys; secrets require a separate future store
+- `audit_events` persists bounded, redacted audit details
+- the systemd unit grants the unprivileged service only `StateDirectory=control-center` while keeping `ProtectSystem=strict`
+- the service entrypoint migrates/verifies state before starting HTTP
 
 ### Platform API v1
 The first server contour is intentionally read-only and dependency-free:
@@ -57,7 +69,7 @@ The API process contains no root execution path and does not expose arbitrary co
 - post-switch readiness verification
 - automatic restoration after a failed switch
 - explicit rollback to the previous healthy release
-- Web UI, API and security foundation installed as one versioned release payload
+- Web UI, API, security and state foundation installed as one versioned release payload
 
 Commands from a complete checkout:
 
@@ -94,7 +106,9 @@ GitHub Actions validates:
 - RBAC permission boundaries
 - password/session security primitives
 - audit secret redaction
-- live API smoke test
+- SQLite schema migration/accounts/sessions/settings/audit invariants
+- live service entrypoint with temporary schema-v1 database
+- live Web UI/API smoke tests
 - negative write-method behavior
 
 The CI result is recorded in `ops/ci-status.json` for machine-readable release gating.
