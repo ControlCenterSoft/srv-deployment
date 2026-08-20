@@ -1,0 +1,24 @@
+name: stable-real-host-orchestrator-builder
+
+on:
+  push:
+    branches: ["ops/stable-1.0.0-real-host-acceptance-v1"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact stable real-host orchestrator
+        run: |
+          STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-v1.sh bash ops/stable-1.0.0-real-host-acceptance-v1/run-verified.sh
+          bash -n /tmp/stable-v1.sh
+          echo '=== FINAL ORCHESTRATOR SHA256 ==='
+          sha256sum /tmp/stable-v1.sh
+          grep -F 'RC_VERSION="1.0.0"' /tmp/stable-v1.sh
+          grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-v1.sh
+          grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-v1.sh
+          ! grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-v1.sh
