@@ -1,13 +1,13 @@
 # Control Center
 
 Baseline: **1.0.0**  
-Current development milestone: **1.0.0-rc.1 — Production Candidate**
+Current development milestone: **1.0.0 — Stable Production Candidate**
 
 Control Center is being rebuilt from a clean baseline. Previous implementation, release history and architecture are not part of the active product unless explicitly re-adopted through the new governance process.
 
-## rc.1
+## 1.0.0 stable
 
-`1.0.0-beta.1` is accepted. rc.1 is a scope-frozen production candidate: it does not add new end-user features and concentrates on reproducible release identity, clean-install/upgrade/reboot acceptance, security regression, lifecycle preservation and rollback recovery.
+`1.0.0-rc.1` is accepted. Stable 1.0.0 promotes the accepted RC code line without adding end-user features or changing runtime API, state schema, operations schema, Auth/RBAC semantics, update trust, or privileged architecture.
 
 ### Release layout
 
@@ -24,7 +24,7 @@ The systemd service executes `/usr/local/lib/control-center/current/control-cent
 
 ### Reproducible release build
 
-rc.1 release artifacts are built with the exact Go `1.23.2` toolchain declared in `go.mod` and `release/1.0.0-rc.1.env`. Release builds use the full Git commit SHA and that commit's immutable timestamp as build metadata.
+Stable release artifacts are built with the exact Go `1.23.2` toolchain declared in `go.mod` and `release/1.0.0.env`. Release builds use the full Git commit SHA and that commit's immutable timestamp, canonicalized to UTC, as build metadata.
 
 From a clean checkout of the candidate commit:
 
@@ -94,15 +94,15 @@ CONTROL_CENTER_STATE_DIR=$(mktemp -d) go run ./cmd/control-center bootstrap-admi
 CONTROL_CENTER_STATE_DIR=<same-dir> CONTROL_CENTER_LOG_DIR=$(mktemp -d) go run ./cmd/control-center
 ```
 
-The secure product default remains `127.0.0.1:8876` with `Secure` browser session cookies. HTTP/IP exposure used on the temporary test host is an ops-only test configuration and is not the rc.1 production default.
+The secure product default remains `127.0.0.1:8876` with `Secure` browser session cookies. HTTP/IP exposure used on the temporary test host is an ops-only test configuration and is not the production default.
 
 ### Validation
 
 ```bash
 ./scripts/secret-scan.sh
-./scripts/auth-acceptance.sh        # disposable/clean installed host
-./scripts/operations-acceptance.sh  # after Auth/RBAC acceptance
-./scripts/rc1-update-acceptance.sh  # root/systemd host with ephemeral test signing key
+./scripts/auth-acceptance.sh           # disposable/clean installed host
+./scripts/operations-acceptance.sh     # after Auth/RBAC acceptance
+./scripts/stable-update-acceptance.sh  # root/systemd host with ephemeral test signing key
 ```
 
 Release binaries are built statically for linux/amd64 and linux/arm64.
@@ -120,4 +120,4 @@ Provide an update public key during install with `CONTROL_CENTER_UPDATE_PUBLIC_K
 
 ## Architecture decisions
 
-See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0006 is inherited from accepted beta.1 and defines signed metadata, trusted verification, immutable releases, atomic activation and rollback.
+See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0006 defines signed metadata, trusted verification, immutable releases, atomic activation and rollback.
