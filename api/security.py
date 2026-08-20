@@ -1,7 +1,7 @@
-"""Security primitives for the future Control Center session layer.
+"""Примитивы безопасности для будущего session layer Control Center.
 
-This module deliberately does not expose an HTTP login endpoint yet. It
-provides bounded primitives that can be tested before auth becomes reachable.
+Модуль намеренно пока не открывает HTTP endpoint входа. Он предоставляет
+ограниченные примитивы, которые можно проверить до появления доступного auth flow.
 """
 
 from __future__ import annotations
