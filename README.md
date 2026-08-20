@@ -22,6 +22,18 @@ Control Center is being rebuilt from a clean baseline. Previous implementation, 
 
 The systemd service executes `/usr/local/lib/control-center/current/control-center`. Release binaries are stored root-owned and non-writable during normal operation.
 
+### Reproducible release build
+
+rc.1 release artifacts are built with the exact Go `1.23.2` toolchain declared in `go.mod` and `release/1.0.0-rc.1.env`. Release builds use the full Git commit SHA and that commit's immutable timestamp as build metadata.
+
+From a clean checkout of the candidate commit:
+
+```bash
+./scripts/build-release.sh
+```
+
+The command fails on a compiler mismatch or dirty source tree and writes `dist/BUILDINFO.env` plus `dist/SHA256SUMS`. A repeated build from the same commit/toolchain must be byte-identical.
+
 ### Signed update model
 
 Update packages contain exactly:
@@ -38,13 +50,17 @@ Only an update **public** key is installed on the managed host. A production pri
 
 ### Create a signed package
 
-For development/CI, generate or supply an Ed25519 PKCS#8 private key and run:
+After an exact release build, source `dist/BUILDINFO.env` and use those exact values when packaging:
 
 ```bash
+set -a
+source dist/BUILDINFO.env
+set +a
 go run ./cmd/release-tool package \
   --binary ./dist/control-center-linux-amd64 \
-  --version 1.0.0-rc.1 \
-  --commit <release-commit-sha> \
+  --version "$VERSION" \
+  --commit "$COMMIT" \
+  --built-at "$BUILT_AT" \
   --arch amd64 \
   --private-key /secure/path/update-private.pem \
   --output /tmp/control-center-release.tar.gz
@@ -80,11 +96,11 @@ CONTROL_CENTER_STATE_DIR=<same-dir> CONTROL_CENTER_LOG_DIR=$(mktemp -d) go run .
 
 The secure product default remains `127.0.0.1:8876` with `Secure` browser session cookies. HTTP/IP exposure used on the temporary test host is an ops-only test configuration and is not the rc.1 production default.
 
-### Build and validation
+### Validation
 
 ```bash
-./scripts/build.sh
-./scripts/auth-acceptance.sh        # installed test host
+./scripts/secret-scan.sh
+./scripts/auth-acceptance.sh        # disposable/clean installed host
 ./scripts/operations-acceptance.sh  # after Auth/RBAC acceptance
 ./scripts/rc1-update-acceptance.sh  # root/systemd host with ephemeral test signing key
 ```
