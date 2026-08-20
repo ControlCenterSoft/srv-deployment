@@ -21,14 +21,34 @@ if [[ -n "$EXPECTED_GO_VERSION" ]]; then
 fi
 
 mkdir -p dist
-rm -f dist/control-center-linux-amd64 dist/control-center-linux-arm64 dist/SHA256SUMS
+rm -f \
+  dist/control-center-linux-amd64 \
+  dist/control-center-linux-arm64 \
+  dist/control-center-privileged-worker-linux-amd64 \
+  dist/control-center-privileged-worker-linux-arm64 \
+  dist/SHA256SUMS
+
+app_ldflags="-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=$VERSION -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=$COMMIT -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=$BUILT_AT"
+
 for target in linux/amd64 linux/arm64; do
   os="${target%/*}"
   arch="${target#*/}"
-  echo "building $os/$arch"
+  echo "building control-center $os/$arch"
   GOTOOLCHAIN=local CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
     -trimpath -buildvcs=false \
-    -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=$VERSION -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=$COMMIT -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=$BUILT_AT" \
+    -ldflags "$app_ldflags" \
     -o "dist/control-center-$os-$arch" ./cmd/control-center
+
+  echo "building control-center-privileged-worker $os/$arch"
+  GOTOOLCHAIN=local CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+    -trimpath -buildvcs=false \
+    -ldflags "-s -w" \
+    -o "dist/control-center-privileged-worker-$os-$arch" ./cmd/control-center-privileged-worker
 done
-sha256sum dist/control-center-linux-amd64 dist/control-center-linux-arm64 > dist/SHA256SUMS
+
+sha256sum \
+  dist/control-center-linux-amd64 \
+  dist/control-center-linux-arm64 \
+  dist/control-center-privileged-worker-linux-amd64 \
+  dist/control-center-privileged-worker-linux-arm64 \
+  > dist/SHA256SUMS
