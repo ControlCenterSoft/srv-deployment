@@ -68,6 +68,10 @@ jobs:
         run: |
           sudo systemctl restart control-center.service
           systemctl is-active --quiet control-center.service
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:8876/api/v1/readiness >/dev/null; then break; fi
+            sleep 0.5
+          done
           curl -fsS http://127.0.0.1:8876/api/v1/readiness
       - name: Authentication and RBAC acceptance
         run: sudo ./scripts/auth-acceptance.sh

@@ -32,8 +32,11 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 UMask=0027
 StateDirectory=control-center
+StateDirectoryMode=0750
 LogsDirectory=control-center
+LogsDirectoryMode=0750
 ConfigurationDirectory=control-center
+ConfigurationDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target
