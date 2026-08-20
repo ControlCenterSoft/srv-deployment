@@ -31,15 +31,15 @@ jobs:
         id: build
         run: |
           sudo env STABLE_ACCEPTANCE_BUILD_ONLY=1 OUTPUT_STABLE=/tmp/stable-v1.sh bash /tmp/launcher.sh
-          bash -n /tmp/stable-v1.sh
-          sha="$(sha256sum /tmp/stable-v1.sh | awk '{print $1}')"
+          sudo bash -n /tmp/stable-v1.sh
+          sha="$(sudo sha256sum /tmp/stable-v1.sh | awk '{print $1}')"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          grep -F 'RC_VERSION="1.0.0"' /tmp/stable-v1.sh
-          grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-v1.sh
-          grep -F 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-v1.sh
-          grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-v1.sh
-          grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-v1.sh
-          ! grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-v1.sh
+          sudo grep -F 'RC_VERSION="1.0.0"' /tmp/stable-v1.sh
+          sudo grep -F 'RC_COMMIT="1b364ae88789696bf98537d21544de8a259d086d"' /tmp/stable-v1.sh
+          sudo grep -F 'BETA_VERSION="1.0.0-rc.1"' /tmp/stable-v1.sh
+          sudo grep -F 'BETA_COMMIT="77b62d5829a46b1b29698495043146d79f37dc48"' /tmp/stable-v1.sh
+          sudo grep -F 'scripts/stable-update-acceptance.sh' /tmp/stable-v1.sh
+          ! sudo grep -Fq 'scripts/rc1-update-acceptance.sh' /tmp/stable-v1.sh
           echo "$sha  /tmp/stable-v1.sh"
       - name: Publish result
         if: always()
