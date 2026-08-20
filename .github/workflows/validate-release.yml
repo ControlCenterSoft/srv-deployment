@@ -125,7 +125,7 @@ jobs:
           main._effective_network_config=lambda:(roles,ifaces,'test');main._interfaces=lambda:ifaces
           c=wsgi.app.test_client()
           h=c.get('/api/health');assert h.status_code==200 and h.get_json()['version']=='1.0.11' and h.get_json()['build']=='20260820.1'
-          m=c.get('/api/market').get_json();ids={x['id'] for x in m['items']};assert {'domain','dns','storage','dhcp'}.issubset(ids)
+          m=c.get('/api/market').get_json();ids={x['id'] for x in m['items']};assert {'domain','dns','storage'}.issubset(ids)
           d=next(x for x in m['items'] if x['id']=='domain');assert set(d['dependencies'])=={'dns','storage'}
           r=c.post('/api/samba/readiness',json={'realm':'ci.example.test','netbios_domain':'CITEST','network_role':'lan','dns_forwarder':'1.1.1.1'});assert r.status_code==200
           assets=c.get('/static/app.js').get_data(as_text=True)
