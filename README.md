@@ -1,13 +1,13 @@
 # Control Center
 
 Baseline: **1.0.0**  
-Current development milestone: **1.0.0-beta.1 — Safe Update Foundation**
+Current development milestone: **1.0.0-rc.1 — Production Candidate**
 
 Control Center is being rebuilt from a clean baseline. Previous implementation, release history and architecture are not part of the active product unless explicitly re-adopted through the new governance process.
 
-## beta.1
+## rc.1
 
-beta.1 preserves the accepted authentication, RBAC, state, operations, audit and diagnostics foundations and adds cryptographically verified local updates with atomic activation and automatic rollback.
+`1.0.0-beta.1` is accepted. rc.1 is a scope-frozen production candidate: it does not add new end-user features and concentrates on reproducible release identity, clean-install/upgrade/reboot acceptance, security regression, lifecycle preservation and rollback recovery.
 
 ### Release layout
 
@@ -43,7 +43,7 @@ For development/CI, generate or supply an Ed25519 PKCS#8 private key and run:
 ```bash
 go run ./cmd/release-tool package \
   --binary ./dist/control-center-linux-amd64 \
-  --version 1.0.0-beta.1 \
+  --version 1.0.0-rc.1 \
   --commit <release-commit-sha> \
   --arch amd64 \
   --private-key /secure/path/update-private.pem \
@@ -78,7 +78,7 @@ CONTROL_CENTER_STATE_DIR=$(mktemp -d) go run ./cmd/control-center bootstrap-admi
 CONTROL_CENTER_STATE_DIR=<same-dir> CONTROL_CENTER_LOG_DIR=$(mktemp -d) go run ./cmd/control-center
 ```
 
-The secure product default remains `127.0.0.1:8876` with `Secure` browser session cookies. HTTP/IP exposure used on the temporary test host is an ops-only test configuration and is not the beta.1 production default.
+The secure product default remains `127.0.0.1:8876` with `Secure` browser session cookies. HTTP/IP exposure used on the temporary test host is an ops-only test configuration and is not the rc.1 production default.
 
 ### Build and validation
 
@@ -86,7 +86,7 @@ The secure product default remains `127.0.0.1:8876` with `Secure` browser sessio
 ./scripts/build.sh
 ./scripts/auth-acceptance.sh        # installed test host
 ./scripts/operations-acceptance.sh  # after Auth/RBAC acceptance
-./scripts/update-acceptance.sh      # root/systemd host with ephemeral test signing key
+./scripts/rc1-update-acceptance.sh  # root/systemd host with ephemeral test signing key
 ```
 
 Release binaries are built statically for linux/amd64 and linux/arm64.
@@ -104,4 +104,4 @@ Provide an update public key during install with `CONTROL_CENTER_UPDATE_PUBLIC_K
 
 ## Architecture decisions
 
-See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0006 is accepted by beta.1 and defines signed metadata, trusted verification, immutable releases, atomic activation and rollback.
+See `docs/adr/ADR-0001` through `ADR-0007`. ADR-0006 is inherited from accepted beta.1 and defines signed metadata, trusted verification, immutable releases, atomic activation and rollback.
