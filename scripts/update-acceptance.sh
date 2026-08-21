@@ -6,9 +6,12 @@ PRIVATE_KEY="${CONTROL_CENTER_UPDATE_PRIVATE_KEY:-/tmp/control-center-update-pri
 UPDATER="${CONTROL_CENTER_UPDATER:-/usr/local/sbin/control-center-update}"
 CURRENT_LINK="/usr/local/lib/control-center/current"
 PREVIOUS_LINK="/usr/local/lib/control-center/previous"
+WORKER_SERVICE="control-center-privileged-worker.service"
+WORKER_SOCKET="/run/control-center/privileged-worker.sock"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+V2_ENTRIES=$'bootstrap-manifest.json\nbootstrap-manifest.sig\nmanifest.json\nmanifest.sig\ncontrol-center\ncontrol-center-privileged-worker'
 
-fail() { printf 'UPDATE ACCEPTANCE FAILED: %s\n' "$*" >&2; exit 1; }
+fail() { printf 'UPDATE V2 ACCEPTANCE FAILED: %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || fail "must run as root"
 [[ -x "$UPDATER" ]] || fail "updater is not installed: $UPDATER"
 [[ -f "$PRIVATE_KEY" ]] || fail "private signing key is missing: $PRIVATE_KEY"
@@ -16,8 +19,10 @@ fail() { printf 'UPDATE ACCEPTANCE FAILED: %s\n' "$*" >&2; exit 1; }
 command -v go >/dev/null || fail "go is required for acceptance build"
 command -v tar >/dev/null || fail "tar is required"
 command -v curl >/dev/null || fail "curl is required"
+command -v stat >/dev/null || fail "stat is required"
+systemctl cat "$WORKER_SERVICE" >/dev/null 2>&1 || fail "privileged worker unit is not installed"
 
-work="$(mktemp -d /tmp/control-center-update-acceptance.XXXXXX)"
+work="$(mktemp -d /tmp/control-center-update-v2-acceptance.XXXXXX)"
 trap 'rm -rf -- "$work"' EXIT
 
 arch="$(uname -m)"
@@ -27,37 +32,66 @@ case "$arch" in
   *) fail "unsupported architecture: $arch" ;;
 esac
 
-target_version="${CONTROL_CENTER_UPDATE_TEST_TARGET_VERSION:-1.0.0-beta.2}"
+target_version="${CONTROL_CENTER_UPDATE_TEST_TARGET_VERSION:-1.1.1-beta.1}"
 target_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-broken_version="${CONTROL_CENTER_UPDATE_TEST_BROKEN_VERSION:-1.0.0-beta.3}"
+broken_version="${CONTROL_CENTER_UPDATE_TEST_BROKEN_VERSION:-1.1.1-beta.2}"
 broken_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-downgrade_version="${CONTROL_CENTER_UPDATE_TEST_DOWNGRADE_VERSION:-1.0.0-beta.1}"
+downgrade_version="${CONTROL_CENTER_UPDATE_TEST_DOWNGRADE_VERSION:-1.1.0-rc.1}"
 downgrade_commit="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-build_runtime() {
+build_main() {
   local output="$1" version="$2" commit="$3"
   (
     cd "$ROOT"
-    CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath \
+    CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath -buildvcs=false \
       -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=$version -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=$commit -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=2026-08-20T00:00:00Z" \
       -o "$output" ./cmd/control-center
   )
 }
 
-package_runtime() {
-  local binary="$1" version="$2" commit="$3" output="$4"
+build_worker() {
+  local output="$1"
   (
     cd "$ROOT"
-    go run ./cmd/release-tool package \
-      --binary "$binary" --version "$version" --commit "$commit" --arch "$goarch" \
-      --private-key "$PRIVATE_KEY" --output "$output" --built-at 2026-08-20T00:00:00Z >/dev/null
+    CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath -buildvcs=false -ldflags "-s -w" \
+      -o "$output" ./cmd/control-center-privileged-worker
   )
+}
+
+package_v2() {
+  local binary="$1" worker="$2" version="$3" commit="$4" output="$5" package_arch="${6:-$goarch}"
+  (
+    cd "$ROOT"
+    go run ./cmd/release-tool package-v2 \
+      --binary "$binary" \
+      --worker "$worker" \
+      --version "$version" \
+      --channel beta \
+      --commit "$commit" \
+      --arch "$package_arch" \
+      --private-key "$PRIVATE_KEY" \
+      --output "$output" \
+      --built-at 2026-08-20T00:00:00Z >/dev/null
+  )
+  [[ "$(tar -tzf "$output")" == "$V2_ENTRIES" ]] || fail "package-v2 entry contract changed"
+}
+
+repack_v2() {
+  local directory="$1" output="$2"
+  tar -C "$directory" -czf "$output" \
+    bootstrap-manifest.json \
+    bootstrap-manifest.sig \
+    manifest.json \
+    manifest.sig \
+    control-center \
+    control-center-privileged-worker
 }
 
 wait_version() {
   local expected="$1"
-  for _ in {1..30}; do
-    if body="$(curl -fsS --max-time 2 "$BASE_URL/api/v1/version" 2>/dev/null)" && grep -Fq "\"version\":\"$expected\"" <<<"$body"; then
+  for _ in {1..40}; do
+    if body="$(curl -fsS --max-time 2 "$BASE_URL/api/v1/version" 2>/dev/null)" && \
+       grep -Fq "\"version\":\"$expected\"" <<<"$body"; then
       return 0
     fi
     sleep 0.25
@@ -65,26 +99,51 @@ wait_version() {
   return 1
 }
 
+assert_worker_ready() {
+  systemctl is-active --quiet "$WORKER_SERVICE" || fail "privileged worker is not active"
+  systemctl is-enabled --quiet "$WORKER_SERVICE" || fail "privileged worker is not enabled"
+  [[ -S "$WORKER_SOCKET" ]] || fail "privileged worker socket is missing"
+  [[ "$(stat -Lc '%U:%G:%a' "$WORKER_SOCKET")" == "root:control-center:660" ]] \
+    || fail "privileged worker socket boundary is invalid"
+}
+
+assert_runtime() {
+  local expected="$1"
+  curl -fsS --max-time 2 "$BASE_URL/api/v1/health" >/dev/null \
+    || fail "health failed at $expected"
+  curl -fsS --max-time 2 "$BASE_URL/api/v1/readiness" | grep -Fq '"ready":true' \
+    || fail "readiness failed at $expected"
+  wait_version "$expected" || fail "runtime did not report $expected"
+  assert_worker_ready
+}
+
 initial_target="$(readlink "$CURRENT_LINK")"
 [[ -n "$initial_target" ]] || fail "initial current target is empty"
+initial_version="$("$CURRENT_LINK/control-center" build-info --field version)"
+assert_runtime "$initial_version"
 
-# 1. Successful signed update.
-build_runtime "$work/target" "$target_version" "$target_commit"
-package_runtime "$work/target" "$target_version" "$target_commit" "$work/target.tar.gz"
+# Build one known-good worker for signed package-v2 cases.
+build_worker "$work/worker-good"
+
+# 1. Successful signed dual-runtime update.
+build_main "$work/target" "$target_version" "$target_commit"
+package_v2 "$work/target" "$work/worker-good" "$target_version" "$target_commit" "$work/target.tar.gz"
 "$UPDATER" --package "$work/target.tar.gz"
-wait_version "$target_version" || fail "successful update did not become healthy at $target_version"
+assert_runtime "$target_version"
 after_success="$(readlink "$CURRENT_LINK")"
 [[ "$after_success" != "$initial_target" ]] || fail "current link did not change after successful update"
-[[ -L "$PREVIOUS_LINK" && "$(readlink "$PREVIOUS_LINK")" == "$initial_target" ]] || fail "previous link was not set to the original release"
+[[ -L "$PREVIOUS_LINK" && "$(readlink "$PREVIOUS_LINK")" == "$initial_target" ]] \
+  || fail "previous link was not set to the original release"
 
-# 2. Same-version package must be rejected without changing current.
+# 2. Same-version package must be rejected without changing either runtime.
 if "$UPDATER" --package "$work/target.tar.gz" >"$work/same.out" 2>"$work/same.err"; then
   fail "same-version update was accepted"
 fi
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "same-version rejection changed current link"
-wait_version "$target_version" || fail "service unhealthy after same-version rejection"
+assert_runtime "$target_version"
 
-# 3. Unverified candidate bytes must be rejected before candidate execution.
+# 3. Unverified main bytes must be rejected by the trusted schema-1 bridge
+# before candidate code is ever executed.
 mkdir "$work/artifact-tamper"
 tar -xzf "$work/target.tar.gz" -C "$work/artifact-tamper"
 cat > "$work/artifact-tamper/control-center" <<EOF
@@ -93,98 +152,79 @@ touch "$work/unverified-candidate-executed"
 exit 0
 EOF
 chmod 0755 "$work/artifact-tamper/control-center"
-tar -C "$work/artifact-tamper" -czf "$work/artifact-tamper.tar.gz" manifest.json manifest.sig control-center
+repack_v2 "$work/artifact-tamper" "$work/artifact-tamper.tar.gz"
 if "$UPDATER" --package "$work/artifact-tamper.tar.gz" >"$work/artifact-tamper.out" 2>"$work/artifact-tamper.err"; then
   fail "artifact-tampered package was accepted"
 fi
 [[ ! -e "$work/unverified-candidate-executed" ]] || fail "unverified candidate code executed before digest verification"
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "artifact rejection changed current link"
-wait_version "$target_version" || fail "service unhealthy after artifact rejection"
+assert_runtime "$target_version"
 
-# 4. Packages with unexpected entries must be rejected before extraction/activation.
+# 4. A seventh/unexpected package entry must fail before extraction/activation.
 mkdir "$work/extra-entry"
 tar -xzf "$work/target.tar.gz" -C "$work/extra-entry"
 printf 'unexpected\n' > "$work/extra-entry/unexpected.txt"
-tar -C "$work/extra-entry" -czf "$work/extra-entry.tar.gz" manifest.json manifest.sig control-center unexpected.txt
+tar -C "$work/extra-entry" -czf "$work/extra-entry.tar.gz" \
+  bootstrap-manifest.json bootstrap-manifest.sig manifest.json manifest.sig \
+  control-center control-center-privileged-worker unexpected.txt
 if "$UPDATER" --package "$work/extra-entry.tar.gz" >"$work/extra-entry.out" 2>"$work/extra-entry.err"; then
   fail "package with unexpected entry was accepted"
 fi
 grep -Fq 'unexpected entries' "$work/extra-entry.err" || fail "unexpected-entry rejection reason was not recorded"
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "unexpected-entry rejection changed current link"
+assert_runtime "$target_version"
 
-# 5. Correctly signed package for the wrong architecture must fail closed.
+# 5. Correctly signed package-v2 for the wrong architecture must fail closed.
 wrong_arch=arm64
 [[ "$goarch" == arm64 ]] && wrong_arch=amd64
-(
-  cd "$ROOT"
-  go run ./cmd/release-tool package \
-    --binary "$work/target" --version "$target_version" --commit "$target_commit" --arch "$wrong_arch" \
-    --private-key "$PRIVATE_KEY" --output "$work/wrong-arch.tar.gz" --built-at 2026-08-20T00:00:00Z >/dev/null
-)
+package_v2 "$work/target" "$work/worker-good" "$target_version" "$target_commit" "$work/wrong-arch.tar.gz" "$wrong_arch"
 if "$UPDATER" --package "$work/wrong-arch.tar.gz" >"$work/wrong-arch.out" 2>"$work/wrong-arch.err"; then
   fail "wrong-architecture package was accepted"
 fi
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "platform rejection changed current link"
-wait_version "$target_version" || fail "service unhealthy after platform rejection"
+assert_runtime "$target_version"
 
-# 6. A correctly signed downgrade must be rejected by policy.
-build_runtime "$work/downgrade" "$downgrade_version" "$downgrade_commit"
-package_runtime "$work/downgrade" "$downgrade_version" "$downgrade_commit" "$work/downgrade.tar.gz"
+# 6. A correctly signed downgrade package-v2 must be rejected by version policy.
+build_main "$work/downgrade" "$downgrade_version" "$downgrade_commit"
+package_v2 "$work/downgrade" "$work/worker-good" "$downgrade_version" "$downgrade_commit" "$work/downgrade.tar.gz"
 if "$UPDATER" --package "$work/downgrade.tar.gz" >"$work/downgrade.out" 2>"$work/downgrade.err"; then
   fail "downgrade was accepted without --allow-downgrade"
 fi
 grep -Fq 'not newer than current' "$work/downgrade.err" || fail "downgrade rejection reason was not recorded"
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "downgrade rejection changed current link"
-wait_version "$target_version" || fail "service unhealthy after downgrade rejection"
+assert_runtime "$target_version"
 
-# 7. Tampered manifest must fail signature verification before switch.
-mkdir "$work/tampered"
-tar -xzf "$work/target.tar.gz" -C "$work/tampered"
-python3 - "$work/tampered/manifest.json" <<'PY'
+# 7. The main candidate may pass the schema-1 trust bridge, but a tampered
+# schema-2 manifest must still fail its Ed25519 signature before any switch.
+mkdir "$work/tampered-manifest"
+tar -xzf "$work/target.tar.gz" -C "$work/tampered-manifest"
+python3 - "$work/tampered-manifest/manifest.json" <<'PY'
 import json,sys
 p=sys.argv[1]
-d=json.load(open(p))
+d=json.load(open(p, encoding="utf-8"))
 d["channel"]="stable" if d["channel"]=="beta" else "beta"
-open(p,"w").write(json.dumps(d,indent=2)+"\n")
+open(p,"w",encoding="utf-8").write(json.dumps(d,indent=2)+"\n")
 PY
-tar -C "$work/tampered" -czf "$work/tampered.tar.gz" manifest.json manifest.sig control-center
-if "$UPDATER" --package "$work/tampered.tar.gz" >"$work/tampered.out" 2>"$work/tampered.err"; then
-  fail "tampered manifest was accepted"
+repack_v2 "$work/tampered-manifest" "$work/tampered-manifest.tar.gz"
+if "$UPDATER" --package "$work/tampered-manifest.tar.gz" >"$work/tampered-manifest.out" 2>"$work/tampered-manifest.err"; then
+  fail "tampered schema-2 manifest was accepted"
 fi
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "signature rejection changed current link"
-wait_version "$target_version" || fail "service unhealthy after signature rejection"
+assert_runtime "$target_version"
 
-# 8. A correctly signed but non-starting runtime must roll back automatically.
-cat > "$work/broken.go" <<'GO'
-package main
-import (
-  "flag"
-  "fmt"
-  "os"
-)
-var version = "unknown"
-var commit = "unknown"
-func main() {
-  if len(os.Args) > 1 && os.Args[1] == "build-info" {
-    fs := flag.NewFlagSet("build-info", flag.ExitOnError)
-    field := fs.String("field", "", "")
-    _ = fs.Parse(os.Args[2:])
-    switch *field { case "version": fmt.Println(version); case "commit": fmt.Println(commit); case "built-at": fmt.Println("2026-08-20T00:00:00Z"); default: fmt.Printf("{\"version\":%q,\"commit\":%q}\n",version,commit) }
-    return
-  }
-  os.Exit(42)
-}
-GO
-CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath \
-  -ldflags "-X main.version=$broken_version -X main.commit=$broken_commit" \
-  -o "$work/broken" "$work/broken.go"
-package_runtime "$work/broken" "$broken_version" "$broken_commit" "$work/broken.tar.gz"
-if "$UPDATER" --package "$work/broken.tar.gz" >"$work/broken.out" 2>"$work/broken.err"; then
-  fail "broken signed runtime unexpectedly passed post-update acceptance"
+# 8. A correctly signed pair with a deliberately non-starting worker must
+# switch neither runtime permanently. Rollback must restore current pointer,
+# main readiness, worker enable/active state and socket boundary.
+build_main "$work/broken-main" "$broken_version" "$broken_commit"
+printf '#!/bin/sh\nexit 70\n' > "$work/worker-broken"
+chmod 0755 "$work/worker-broken"
+package_v2 "$work/broken-main" "$work/worker-broken" "$broken_version" "$broken_commit" "$work/broken-worker.tar.gz"
+if "$UPDATER" --package "$work/broken-worker.tar.gz" >"$work/broken-worker.out" 2>"$work/broken-worker.err"; then
+  fail "broken signed worker unexpectedly passed dual-runtime acceptance"
 fi
-[[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "failed update did not roll back current link"
-wait_version "$target_version" || fail "rolled-back service did not recover"
+[[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "failed worker update did not roll back current link"
+[[ "$(readlink "$PREVIOUS_LINK")" == "$initial_target" ]] || fail "failed update changed previous release pointer"
+assert_runtime "$target_version"
+grep -Fq 'rolling back' "$work/broken-worker.out" || fail "worker rollback was not recorded in updater output"
 
-grep -Fq 'rolling back' "$work/broken.out" || fail "rollback was not recorded in updater output"
-
-printf 'Safe update acceptance passed: signed update, same-version rejection, artifact rejection without execution, package whitelist rejection, platform rejection, downgrade rejection, signature rejection, automatic rollback.\n'
+printf 'Safe update-v2 acceptance passed: signed dual-runtime update, same-version rejection, trusted-bridge artifact rejection without execution, package whitelist rejection, platform rejection, downgrade rejection, schema-2 signature rejection, and worker-first automatic rollback.\n'
