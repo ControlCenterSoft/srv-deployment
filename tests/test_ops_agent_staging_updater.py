@@ -70,6 +70,18 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
         self.assertNotIn("control-center-update", updater)
         self.assertNotIn("ccops_socket_broker.py", updater)
 
+    def test_root_updater_serializes_and_rejects_downgrade_replay(self):
+        updater = embedded_updater()
+        self.assertIn('LOCK_FILE="/run/control-center-ops-agent-staging-update.lock"', updater)
+        self.assertIn('exec 9>"$LOCK_FILE"', updater)
+        self.assertIn('flock -n 9 || fail "another ops-agent staging update is active"', updater)
+        self.assertLess(updater.index('flock -n 9'), updater.index('[[ "$PACKAGE" =~'))
+        self.assertIn('current_version="$(python3 - "$AGENT_FILE"', updater)
+        self.assertIn('fail "agent downgrade rejected"', updater)
+        self.assertIn('fail "same-version artifact replacement rejected"', updater)
+        self.assertIn('backup_dir="$(mktemp -d "$BACKUP_ROOT/update-${source_commit}.XXXXXX")"', updater)
+        self.assertNotIn('$(date -u +%Y%m%dT%H%M%SZ)', updater)
+
     def test_deployer_builds_exact_signed_component_package(self):
         with tempfile.TemporaryDirectory() as td_raw:
             td = pathlib.Path(td_raw)
