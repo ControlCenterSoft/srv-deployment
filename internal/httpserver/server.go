@@ -22,6 +22,7 @@ import (
 	"github.com/ControlCenterSoft/srv-deployment/internal/auth"
 	"github.com/ControlCenterSoft/srv-deployment/internal/buildinfo"
 	"github.com/ControlCenterSoft/srv-deployment/internal/diagnostics"
+	networkmodel "github.com/ControlCenterSoft/srv-deployment/internal/network"
 	"github.com/ControlCenterSoft/srv-deployment/internal/observability"
 	"github.com/ControlCenterSoft/srv-deployment/internal/operations"
 	"github.com/ControlCenterSoft/srv-deployment/internal/state"
@@ -56,6 +57,7 @@ func New(logger *slog.Logger, store *state.Store, opStore *operations.Store, aud
 	mux.HandleFunc("POST /api/v1/auth/logout", s.requireAuth(s.logout))
 	mux.HandleFunc("POST /api/v1/auth/password", s.requireAuth(s.changePassword))
 	mux.HandleFunc("GET /api/v1/system/status", s.requirePermission("system.read", s.systemStatus))
+	mux.HandleFunc("GET /api/v1/network/interfaces", s.requirePermission("system.read", s.networkInterfaces))
 	mux.HandleFunc("GET /api/v1/rbac/users", s.requirePermission("rbac.users.read", s.listUsers))
 	mux.HandleFunc("POST /api/v1/rbac/users", s.requirePermission("rbac.users.write", s.createUser))
 	mux.HandleFunc("POST /api/v1/rbac/users/{username}/blocked", s.requirePermission("rbac.users.write", s.setBlocked))
@@ -193,6 +195,17 @@ func (s *Server) systemStatus(w http.ResponseWriter, r *http.Request, sess auth.
 	ready, detail := s.store.Ready()
 	now := time.Now().UTC()
 	writeJSON(w, http.StatusOK, envelope{"user": publicUser(u), "status": "ok", "ready": ready, "readiness_detail": detail, "state_schema": s.store.Schema(), "operations_schema": operations.SchemaVersion, "service": envelope{"name": "control-center", "state": "running", "pid": os.Getpid(), "started_at": s.startedAt, "uptime_seconds": now.Sub(s.startedAt).Seconds()}, "runtime": envelope{"go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH, "goroutines": runtime.NumGoroutine()}, "operation_count": s.operations.Count()})
+}
+
+func (s *Server) networkInterfaces(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
+	interfaces, err := networkmodel.Inventory()
+	if err != nil {
+		s.auditEvent(r, u.Username, string(u.Role), "network.interfaces.read", "host", "failed", "network_inventory_unavailable")
+		writeError(w, http.StatusServiceUnavailable, "network_inventory_unavailable", "Network interface inventory is unavailable", operationID(r))
+		return
+	}
+	s.auditEvent(r, u.Username, string(u.Role), "network.interfaces.read", "host", "success", "")
+	writeJSON(w, http.StatusOK, envelope{"interfaces": interfaces, "count": len(interfaces), "observed_at": time.Now().UTC().Format(time.RFC3339)})
 }
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
