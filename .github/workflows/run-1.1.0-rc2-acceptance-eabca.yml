@@ -1,0 +1,21 @@
+name: Run Control Center 1.1.0-rc.2 acceptance eabca
+
+on:
+  push:
+    branches:
+      - 'ops/run-1.1.0-rc.2-acceptance-eabca443'
+  pull_request:
+    branches:
+      - '1.1.x'
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    if: github.event_name == 'push' || github.head_ref == 'ops/run-1.1.0-rc.2-acceptance-eabca443'
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1.yml@eabca443287996044a26ff23dfb35104cb55fde8
+    with:
+      candidate_sha: eabca443287996044a26ff23dfb35104cb55fde8
+      candidate_version: 1.1.0-rc.2
+    secrets: inherit
