@@ -9,6 +9,9 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "scripts" / "bootstrap-ops-agent-staging-updater.sh"
 STAGE = ROOT / "scripts" / "stage-ops-agent-signed.sh"
+APPROVED_AGENT = ROOT / "tests" / "fixtures" / "ccops_agent_v3_d4337bdd.py"
+APPROVED_COMMIT = "d4337bdd5f3111431ee06858fcd0d3338655751c"
+APPROVED_BLOB = "412ec9e08432e34d82c64813af079a4177a6ac1e"
 
 
 def embedded_updater() -> str:
@@ -16,6 +19,10 @@ def embedded_updater() -> str:
     start = text.index("<<'WRAPPER'\n") + len("<<'WRAPPER'\n")
     end = text.index("\nWRAPPER\n", start)
     return text[start:end] + "\n"
+
+
+def git_blob(raw: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
 
 
 class OpsAgentStagingUpdaterTests(unittest.TestCase):
@@ -82,13 +89,22 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
         self.assertIn('backup_dir="$(mktemp -d "$BACKUP_ROOT/update-${source_commit}.XXXXXX")"', updater)
         self.assertNotIn('$(date -u +%Y%m%dT%H%M%SZ)', updater)
 
+    def test_approved_source_fixture_matches_authoritative_git_blob(self):
+        raw = APPROVED_AGENT.read_bytes()
+        self.assertEqual(git_blob(raw), APPROVED_BLOB)
+        text = STAGE.read_text(encoding="utf-8")
+        self.assertIn(f'APPROVED_SOURCE_COMMIT="{APPROVED_COMMIT}"', text)
+        self.assertIn(f'APPROVED_SOURCE_BLOB="{APPROVED_BLOB}"', text)
+        self.assertIn('APPROVED_SOURCE_PATH="agent/ccops_agent_v3.py"', text)
+        self.assertIn('source commit/blob provenance mismatch', text)
+
     def test_deployer_builds_exact_signed_component_package(self):
         with tempfile.TemporaryDirectory() as td_raw:
             td = pathlib.Path(td_raw)
             agent = td / "ccops_agent_v3.py"
-            agent.write_text('AGENT_VERSION = "1.1.10"\n', encoding="utf-8")
-            raw = agent.read_bytes()
-            blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+            raw = APPROVED_AGENT.read_bytes()
+            agent.write_bytes(raw)
+            self.assertEqual(git_blob(raw), APPROVED_BLOB)
             key = td / "key.pem"
             pub = td / "pub.pem"
             package = td / "package.tar.gz"
@@ -99,8 +115,8 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
             subprocess.run([
                 "bash", str(STAGE),
                 "--agent-file", str(agent),
-                "--source-commit", "d4337bdd5f3111431ee06858fcd0d3338655751c",
-                "--source-blob", blob,
+                "--source-commit", APPROVED_COMMIT,
+                "--source-blob", APPROVED_BLOB,
                 "--agent-version", "1.1.10",
                 "--expected-product-version", "1.1.0-rc.6",
                 "--expected-product-commit", "302eb6da97324d719849e7ae752fc10bdc557d9a",
@@ -125,14 +141,14 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td_raw:
             td = pathlib.Path(td_raw)
             agent = td / "ccops_agent_v3.py"
-            agent.write_text('AGENT_VERSION = "1.1.10"\n', encoding="utf-8")
+            agent.write_bytes(APPROVED_AGENT.read_bytes())
             key = td / "key.pem"
             subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             proc = subprocess.run([
                 "bash", str(STAGE),
                 "--agent-file", str(agent),
-                "--source-commit", "d4337bdd5f3111431ee06858fcd0d3338655751c",
+                "--source-commit", APPROVED_COMMIT,
                 "--source-blob", "0" * 40,
                 "--agent-version", "1.1.10",
                 "--expected-product-version", "1.1.0-rc.6",
@@ -141,7 +157,56 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
                 "--build-only", str(td / "package.tar.gz"),
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("source blob mismatch", proc.stderr)
+            self.assertIn("source commit/blob provenance mismatch", proc.stderr)
+            self.assertFalse((td / "package.tar.gz").exists())
+
+    def test_deployer_rejects_unbound_source_commit_blob_pair(self):
+        with tempfile.TemporaryDirectory() as td_raw:
+            td = pathlib.Path(td_raw)
+            agent = td / "ccops_agent_v3.py"
+            agent.write_text('AGENT_VERSION = "1.1.10"\n', encoding="utf-8")
+            caller_blob = git_blob(agent.read_bytes())
+            self.assertNotEqual(caller_blob, APPROVED_BLOB)
+            key = td / "key.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = subprocess.run([
+                "bash", str(STAGE),
+                "--agent-file", str(agent),
+                "--source-commit", APPROVED_COMMIT,
+                "--source-blob", caller_blob,
+                "--agent-version", "1.1.10",
+                "--expected-product-version", "1.1.0-rc.6",
+                "--expected-product-commit", "302eb6da97324d719849e7ae752fc10bdc557d9a",
+                "--signing-key", str(key),
+                "--build-only", str(td / "package.tar.gz"),
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("source commit/blob provenance mismatch", proc.stderr)
+            self.assertFalse((td / "package.tar.gz").exists())
+
+    def test_deployer_rejects_unapproved_source_commit(self):
+        with tempfile.TemporaryDirectory() as td_raw:
+            td = pathlib.Path(td_raw)
+            agent = td / "ccops_agent_v3.py"
+            agent.write_bytes(APPROVED_AGENT.read_bytes())
+            key = td / "key.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = subprocess.run([
+                "bash", str(STAGE),
+                "--agent-file", str(agent),
+                "--source-commit", "0" * 40,
+                "--source-blob", APPROVED_BLOB,
+                "--agent-version", "1.1.10",
+                "--expected-product-version", "1.1.0-rc.6",
+                "--expected-product-commit", "302eb6da97324d719849e7ae752fc10bdc557d9a",
+                "--signing-key", str(key),
+                "--build-only", str(td / "package.tar.gz"),
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("source commit is not approved for staging", proc.stderr)
+            self.assertFalse((td / "package.tar.gz").exists())
 
     def test_remote_staging_has_read_only_preflight_before_upload(self):
         text = STAGE.read_text(encoding="utf-8")
