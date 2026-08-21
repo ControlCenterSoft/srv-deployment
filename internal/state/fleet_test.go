@@ -6,70 +6,30 @@ import (
 )
 
 func TestFleetNodePersistenceAndValidation(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	node, err := store.CreateFleetNode("srv-01", "10.10.0.11", "office", "production")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.ID != "srv-01" || node.Status != "pending_enrollment" {
-		t.Fatalf("unexpected node: %+v", node)
-	}
-	if _, err := store.CreateFleetNode("srv-02", "10.10.0.11", "office", "production"); err == nil {
-		t.Fatal("expected duplicate address rejection")
-	}
-	if _, err := store.CreateFleetNode("bad name", "10.10.0.12", "", ""); err == nil {
-		t.Fatal("expected invalid name rejection")
-	}
-
-	reopened, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nodes := reopened.ListFleetNodes()
-	if len(nodes) != 1 || nodes[0].Name != "srv-01" || nodes[0].Address != "10.10.0.11" {
-		t.Fatalf("unexpected persisted nodes: %+v", nodes)
-	}
+	dir := t.TempDir(); store, err := Open(dir); if err != nil { t.Fatal(err) }
+	node, err := store.CreateFleetNode("srv-01", "10.10.0.11", "office", "production"); if err != nil { t.Fatal(err) }
+	if node.ID != "srv-01" || node.Status != "pending_enrollment" { t.Fatalf("unexpected node: %+v", node) }
+	if _, err := store.CreateFleetNode("srv-02", "10.10.0.11", "office", "production"); err == nil { t.Fatal("expected duplicate address rejection") }
+	if _, err := store.CreateFleetNode("bad name", "10.10.0.12", "", ""); err == nil { t.Fatal("expected invalid name rejection") }
+	reopened, err := Open(dir); if err != nil { t.Fatal(err) }
+	nodes := reopened.ListFleetNodes(); if len(nodes) != 1 || nodes[0].Name != "srv-01" || nodes[0].Address != "10.10.0.11" { t.Fatalf("unexpected persisted nodes: %+v", nodes) }
 }
 
-func TestFleetEnrollmentCredentialIsOneTimeAndPersistent(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateFleetNode("srv-01", "10.10.0.11", "office", "production"); err != nil {
-		t.Fatal(err)
-	}
-	node, token, err := store.PrepareFleetEnrollment("srv-01", 15*time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token == "" || node.Status != "enrollment_ready" || node.EnrollmentExpiresAt == nil {
-		t.Fatalf("unexpected enrollment preparation: node=%+v token=%q", node, token)
-	}
-	if node.EnrollmentTokenHash != "" {
-		t.Fatal("public node must never expose enrollment token hash")
-	}
-
-	reopened, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reopened.EnrollFleetNode("srv-01", "wrong-token", "1.1.8"); err == nil {
-		t.Fatal("expected invalid token rejection")
-	}
-	enrolled, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enrolled.Status != "enrolled" || enrolled.AgentVersion != "1.1.8" || enrolled.EnrolledAt == nil || enrolled.LastSeenAt == nil {
-		t.Fatalf("unexpected enrolled node: %+v", enrolled)
-	}
-	if _, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8"); err == nil {
-		t.Fatal("expected one-time token replay rejection")
-	}
+func TestFleetEnrollmentAndHeartbeatCredentialLifecycle(t *testing.T) {
+	dir := t.TempDir(); store, err := Open(dir); if err != nil { t.Fatal(err) }
+	if _, err := store.CreateFleetNode("srv-01", "10.10.0.11", "office", "production"); err != nil { t.Fatal(err) }
+	node, token, err := store.PrepareFleetEnrollment("srv-01", 15*time.Minute); if err != nil { t.Fatal(err) }
+	if token == "" || node.Status != "enrollment_ready" || node.EnrollmentExpiresAt == nil { t.Fatalf("unexpected enrollment preparation: node=%+v token=%q", node, token) }
+	if node.EnrollmentTokenHash != "" { t.Fatal("public node must never expose enrollment token hash") }
+	reopened, err := Open(dir); if err != nil { t.Fatal(err) }
+	if _, _, err := reopened.EnrollFleetNode("srv-01", "wrong-token", "1.1.8"); err == nil { t.Fatal("expected invalid token rejection") }
+	enrolled, credential, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8"); if err != nil { t.Fatal(err) }
+	if credential == "" || enrolled.Status != "enrolled" || enrolled.AgentVersion != "1.1.8" || enrolled.EnrolledAt == nil || enrolled.LastSeenAt == nil { t.Fatalf("unexpected enrolled node: %+v", enrolled) }
+	if enrolled.AgentCredentialHash != "" { t.Fatal("public node must never expose agent credential hash") }
+	if _, _, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8"); err == nil { t.Fatal("expected one-time token replay rejection") }
+	if _, err := reopened.RecordFleetHeartbeat("srv-01", "wrong", FleetHeartbeat{}); err == nil { t.Fatal("expected invalid agent credential rejection") }
+	updated, err := reopened.RecordFleetHeartbeat("srv-01", credential, FleetHeartbeat{AgentVersion:"1.1.9", Hostname:"srv-01.example", OSName:"Ubuntu", OSVersion:"26.04", Architecture:"amd64"}); if err != nil { t.Fatal(err) }
+	if updated.AgentVersion != "1.1.9" || updated.Hostname != "srv-01.example" || updated.OSName != "Ubuntu" || updated.OSVersion != "26.04" || updated.Architecture != "amd64" { t.Fatalf("unexpected heartbeat inventory: %+v", updated) }
+	persisted, err := Open(dir); if err != nil { t.Fatal(err) }
+	nodes := persisted.ListFleetNodes(); if len(nodes) != 1 || nodes[0].Hostname != "srv-01.example" || nodes[0].AgentCredentialHash == "" { t.Fatalf("heartbeat state not persisted: %+v", nodes) }
 }
