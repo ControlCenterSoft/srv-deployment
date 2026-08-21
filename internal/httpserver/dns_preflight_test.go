@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-func TestDNSResolverPreflightRequiresAdminCSRFAndReturnsStableEvidence(t *testing.T) {
+func TestDNSResolverPreflightRequiresAdminCSRFAndPreviewFingerprint(t *testing.T) {
 	app := newTestApp(t)
-	payload := `{"nameservers":["192.0.2.53"],"search_domains":["example.test"]}`
+	payload := `{"nameservers":["192.0.2.53"],"search_domains":["example.test"],"expected_source_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
 
 	anonymous := requestJSON(t, app.handler, http.MethodPost, "/api/v1/dns/resolver/preflight", payload, nil, "")
 	if anonymous.Code != http.StatusUnauthorized {
@@ -51,9 +51,44 @@ func TestDNSResolverPreflightRequiresAdminCSRFAndReturnsStableEvidence(t *testin
 	if !current.Management.PreflightSupported {
 		t.Fatal("inventory does not advertise resolver preflight support")
 	}
-	requestBody, err := json.Marshal(map[string]any{
+
+	previewRequest, err := json.Marshal(map[string]any{
 		"nameservers":    current.Actual.Nameservers,
 		"search_domains": current.Actual.SearchDomains,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := requestJSON(t, app.handler, http.MethodPost, "/api/v1/dns/resolver/preview", string(previewRequest), adminCookie, adminCSRF)
+	if preview.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", preview.Code, preview.Body.String())
+	}
+	var previewBody struct {
+		SourceFingerprint string `json:"source_fingerprint"`
+	}
+	if err := json.Unmarshal(preview.Body.Bytes(), &previewBody); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(previewBody.SourceFingerprint, "sha256:") {
+		t.Fatalf("preview source fingerprint=%q", previewBody.SourceFingerprint)
+	}
+
+	missingFingerprint, err := json.Marshal(map[string]any{
+		"nameservers":    current.Actual.Nameservers,
+		"search_domains": current.Actual.SearchDomains,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingFingerprintResult := requestJSON(t, app.handler, http.MethodPost, "/api/v1/dns/resolver/preflight", string(missingFingerprint), adminCookie, adminCSRF)
+	if missingFingerprintResult.Code != http.StatusBadRequest {
+		t.Fatalf("missing fingerprint status=%d body=%s", missingFingerprintResult.Code, missingFingerprintResult.Body.String())
+	}
+
+	requestBody, err := json.Marshal(map[string]any{
+		"nameservers":                 current.Actual.Nameservers,
+		"search_domains":              current.Actual.SearchDomains,
+		"expected_source_fingerprint": previewBody.SourceFingerprint,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +120,7 @@ func TestDNSResolverPreflightRequiresAdminCSRFAndReturnsStableEvidence(t *testin
 	if body.Preflight.Schema != 1 || !body.Preflight.Passed || !body.Preflight.NoOp || body.Preflight.ApplySupported {
 		t.Fatalf("unexpected preflight=%+v", body.Preflight)
 	}
-	if !strings.HasPrefix(body.Preflight.SourceFingerprint, "sha256:") || len(body.Preflight.Blockers) != 0 || len(body.Preflight.RequiredExecutorSteps) != 4 {
+	if body.Preflight.SourceFingerprint != previewBody.SourceFingerprint || len(body.Preflight.Blockers) != 0 || len(body.Preflight.RequiredExecutorSteps) != 4 {
 		t.Fatalf("preflight evidence=%+v", body.Preflight)
 	}
 	if !body.Management.PreflightSupported || body.Management.ApplySupported || body.Management.Reason != "recovery_executor_not_implemented" {
@@ -101,7 +136,7 @@ func TestDNSResolverPreflightViewerDenialIsAudited(t *testing.T) {
 		t.Fatalf("create viewer status=%d body=%s", createViewer.Code, createViewer.Body.String())
 	}
 	viewerCookie, viewerCSRF := login(t, app, "dnspreflightaudit", "dnspreflightaudit-password-123")
-	denied := requestJSON(t, app.handler, http.MethodPost, "/api/v1/dns/resolver/preflight", `{"nameservers":["192.0.2.53"],"search_domains":["example.test"]}`, viewerCookie, viewerCSRF)
+	denied := requestJSON(t, app.handler, http.MethodPost, "/api/v1/dns/resolver/preflight", `{"nameservers":["192.0.2.53"],"search_domains":["example.test"],"expected_source_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, viewerCookie, viewerCSRF)
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("viewer preflight status=%d body=%s", denied.Code, denied.Body.String())
 	}
