@@ -31,8 +31,10 @@ func TestDNSResolverInventoryRequiresAuthenticationAndReturnsActualState(t *test
 		} `json:"actual"`
 		Desired    any `json:"desired"`
 		Management struct {
-			Supported bool   `json:"supported"`
-			Reason    string `json:"reason"`
+			Supported        bool   `json:"supported"`
+			PreviewSupported bool   `json:"preview_supported"`
+			ApplySupported   bool   `json:"apply_supported"`
+			Reason           string `json:"reason"`
 		} `json:"management"`
 		ObservedAt string `json:"observed_at"`
 	}
@@ -46,9 +48,9 @@ func TestDNSResolverInventoryRequiresAuthenticationAndReturnsActualState(t *test
 		t.Fatalf("incomplete resolver inventory: %+v", body.Actual)
 	}
 	if body.Desired != nil {
-		t.Fatalf("read-only foundation must not invent desired state: %v", body.Desired)
+		t.Fatalf("inventory must not invent desired state: %v", body.Desired)
 	}
-	if body.Management.Supported || body.Management.Reason != "read_only_foundation" || body.ObservedAt == "" {
+	if body.Management.Supported || !body.Management.PreviewSupported || body.Management.ApplySupported || body.Management.Reason != "recovery_executor_not_implemented" || body.ObservedAt == "" {
 		t.Fatalf("unexpected management contract: %+v observed=%q", body.Management, body.ObservedAt)
 	}
 }
