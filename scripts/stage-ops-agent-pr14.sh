@@ -18,17 +18,25 @@ TMP=""
 BACKUP_DIR=""
 INSTALLED_NEW=0
 
-fail() { printf 'OPS_AGENT_STAGE_FAILED: %s\n' "$*" >&2; exit 1; }
 cleanup() { [[ -n "$TMP" ]] && rm -f -- "$TMP"; }
-rollback() {
-  local rc=$?
+restore_backup() {
   if (( INSTALLED_NEW )) && [[ -n "$BACKUP_DIR" && -f "$BACKUP_DIR/ccops_agent_v3.py" ]]; then
     install -o root -g root -m 0755 "$BACKUP_DIR/ccops_agent_v3.py" "$AGENT_FILE" || true
     python3 -m py_compile "$AGENT_FILE" >/dev/null 2>&1 || true
     runuser -u "$AGENT_USER" -- /usr/bin/python3 "$AGENT_FILE" --register --state-dir "$STATE_DIR" >/dev/null 2>&1 || true
     systemctl start control-center-ops-agent.service >/dev/null 2>&1 || true
     printf 'OPS_AGENT_STAGE_ROLLBACK=RESTORED\n' >&2
+    INSTALLED_NEW=0
   fi
+}
+fail() {
+  printf 'OPS_AGENT_STAGE_FAILED: %s\n' "$*" >&2
+  restore_backup
+  exit 1
+}
+rollback() {
+  local rc=$?
+  restore_backup
   cleanup
   exit "$rc"
 }
@@ -36,7 +44,7 @@ trap rollback ERR
 trap cleanup EXIT
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "run as root"
-for bin in python3 systemctl install runuser sha256sum mktemp stat; do command -v "$bin" >/dev/null || fail "missing $bin"; done
+for bin in python3 systemctl install runuser sha256sum mktemp stat grep sed head date; do command -v "$bin" >/dev/null || fail "missing $bin"; done
 [[ -s "$TOKEN_FILE" ]] || fail "diagnostics token missing"
 [[ -f "$CONFIG_FILE" ]] || fail "diagnostics config missing"
 [[ -f "$AGENT_FILE" ]] || fail "installed ops agent missing"
@@ -173,6 +181,8 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
         raw.extend(chunk)
         if b"\n" in chunk:
             break
+if not raw.endswith(b"\n"):
+    raise SystemExit("post-stage broker framing failed")
 payload = json.loads(raw[:-1].decode("utf-8"))
 if payload.get("ok") is not True:
     raise SystemExit("post-stage version check failed")
