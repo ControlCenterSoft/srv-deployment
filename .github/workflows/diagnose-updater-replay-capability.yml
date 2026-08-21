@@ -1,0 +1,45 @@
+name: Diagnose staging updater replay capability
+
+on:
+  pull_request:
+    branches: [1.1.x]
+    paths:
+      - '.github/workflows/diagnose-updater-replay-capability.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-updater:
+    name: Trusted updater capability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+      STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+      STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
+      STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+      STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+    steps:
+      - name: Configure pinned SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$STAGING_HOST"
+          test -n "$STAGING_USER"
+          test -n "$STAGING_SSH_KEY"
+          test -n "$STAGING_KNOWN_HOSTS"
+          STAGING_PORT="${STAGING_PORT:-22}"
+          install -d -m 0700 "$RUNNER_TEMP/ccdiag-ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$RUNNER_TEMP/ccdiag-ssh/id"
+          chmod 0600 "$RUNNER_TEMP/ccdiag-ssh/id"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/ccdiag-ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/ccdiag-ssh/known_hosts"
+          printf 'SSH_PORT=%s\n' "$STAGING_PORT" >> "$GITHUB_ENV"
+          printf 'SSH_KEY=%s\n' "$RUNNER_TEMP/ccdiag-ssh/id" >> "$GITHUB_ENV"
+          printf 'SSH_KNOWN_HOSTS=%s\n' "$RUNNER_TEMP/ccdiag-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Updater supports exact replay
+        shell: bash
+        run: |
+          ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" \
+            "grep -Fq 'already active with exact signed identity; no update required' /usr/local/sbin/control-center-update"
