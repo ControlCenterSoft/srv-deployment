@@ -22,7 +22,7 @@ func (s *Server) dnsResolverInventory(w http.ResponseWriter, r *http.Request, se
 	}
 	s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.read", "host", "success", "")
 	writeJSON(w, http.StatusOK, envelope{
-		"actual": resolver,
+		"actual":  resolver,
 		"desired": nil,
 		"management": envelope{
 			"supported": false,
