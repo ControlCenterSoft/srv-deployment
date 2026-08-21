@@ -20,8 +20,8 @@ jobs:
           github.event.issue.author_association == 'COLLABORATOR'
         )
       }}
-    uses: ControlCenterSoft/srv-deployment/.github/workflows/perplexity-routine.yml@0caf9a295390d1c5baa8db5b6c07777d74d1b44f
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/perplexity-routine.yml@a36ec8c34c6419d3921eb005c861be7193af5616
     with:
-      code_ref: 0caf9a295390d1c5baa8db5b6c07777d74d1b44f
+      code_ref: a36ec8c34c6419d3921eb005c861be7193af5616
     secrets:
       PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
