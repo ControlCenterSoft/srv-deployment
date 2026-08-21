@@ -3,6 +3,7 @@ package httpserver
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ func TestFleetSecureEnrollmentHeartbeatAndHealth(t *testing.T) {
 
 	heartbeat:=`{"node_id":"srv-01","agent_version":"1.1.9","hostname":"srv-01.example","os_name":"Ubuntu","os_version":"26.04","architecture":"amd64"}`
 	rr=requestJSON(t,app.handler,http.MethodPost,"/api/v1/fleet/heartbeat",heartbeat,nil,""); if rr.Code!=http.StatusUnauthorized { t.Fatalf("heartbeat without bearer=%d %s",rr.Code,rr.Body.String()) }
-	req:=newJSONRequest(t,http.MethodPost,"/api/v1/fleet/heartbeat",heartbeat); req.Header.Set("Authorization","Bearer "+enrolled.AgentCredential); rr=serveRequest(app.handler,req)
+	req:=httptest.NewRequest(http.MethodPost,"/api/v1/fleet/heartbeat",strings.NewReader(heartbeat)); req.Header.Set("Content-Type","application/json"); req.Header.Set("Authorization","Bearer "+enrolled.AgentCredential); rr=httptest.NewRecorder(); app.handler.ServeHTTP(rr,req)
 	if rr.Code!=http.StatusOK || !strings.Contains(rr.Body.String(),`"health":"healthy"`) { t.Fatalf("heartbeat=%d %s",rr.Code,rr.Body.String()) }
 
 	rr=requestJSON(t,app.handler,http.MethodGet,"/api/v1/fleet/nodes","",adminCookie,"")
