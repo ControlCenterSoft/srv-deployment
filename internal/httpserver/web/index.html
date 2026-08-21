@@ -24,6 +24,7 @@
       <div class="brand">Control Center</div>
       <nav aria-label="Основная навигация">
         <button class="nav-item active" data-page="overview">Обзор</button>
+        <button class="nav-item" data-page="fleet">Серверы</button>
         <button class="nav-item" data-page="market">Маркет</button>
         <button class="nav-item" data-page="rbac">RBAC</button>
         <button class="nav-item" data-page="system">Система</button>
@@ -56,12 +57,22 @@
           <div><dt>Commit</dt><dd id="commit">—</dd></div>
           <div><dt>Readiness</dt><dd id="readiness">—</dd></div>
         </dl>
+        <div id="fleet-nodes" hidden></div>
+        <form id="fleet-form" hidden>
+          <h3>Добавить сервер</h3>
+          <input id="fleet-name" placeholder="Имя, например srv-01" required>
+          <input id="fleet-address" placeholder="IP или DNS-имя" required>
+          <input id="fleet-group" placeholder="Группа (необязательно)">
+          <input id="fleet-environment" placeholder="Окружение (необязательно)">
+          <button class="primary" type="submit">Добавить</button>
+          <p id="fleet-error" class="error"></p>
+        </form>
         <div id="rbac-users" hidden></div>
         <div id="system-details" hidden></div>
         <div id="operations-list" hidden></div>
         <a id="diagnostics-export" class="primary export-link" href="/api/v1/diagnostics/export" hidden>Экспорт диагностики</a>
       </section>
-      <p class="note">1.0.0-alpha.3 — operations, audit и diagnostics foundation.</p>
+      <p class="note">Fleet foundation — единый инвентарь управляемых серверов с подготовкой к безопасному enrollment.</p>
     </main>
   </div>
   <script src="/app.js" defer></script>

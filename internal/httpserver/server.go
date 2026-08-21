@@ -59,6 +59,7 @@ func New(logger *slog.Logger, store *state.Store, opStore *operations.Store, aud
 	mux.HandleFunc("GET /api/v1/rbac/users", s.requirePermission("rbac.users.read", s.listUsers))
 	mux.HandleFunc("POST /api/v1/rbac/users", s.requirePermission("rbac.users.write", s.createUser))
 	mux.HandleFunc("POST /api/v1/rbac/users/{username}/blocked", s.requirePermission("rbac.users.write", s.setBlocked))
+	s.registerFleetRoutes(mux)
 	mux.HandleFunc("GET /api/v1/operations", s.requirePermission("operations.read", s.listOperations))
 	mux.HandleFunc("GET /api/v1/audit", s.requirePermission("audit.read", s.listAudit))
 	mux.HandleFunc("GET /api/v1/diagnostics/summary", s.requirePermission("system.read", s.diagnosticsSummary))
