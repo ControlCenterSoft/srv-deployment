@@ -134,8 +134,16 @@ unit_active "$SERVICE" && main_was_active=1 || true
 
 restore_unit_policy() {
   local unit="$1" enabled="$2" active="$3"
-  if (( enabled )); then systemctl enable "$unit" >/dev/null 2>&1 || true; else systemctl disable "$unit" >/dev/null 2>&1 || true; fi
-  if (( active )); then systemctl restart "$unit" >/dev/null 2>&1 || true; else systemctl stop "$unit" >/dev/null 2>&1 || true; fi
+  if (( enabled )); then
+    systemctl enable "$unit" >/dev/null
+  else
+    systemctl disable "$unit" >/dev/null
+  fi
+  if (( active )); then
+    systemctl restart "$unit" >/dev/null
+  else
+    systemctl stop "$unit" >/dev/null
+  fi
 }
 rollback_main_ready() {
   local readiness_body version_body
@@ -146,12 +154,12 @@ rollback_main_ready() {
   grep -Fq '"ready":true' <<<"$readiness_body" && grep -Fq "\"version\":\"$current_version\"" <<<"$version_body"
 }
 rollback() {
-  local reason="$1" rollback_ok=0
+  local reason="$1" rollback_ok=0 worker_restore_failed=0 main_restore_failed=0
   log "$reason; rolling back to $old_target"
   atomic_link "$old_target" "$CURRENT_LINK"
   systemctl reset-failed "$WORKER_SERVICE" "$SERVICE" >/dev/null 2>&1 || true
-  restore_unit_policy "$WORKER_SERVICE" "$worker_was_enabled" "$worker_was_active"
-  restore_unit_policy "$SERVICE" "$main_was_enabled" "$main_was_active"
+  restore_unit_policy "$WORKER_SERVICE" "$worker_was_enabled" "$worker_was_active" || worker_restore_failed=1
+  restore_unit_policy "$SERVICE" "$main_was_enabled" "$main_was_active" || main_restore_failed=1
   if (( main_was_active )); then
     for _ in {1..40}; do
       if rollback_main_ready; then rollback_ok=1; break; fi
@@ -159,6 +167,8 @@ rollback() {
     done
     (( rollback_ok )) || die "rollback failed to restore previous runtime readiness"
   fi
+  (( main_restore_failed == 0 )) || die "rollback failed to restore main service policy"
+  (( worker_restore_failed == 0 )) || die "rollback failed to restore privileged worker policy"
   die "update rolled back after failed dual-runtime acceptance"
 }
 
@@ -183,6 +193,9 @@ main_ready() {
 log "switching dual runtime $current_version -> $target_version ($release_id)"
 atomic_link "$release_rel" "$CURRENT_LINK"
 systemctl reset-failed "$WORKER_SERVICE" "$SERVICE" >/dev/null 2>&1 || true
+if ! systemctl enable "$WORKER_SERVICE" >/dev/null; then
+  rollback "privileged worker enable failed"
+fi
 if ! systemctl restart "$WORKER_SERVICE"; then
   rollback "privileged worker restart failed"
 fi
