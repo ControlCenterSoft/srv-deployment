@@ -27,6 +27,12 @@ class CIScopeTests(unittest.TestCase):
         self.assertFalse(result["runtime"])
         self.assertFalse(result["go"])
 
+    def test_shared_ai_gateway_is_ai_only(self):
+        result = classify(["scripts/ai_gateway.py", "tests/test_ai_gateway.py"])
+        self.assertTrue(result["ai"])
+        self.assertFalse(result["runtime"])
+        self.assertFalse(result["go"])
+
     def test_pipeline_yaml_is_not_runtime(self):
         result = classify([".github/workflows/development-1.1.yml"])
         self.assertFalse(result["runtime"])
