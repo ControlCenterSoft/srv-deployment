@@ -4,9 +4,11 @@ set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 UPDATER="$ROOT/install/update-v2.sh"
 MIGRATION_CONTRACT="$ROOT/scripts/platform-v2-migration-contract.sh"
+INSTALLER_CONTRACT="$ROOT/scripts/installer-v2-contract.sh"
 
 [[ -f "$UPDATER" ]] || { echo "missing update-v2.sh" >&2; exit 1; }
 [[ -f "$MIGRATION_CONTRACT" ]] || { echo "missing platform-v2 migration contract" >&2; exit 1; }
+[[ -f "$INSTALLER_CONTRACT" ]] || { echo "missing installer-v2 contract" >&2; exit 1; }
 bash -n "$UPDATER"
 
 require() {
@@ -48,4 +50,5 @@ if grep -Eq '(^|[[:space:]])(eval|bash[[:space:]]+-c|sh[[:space:]]+-c)([[:space:
 fi
 
 bash "$MIGRATION_CONTRACT"
+bash "$INSTALLER_CONTRACT"
 printf 'update-v2 contract: PASS\n'
