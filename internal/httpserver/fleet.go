@@ -19,6 +19,7 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/fleet/nodes/{id}/enrollment", s.requireAuth(s.prepareFleetEnrollment))
 	mux.HandleFunc("POST /api/v1/fleet/enroll", s.enrollFleetNode)
 	mux.HandleFunc("POST /api/v1/fleet/heartbeat", s.fleetHeartbeat)
+	s.registerNetworkRoutes(mux)
 }
 
 func fleetHealth(node state.FleetNode, now time.Time) string {
