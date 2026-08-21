@@ -6,7 +6,7 @@ Before=control-center.service
 [Service]
 Type=simple
 User=root
-Group=root
+Group=control-center
 Environment=CONTROL_CENTER_ALLOWED_USER=control-center
 Environment=CONTROL_CENTER_ALLOWED_SERVICES=control-center.service
 Environment=CONTROL_CENTER_PRIVILEGED_SOCKET=/run/control-center/privileged-worker.sock
