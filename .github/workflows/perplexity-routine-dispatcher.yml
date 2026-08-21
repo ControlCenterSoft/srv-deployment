@@ -1,0 +1,26 @@
+name: Perplexity Routine Queue Dispatcher
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  dispatch:
+    if: >-
+      ${{
+        startsWith(github.event.issue.title, '[Perplexity Routine]') &&
+        contains(github.event.issue.body || '', '<!-- cc-perplexity-routine:v1 -->') &&
+        (
+          github.event.issue.author_association == 'OWNER' ||
+          github.event.issue.author_association == 'MEMBER' ||
+          github.event.issue.author_association == 'COLLABORATOR'
+        )
+      }}
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/perplexity-routine.yml@1.1.x
+    with:
+      code_ref: 1.1.x
+    secrets: inherit
