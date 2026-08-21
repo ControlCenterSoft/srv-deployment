@@ -3,6 +3,7 @@ let currentUser = null;
 
 const pages = {
   overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],
+  fleet: ["Серверы", "Управляемые серверы", "Единый инвентарь серверов. Новые узлы создаются в состоянии ожидания безопасного enrollment."],
   market: ["Маркет", "Маркет", "Module lifecycle будет подключён после завершения foundation релиза."],
   rbac: ["RBAC", "RBAC", "Локальные пользователи и server-side роли admin/viewer."],
   system: ["Система", "Система", "Runtime diagnostics и безопасная эксплуатационная информация платформы."],
@@ -63,15 +64,64 @@ document.querySelector("#password-form").addEventListener("submit", async (event
   } catch (error) { document.querySelector("#password-error").textContent = error.message; }
 });
 
+async function loadFleet() {
+  const container = document.querySelector("#fleet-nodes");
+  const form = document.querySelector("#fleet-form");
+  container.textContent = "";
+  try {
+    const data = await api("/api/v1/fleet/nodes");
+    const summary = document.createElement("p");
+    summary.textContent = `Всего серверов: ${data.summary.total} · Ожидают enrollment: ${data.summary.pending_enrollment}`;
+    container.appendChild(summary);
+    const list = document.createElement("ul");
+    list.className = "compact-list";
+    for (const node of data.nodes) {
+      const li = document.createElement("li");
+      const scope = [node.group, node.environment].filter(Boolean).join(" · ");
+      li.textContent = `${node.name} · ${node.address} · ${node.status}${scope ? ` · ${scope}` : ""}`;
+      list.appendChild(li);
+    }
+    if (!data.nodes.length) {
+      const li = document.createElement("li"); li.textContent = "Серверы ещё не добавлены."; list.appendChild(li);
+    }
+    container.appendChild(list);
+    container.hidden = false;
+    form.hidden = currentUser?.role !== "admin";
+  } catch (error) {
+    container.textContent = error.message;
+    container.hidden = false;
+    form.hidden = true;
+  }
+}
+
+document.querySelector("#fleet-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const errorBox = document.querySelector("#fleet-error");
+  errorBox.textContent = "";
+  try {
+    await api("/api/v1/fleet/nodes", {method:"POST", body:JSON.stringify({
+      name: document.querySelector("#fleet-name").value,
+      address: document.querySelector("#fleet-address").value,
+      group: document.querySelector("#fleet-group").value,
+      environment: document.querySelector("#fleet-environment").value,
+    })});
+    event.target.reset();
+    await loadFleet();
+  } catch (error) { errorBox.textContent = error.message; }
+});
+
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", async () => {
     document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active")); button.classList.add("active");
     const [title, cardTitle, text] = pages[button.dataset.page];
     document.querySelector("#page-title").textContent = title; document.querySelector("#card-title").textContent = cardTitle; document.querySelector("#card-text").textContent = text;
+    const fleet = document.querySelector("#fleet-nodes"); fleet.hidden = true; fleet.textContent = "";
+    const fleetForm = document.querySelector("#fleet-form"); fleetForm.hidden = true;
     const users = document.querySelector("#rbac-users"); users.hidden = true; users.textContent = "";
     const systemDetails = document.querySelector("#system-details"); systemDetails.hidden = true; systemDetails.textContent = "";
     const operations = document.querySelector("#operations-list"); operations.hidden = true; operations.textContent = "";
     const exportLink = document.querySelector("#diagnostics-export"); exportLink.hidden = true;
+    if (button.dataset.page === "fleet") await loadFleet();
     if (button.dataset.page === "rbac" && currentUser?.role === "admin") {
       try {
         const data = await api("/api/v1/rbac/users");
@@ -95,7 +145,6 @@ document.querySelectorAll(".nav-item").forEach((button) => {
         }
       } catch (error) { systemDetails.textContent = error.message; systemDetails.hidden = false; }
     }
-
   });
 });
 
