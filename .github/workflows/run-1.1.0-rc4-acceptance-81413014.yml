@@ -1,0 +1,21 @@
+name: Run Control Center 1.1.0-rc.4 acceptance 8141
+
+on:
+  push:
+    branches:
+      - 'ops/run-1.1.0-rc.4-acceptance-81413014'
+  pull_request:
+    branches:
+      - '1.1.x'
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    if: github.event_name == 'push' || github.head_ref == 'ops/run-1.1.0-rc.4-acceptance-81413014'
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1.yml@81413014bc597b7c5e0d89caeb88b6a3dae27a3d
+    with:
+      candidate_sha: 81413014bc597b7c5e0d89caeb88b6a3dae27a3d
+      candidate_version: 1.1.0-rc.4
+    secrets: inherit
