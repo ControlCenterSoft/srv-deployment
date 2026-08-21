@@ -3,6 +3,7 @@ import json
 import unittest
 from contextlib import redirect_stderr
 from urllib.error import HTTPError
+from urllib.request import Request
 
 from scripts import ai_gateway
 
@@ -50,6 +51,49 @@ class AIGatewayTests(unittest.TestCase):
                 allowed_hosts={"api.example.com"},
                 timeout=10,
             )
+
+    def test_rejects_redirects_before_crossing_provider_trust_boundary(self):
+        request = Request(
+            "https://api.example.com/v1",
+            data=b"{}",
+            headers={"Authorization": "Bearer secret"},
+            method="POST",
+        )
+        handler = ai_gateway._RejectRedirectHandler()
+        with self.assertRaises(HTTPError) as raised:
+            handler.redirect_request(
+                request,
+                io.BytesIO(b""),
+                302,
+                "Found",
+                {},
+                "https://evil.example/collect",
+            )
+        self.assertEqual(raised.exception.code, 302)
+        self.assertNotIn("evil.example", str(raised.exception))
+
+    def test_provider_headers_are_not_redirectable(self):
+        captured = {}
+
+        def opener(request, timeout):
+            captured["headers"] = dict(request.headers)
+            captured["unredirected"] = dict(request.unredirected_hdrs)
+            return _Response(b'{"ok":true}')
+
+        result = ai_gateway.post_json(
+            "https://api.example.com/v1",
+            {"request": "value"},
+            {"Authorization": "Bearer secret", "X-Api-Key": "secret-key"},
+            provider="Example",
+            allowed_hosts={"api.example.com"},
+            timeout=10,
+            opener=opener,
+        )
+        self.assertEqual(result, {"ok": True})
+        self.assertNotIn("Authorization", captured["headers"])
+        self.assertNotIn("X-api-key", captured["headers"])
+        self.assertEqual(captured["unredirected"].get("Authorization"), "Bearer secret")
+        self.assertEqual(captured["unredirected"].get("X-api-key"), "secret-key")
 
     def test_returns_only_json_objects(self):
         payload = json.dumps({"ok": True}).encode()
