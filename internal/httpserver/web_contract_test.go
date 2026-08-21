@@ -1,6 +1,9 @@
 package httpserver
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -18,6 +21,24 @@ func TestWebStylesHonorHiddenAttribute(t *testing.T) {
 	css := readWebAsset(t, "web/styles.css")
 	if !strings.Contains(css, "[hidden] { display: none !important; }") {
 		t.Fatal("web styles must explicitly hide elements carrying the hidden attribute")
+	}
+}
+
+func TestAdminWebJavaScriptSyntax(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable")
+	}
+	for _, asset := range []string{"web/app.js", "web/fleet-health.js", "web/network.js"} {
+		name := filepath.Base(asset)
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte(readWebAsset(t, asset)), 0o600); err != nil {
+			t.Fatalf("write %s: %v", asset, err)
+		}
+		cmd := exec.Command(node, "--check", path)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("node --check %s failed: %v\n%s", asset, err, output)
+		}
 	}
 }
 
