@@ -13,13 +13,13 @@ class PerplexityRoutineTests(unittest.TestCase):
         self.assertIn("truncated", prompt)
         self.assertNotIn("x" * (perplexity_routine.MAX_TASK_CHARS + 1), prompt)
 
-    def test_detects_common_secret_shapes_without_echoing_them(self):
+    def test_detects_common_secret_shapes_without_committing_secret_like_literals(self):
         samples = (
-            "-----BEGIN PRIVATE KEY-----",
-            "github_pat_" + "a" * 24,
-            "ghp_" + "a" * 32,
-            "sk-" + "a" * 24,
-            "AKIA" + "A" * 16,
+            "-----BEGIN " + "PRIVATE KEY-----",
+            "github" + "_pat_" + "a" * 32,
+            "gh" + "p_" + "a" * 32,
+            "s" + "k-" + "a" * 24,
+            "AK" + "IA" + "A" * 16,
             "Bearer " + "a" * 24,
         )
         for sample in samples:
