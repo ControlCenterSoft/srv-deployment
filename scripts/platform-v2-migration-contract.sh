@@ -22,10 +22,6 @@ done
 bash -n "$UPDATER"
 bash -n "$MIGRATE"
 
-# The migration bootstrap is deliberately narrow: it may install only the
-# privileged-worker platform unit and only while the exact accepted 1.0.0
-# runtime is still the active release. It must not switch release pointers or
-# execute a candidate binary.
 require_literal "$MIGRATE" 'EXPECTED_CURRENT_VERSION="${CONTROL_CENTER_EXPECTED_MIGRATION_FROM:-1.0.0}"'
 require_literal "$MIGRATE" 'EXPECTED_CURRENT_COMMIT="${CONTROL_CENTER_EXPECTED_MIGRATION_COMMIT:-1b364ae88789696bf98537d21544de8a259d086d}"'
 require_literal "$MIGRATE" '[[ "$current_version" == "$EXPECTED_CURRENT_VERSION" ]]'
@@ -40,10 +36,9 @@ require_literal "$MIGRATE" 'systemctl is-enabled --quiet "$WORKER_SERVICE"'
 require_literal "$MIGRATE" 'migration completed; worker unit installed but intentionally not started before signed dual-runtime switch'
 require_literal "$MIGRATE" 'WORKER_ACTIVATED=false'
 
-# Embedded unit must retain the same security-critical boundary as the
-# canonical packaging unit. This catches drift even though the migration is
-# intentionally self-contained for hosts without a repository checkout.
 for literal in \
+  'User=root' \
+  'Group=control-center' \
   'ExecStart=/usr/local/lib/control-center/current/control-center-privileged-worker' \
   'NoNewPrivileges=yes' \
   'CapabilityBoundingSet=' \
