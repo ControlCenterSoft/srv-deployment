@@ -58,6 +58,25 @@ func TestPreviewResolverChangeDetectsNoOp(t *testing.T) {
 	}
 }
 
+func TestPreviewResolverChangeDetectsSemanticSearchDomainNoOp(t *testing.T) {
+	actual := ResolverState{
+		SourceKind:    "resolv_conf",
+		Nameservers:   []string{"192.0.2.53"},
+		SearchDomains: []string{"Corp.Example."},
+		Options:       []string{"edns0"},
+	}
+	plan, err := PreviewResolverChange(ResolverChangeRequest{
+		Nameservers:   []string{"192.0.2.53"},
+		SearchDomains: []string{"corp.example"},
+	}, actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.NoOp {
+		t.Fatalf("expected semantically equivalent DNS search domain to be a no-op: actual=%v desired=%v", plan.Actual.SearchDomains, plan.Desired.SearchDomains)
+	}
+}
+
 func TestPreviewResolverChangeRejectsUnsafeInputs(t *testing.T) {
 	actual := ResolverState{SourceKind: "resolv_conf", Nameservers: []string{"192.0.2.53"}}
 	cases := []ResolverChangeRequest{
