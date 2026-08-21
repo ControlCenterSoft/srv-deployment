@@ -77,6 +77,26 @@ cleanup_remote() {
 }
 trap cleanup_remote EXIT
 
+# A previous attempt may have switched the exact signed candidate successfully and
+# then lost CI connectivity or failed outside the updater. Resume only when the
+# complete operational identity is already exact. Version alone is insufficient:
+# the commit, dual-runtime worker state, socket boundary, health and readiness must
+# all match before package application is skipped. Any mismatch falls through to
+# the restricted signed updater, preserving fail-closed same-version drift handling.
+if ssh "${ssh_opts[@]}" "$remote" \
+  "systemctl is-active --quiet control-center-privileged-worker.service && \
+   systemctl is-enabled --quiet control-center-privileged-worker.service && \
+   test -S /run/control-center/privileged-worker.sock && \
+   test \"\$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)\" = 'root:control-center:660' && \
+   curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null && \
+   curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '\"ready\":true' && \
+   curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '\"version\":\"${CANDIDATE_VERSION}\"' && \
+   curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '\"commit\":\"${CANDIDATE_SHA}\"'"; then
+  echo "STAGING_EXACT_ACTIVE=PASSED version=${CANDIDATE_VERSION} sha=${CANDIDATE_SHA} dual_runtime=true"
+  echo "STAGING_ACCEPTANCE=PASSED version=${CANDIDATE_VERSION} sha=${CANDIDATE_SHA} dual_runtime=true"
+  exit 0
+fi
+
 ssh "${ssh_opts[@]}" "$remote" "install -d -m 0700 '$remote_dir'"
 scp "${scp_opts[@]}" "$PACKAGE" "$remote:$remote_dir/control-center-staging.tar.gz"
 
@@ -88,6 +108,7 @@ ssh "${ssh_opts[@]}" "$remote" \
    test \"\$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)\" = 'root:control-center:660' && \
    curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null && \
    curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '\"ready\":true' && \
-   curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '\"version\":\"${CANDIDATE_VERSION}\"'"
+   curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '\"version\":\"${CANDIDATE_VERSION}\"' && \
+   curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '\"commit\":\"${CANDIDATE_SHA}\"'"
 
 echo "STAGING_ACCEPTANCE=PASSED version=${CANDIDATE_VERSION} sha=${CANDIDATE_SHA} dual_runtime=true"
