@@ -3,7 +3,7 @@ let currentUser = null;
 
 const pages = {
   overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],
-  fleet: ["Серверы", "Управляемые серверы", "Единый инвентарь серверов с одноразовым безопасным enrollment."],
+  fleet: ["Серверы", "Управляемые серверы", "Инвентарь, безопасный enrollment и автоматический heartbeat Fleet Agent."],
   market: ["Маркет", "Маркет", "Module lifecycle будет подключён после завершения foundation релиза."],
   rbac: ["RBAC", "RBAC", "Локальные пользователи и server-side роли admin/viewer."],
   system: ["Система", "Система", "Runtime diagnostics, сетевые интерфейсы и безопасная эксплуатационная информация платформы."],
@@ -34,6 +34,8 @@ function showApp(session) {
   document.querySelector("#session-user").textContent = currentUser.username;
   document.querySelector("#session-role").textContent = currentUser.role;
   document.querySelector("#password-warning").hidden = !currentUser.must_change_password;
+  const rbacNavigation = document.querySelector('[data-page="rbac"]');
+  if (rbacNavigation) rbacNavigation.hidden = currentUser.role !== "admin";
 }
 
 async function restoreSession() {
@@ -70,9 +72,92 @@ function enrollmentStatusLabel(node) {
   return node.status;
 }
 
+function appendTextLine(container, label, value) {
+  const line = document.createElement("p");
+  const name = document.createElement("strong");
+  name.textContent = `${label}: `;
+  line.appendChild(name);
+  line.appendChild(document.createTextNode(String(value)));
+  container.appendChild(line);
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
+}
+
+function agentOriginAllowed() {
+  const url = new URL(window.location.origin);
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
+}
+
+function renderFleetCapabilities(container, capabilities) {
+  const panel = document.createElement("div");
+  panel.className = "setup-panel";
+  const heading = document.createElement("h3");
+  heading.textContent = "Fleet Agent";
+  panel.appendChild(heading);
+  const agent = capabilities.agent || {};
+  appendTextLine(panel, "Версия", agent.version || "—");
+  appendTextLine(panel, "Heartbeat", `${agent.heartbeat_interval_seconds || "—"} сек.`);
+  appendTextLine(panel, "Runtime user", agent.runtime_user || "—");
+  appendTextLine(panel, "Transport", agent.requires_https ? "HTTPS; HTTP только для loopback testing" : "по contract");
+  appendTextLine(panel, "Arbitrary shell", agent.arbitrary_shell === false ? "disabled" : "не заявлено");
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent = "После enrollment агент хранит отдельный credential на managed node и автоматически обновляет health/inventory.";
+  panel.appendChild(note);
+  container.appendChild(panel);
+}
+
+function renderFleetAgentSetup(node, setup) {
+  const box = document.createElement("div");
+  box.className = "agent-setup";
+  const heading = document.createElement("h4");
+  heading.textContent = `Установка Fleet Agent ${setup.version || ""}`.trim();
+  box.appendChild(heading);
+
+  if (!agentOriginAllowed()) {
+    const warning = document.createElement("p");
+    warning.className = "error";
+    warning.textContent = "Установка разрешена только из HTTPS Control Center; HTTP допустим только для loopback testing.";
+    box.appendChild(warning);
+    return box;
+  }
+
+  const installerPath = typeof setup.install_path === "string" ? setup.install_path : "/api/v1/fleet/agent/install.sh";
+  const installerURL = new URL(installerPath, window.location.origin);
+  if (installerURL.origin !== window.location.origin) {
+    const warning = document.createElement("p");
+    warning.className = "error";
+    warning.textContent = "Installer contract rejected: источник должен быть same-origin.";
+    box.appendChild(warning);
+    return box;
+  }
+
+  const link = document.createElement("a");
+  link.href = installerURL.href;
+  link.textContent = "Скачать установщик Fleet Agent";
+  box.appendChild(link);
+
+  const instruction = document.createElement("p");
+  instruction.textContent = "Скопируйте установщик на managed node и запустите команду:";
+  box.appendChild(instruction);
+
+  const command = document.createElement("code");
+  command.className = "command-block";
+  command.textContent = `sudo env CONTROL_CENTER_URL=${shellQuote(window.location.origin)} FLEET_NODE_ID=${shellQuote(node.id)} bash ./install-fleet-agent.sh`;
+  box.appendChild(command);
+
+  const tokenNote = document.createElement("p");
+  tokenNote.className = "muted";
+  tokenNote.textContent = "Установщик запросит одноразовый enrollment token интерактивно. Токен не включается в команду или URL.";
+  box.appendChild(tokenNote);
+  return box;
+}
+
 async function issueEnrollment(node, li) {
-  const previous = li.querySelector(".enrollment-secret");
-  if (previous) previous.remove();
+  li.querySelectorAll(".enrollment-secret, .agent-setup").forEach((element) => element.remove());
   try {
     const data = await api(`/api/v1/fleet/nodes/${encodeURIComponent(node.id)}/enrollment`, {method:"POST", body:"{}"});
     const box = document.createElement("div");
@@ -80,6 +165,7 @@ async function issueEnrollment(node, li) {
     const expires = data.enrollment.expires_at ? new Date(data.enrollment.expires_at).toLocaleString() : "через 15 минут";
     box.textContent = `Одноразовый enrollment token (показывается только сейчас, действует до ${expires}): ${data.enrollment.token}`;
     li.appendChild(box);
+    if (data.agent_setup) li.appendChild(renderFleetAgentSetup(node, data.agent_setup));
     node.status = "enrollment_ready";
     const button = li.querySelector("button");
     if (button) button.textContent = "Перевыпустить enrollment token";
@@ -93,10 +179,11 @@ async function loadFleet() {
   const form = document.querySelector("#fleet-form");
   container.textContent = "";
   try {
-    const data = await api("/api/v1/fleet/nodes");
+    const [data, capabilities] = await Promise.all([api("/api/v1/fleet/nodes"), api("/api/v1/fleet/capabilities")]);
     const summary = document.createElement("p");
-    summary.textContent = `Всего серверов: ${data.summary.total} · Enrolled: ${data.summary.enrolled} · Ожидают enrollment: ${data.summary.pending_enrollment}`;
+    summary.textContent = `Всего серверов: ${data.summary.total} · Enrolled: ${data.summary.enrolled} · Healthy: ${data.summary.healthy || 0} · Stale: ${data.summary.stale || 0} · Offline: ${data.summary.offline || 0} · Ожидают enrollment: ${data.summary.pending_enrollment}`;
     container.appendChild(summary);
+    renderFleetCapabilities(container, capabilities);
     const list = document.createElement("ul");
     list.className = "compact-list";
     for (const node of data.nodes) {
@@ -145,6 +232,87 @@ document.querySelector("#fleet-form").addEventListener("submit", async (event) =
   } catch (error) { errorBox.textContent = error.message; }
 });
 
+function userStatusLabel(user) {
+  return `${user.username} · ${user.role}${user.blocked ? " · blocked" : " · active"}`;
+}
+
+async function setUserBlocked(user, blocked) {
+  const action = blocked ? "заблокировать" : "разблокировать";
+  if (!window.confirm(`Подтвердите: ${action} пользователя ${user.username}?`)) return;
+  const errorBox = document.querySelector("#rbac-error");
+  errorBox.textContent = "";
+  try {
+    await api(`/api/v1/rbac/users/${encodeURIComponent(user.username)}/blocked`, {method:"POST", body:JSON.stringify({blocked})});
+    await loadRBAC();
+  } catch (error) { errorBox.textContent = error.message; }
+}
+
+function renderRBACUsers(users) {
+  const container = document.querySelector("#rbac-users");
+  container.textContent = "";
+  const heading = document.createElement("h3");
+  heading.textContent = "Локальные пользователи";
+  container.appendChild(heading);
+  const list = document.createElement("ul");
+  list.className = "compact-list rbac-list";
+  for (const user of users) {
+    const item = document.createElement("li");
+    const info = document.createElement("span");
+    info.textContent = userStatusLabel(user);
+    item.appendChild(info);
+    if (currentUser?.role === "admin" && user.username !== currentUser.username) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button inline-action";
+      button.textContent = user.blocked ? "Разблокировать" : "Заблокировать";
+      button.setAttribute("aria-label", `${button.textContent} пользователя ${user.username}`);
+      button.addEventListener("click", () => setUserBlocked(user, !user.blocked));
+      item.appendChild(button);
+    }
+    list.appendChild(item);
+  }
+  if (!users.length) {
+    const item = document.createElement("li");
+    item.textContent = "Пользователи не найдены.";
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+  container.hidden = false;
+}
+
+async function loadRBAC() {
+  const container = document.querySelector("#rbac-users");
+  const form = document.querySelector("#rbac-create-form");
+  const errorBox = document.querySelector("#rbac-error");
+  container.textContent = "";
+  errorBox.textContent = "";
+  try {
+    const data = await api("/api/v1/rbac/users");
+    renderRBACUsers(data.users);
+    form.hidden = currentUser?.role !== "admin";
+  } catch (error) {
+    container.textContent = error.message;
+    container.hidden = false;
+    form.hidden = true;
+  }
+}
+
+document.querySelector("#rbac-create-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const errorBox = document.querySelector("#rbac-error");
+  errorBox.textContent = "";
+  try {
+    await api("/api/v1/rbac/users", {method:"POST", body:JSON.stringify({
+      username: document.querySelector("#rbac-username").value,
+      password: document.querySelector("#rbac-password").value,
+      role: document.querySelector("#rbac-role").value,
+    })});
+    event.target.reset();
+    document.querySelector("#rbac-role").value = "viewer";
+    await loadRBAC();
+  } catch (error) { errorBox.textContent = error.message; }
+});
+
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", async () => {
     document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active")); button.classList.add("active");
@@ -153,18 +321,13 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     const fleet = document.querySelector("#fleet-nodes"); fleet.hidden = true; fleet.textContent = "";
     const fleetForm = document.querySelector("#fleet-form"); fleetForm.hidden = true;
     const users = document.querySelector("#rbac-users"); users.hidden = true; users.textContent = "";
+    const rbacForm = document.querySelector("#rbac-create-form"); rbacForm.hidden = true;
     const systemDetails = document.querySelector("#system-details"); systemDetails.hidden = true; systemDetails.textContent = "";
     const networkInterfaces = document.querySelector("#network-interfaces"); networkInterfaces.hidden = true; networkInterfaces.textContent = "";
     const operations = document.querySelector("#operations-list"); operations.hidden = true; operations.textContent = "";
     const exportLink = document.querySelector("#diagnostics-export"); exportLink.hidden = true;
     if (button.dataset.page === "fleet") await loadFleet();
-    if (button.dataset.page === "rbac" && currentUser?.role === "admin") {
-      try {
-        const data = await api("/api/v1/rbac/users");
-        users.innerHTML = `<h3>Локальные пользователи</h3><ul>${data.users.map((u) => `<li>${u.username} — ${u.role}${u.blocked ? " — blocked" : ""}</li>`).join("")}</ul>`;
-        users.hidden = false;
-      } catch (error) { users.textContent = error.message; users.hidden = false; }
-    }
+    if (button.dataset.page === "rbac" && currentUser?.role === "admin") await loadRBAC();
     if (button.dataset.page === "system") {
       try {
         const [summary, inventory] = await Promise.all([api("/api/v1/diagnostics/summary"), api("/api/v1/network/interfaces")]);
