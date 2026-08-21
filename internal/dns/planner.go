@@ -134,7 +134,15 @@ func normalizeSearchDomain(raw string) (string, error) {
 }
 
 func resolverDesiredEqual(a, b ResolverDesiredState) bool {
-	return stringSlicesEqual(a.Nameservers, b.Nameservers) && stringSlicesEqual(a.SearchDomains, b.SearchDomains) && stringSlicesEqual(a.Options, b.Options)
+	aSearch, err := normalizeSearchDomains(a.SearchDomains)
+	if err != nil {
+		return false
+	}
+	bSearch, err := normalizeSearchDomains(b.SearchDomains)
+	if err != nil {
+		return false
+	}
+	return stringSlicesEqual(a.Nameservers, b.Nameservers) && stringSlicesEqual(aSearch, bSearch) && stringSlicesEqual(a.Options, b.Options)
 }
 
 func stringSlicesEqual(a, b []string) bool {
