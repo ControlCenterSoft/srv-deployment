@@ -10,6 +10,8 @@ on:
       - 'cmd/release-tool/**'
       - 'internal/release/**'
       - 'packaging/systemd/**'
+      - 'scripts/update-acceptance.sh'
+      - 'scripts/update-v2-contract.sh'
       - '.github/workflows/installer-v2-acceptance.yml'
   workflow_dispatch:
 
@@ -28,7 +30,7 @@ jobs:
   clean-install-v2:
     name: Clean dual-runtime install and signed v2 update
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,10 +93,20 @@ jobs:
 
           cmp -s install/update-v2.sh /usr/local/sbin/control-center-update
           systemctl is-active --quiet control-center-privileged-worker.service
+          systemctl is-enabled --quiet control-center-privileged-worker.service
           systemctl is-active --quiet control-center.service
           test -S /run/control-center/privileged-worker.sock
           test "$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)" = 'root:control-center:660'
           curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq "\"version\":\"${BASE_VERSION}\""
+
+          # Exercise the full adversarial package-v2 lifecycle against the
+          # updater installed by the clean installer before the final target.
+          sudo env \
+            CONTROL_CENTER_UPDATE_PRIVATE_KEY="$RUNNER_TEMP/cc-v2/private.pem" \
+            CONTROL_CENTER_UPDATE_TEST_TARGET_VERSION=1.1.1-beta.1 \
+            CONTROL_CENTER_UPDATE_TEST_BROKEN_VERSION=1.1.1-beta.2 \
+            CONTROL_CENTER_UPDATE_TEST_DOWNGRADE_VERSION=1.1.0-beta.1 \
+            bash scripts/update-acceptance.sh
 
           sudo /usr/local/sbin/control-center-update \
             --package "$RUNNER_TEMP/cc-v2/target-v2.tar.gz" \
@@ -103,11 +115,14 @@ jobs:
           curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null
           curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"ready":true'
           curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq "\"version\":\"${TARGET_VERSION}\""
+          systemctl is-active --quiet control-center-privileged-worker.service
+          systemctl is-enabled --quiet control-center-privileged-worker.service
           test -S /run/control-center/privileged-worker.sock
           test "$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)" = 'root:control-center:660'
 
           entries="$(tar -tzf "$RUNNER_TEMP/cc-v2/target-v2.tar.gz")"
           expected=$'bootstrap-manifest.json\nbootstrap-manifest.sig\nmanifest.json\nmanifest.sig\ncontrol-center\ncontrol-center-privileged-worker'
           test "$entries" = "$expected"
+          printf 'SAFE_UPDATE_V2_ACCEPTANCE=PASSED\n'
           printf 'CLEAN_INSTALL_UPDATER_V2=PASSED\n'
           printf 'PACKAGE_V2_CONTRACT=PASSED\n'
