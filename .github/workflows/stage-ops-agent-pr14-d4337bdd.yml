@@ -1,0 +1,69 @@
+name: Stage Ops Agent PR14 d4337bdd
+
+on:
+  pull_request:
+    branches:
+      - '1.1.x'
+    paths:
+      - '.github/workflows/stage-ops-agent-pr14-d4337bdd.yml'
+      - 'scripts/stage-ops-agent-pr14.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  stage-agent:
+    if: github.head_ref == 'ops/stage-agent-pr14-d4337bdd'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+      STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+      STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
+      STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+      STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate staging preconditions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          bash -n scripts/stage-ops-agent-pr14.sh
+          for name in STAGING_HOST STAGING_USER STAGING_SSH_KEY STAGING_KNOWN_HOSTS; do
+            test -n "${!name}"
+          done
+      - name: Configure pinned SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/ops-agent-stage-ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$RUNNER_TEMP/ops-agent-stage-ssh/id_staging"
+          chmod 0600 "$RUNNER_TEMP/ops-agent-stage-ssh/id_staging"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/ops-agent-stage-ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/ops-agent-stage-ssh/known_hosts"
+      - name: Stage exact reviewed ops agent on dedicated test server
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          port="${STAGING_PORT:-22}"
+          remote_script="/tmp/control-center-stage-ops-agent-pr14-${GITHUB_RUN_ID}.sh"
+          ssh_opts=(
+            -i "$RUNNER_TEMP/ops-agent-stage-ssh/id_staging"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$RUNNER_TEMP/ops-agent-stage-ssh/known_hosts"
+            -o ConnectTimeout=15
+            -p "$port"
+          )
+          scp -P "$port" \
+            -i "$RUNNER_TEMP/ops-agent-stage-ssh/id_staging" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$RUNNER_TEMP/ops-agent-stage-ssh/known_hosts" \
+            scripts/stage-ops-agent-pr14.sh \
+            "$STAGING_USER@$STAGING_HOST:$remote_script"
+          ssh "${ssh_opts[@]}" "$STAGING_USER@$STAGING_HOST" \
+            "chmod 0700 '$remote_script' && sudo bash '$remote_script'; rc=\$?; rm -f '$remote_script'; exit \$rc"
