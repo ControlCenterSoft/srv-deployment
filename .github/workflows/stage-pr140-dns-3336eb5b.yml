@@ -1,0 +1,23 @@
+name: Stage PR140 DNS resolver 3336eb5b
+
+on:
+  push:
+    branches:
+      - 'ops/stage-pr140-dns-3336eb5b'
+  pull_request:
+    branches:
+      - '1.1.x'
+    paths:
+      - '.github/workflows/stage-pr140-dns-3336eb5b.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    if: github.event_name == 'push' || github.head_ref == 'ops/stage-pr140-dns-3336eb5b'
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1.yml@3336eb5b139b4d3ce12af4cc7e555f59f94bbbe8
+    with:
+      candidate_sha: 3336eb5b139b4d3ce12af4cc7e555f59f94bbbe8
+      candidate_version: 1.1.0-rc.5
+    secrets: inherit
