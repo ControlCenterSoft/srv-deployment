@@ -31,29 +31,30 @@
 
 PR `#161`, exact head `ca0d610aca75d3838c5d10eb841182529a95fc4d`:
 
-- Fast CI — PASS;
-- Contract & Regression QA — PASS;
-- Independent Security Review — PASS;
+- ранее подтверждены Fast CI, Contract & Regression QA и Independent Security Review на этом exact SHA;
 - `apply_supported=false`, privileged mutation не добавлена;
-- Ops/Test Server staging/runtime evidence для этого exact SHA пока не подтверждено.
+- Ops/Test Server staging/runtime evidence для этого exact SHA не подтверждено;
+- после движения `1.1.x` PR сейчас не mergeable относительно актуальной интеграционной ветки.
 
-До подтверждения требуемого staging/runtime evidence Integrator не объединяет этот user-facing infrastructure slice.
+До интеграции требуется синхронизация с текущим `1.1.x`; новый SHA инвалидирует прежние QA/Security evidence и требует полного свежего gate набора плюс staging/runtime evidence.
 
 ### Admin Web Audit
 
 PR `#141`, exact head `2303ab818388b5356f0c57eea6a08529540756ac`:
 
-- Fast CI — PASS;
-- Contract & Regression QA — PASS;
-- Frontend Quality — PASS;
-- Independent Security Review — PASS;
-- Ops/Test Server staging evidence на этом exact SHA пока не подтверждено.
+- ранее подтверждены Fast CI, Contract & Regression QA, Frontend Quality и Independent Security Review на этом exact SHA;
+- Ops/Test Server staging evidence на этом exact SHA не подтверждено;
+- после движения `1.1.x` PR сейчас не mergeable относительно актуальной интеграционной ветки.
 
-До staging на неизменившемся SHA PR не интегрируется.
+До интеграции требуется синхронизация, полный свежий exact-SHA gate набор и staging на неизменившемся новом SHA.
 
 ### Core A Fleet disconnect
 
-PR `#139`, exact head `e457678c3e3f14460cd4bb16516242ee21ac2fb4`, сейчас не mergeable относительно текущей `1.1.x`. Recovery claim требует полного `disconnect → fresh enrollment → fresh heartbeat` regression coverage из test-only PR `#143`. После синхронизации/интеграции тестов head изменится и потребует свежих CI/QA/Security evidence.
+PR `#139`, exact head `e457678c3e3f14460cd4bb16516242ee21ac2fb4`, не mergeable относительно текущей `1.1.x`. Recovery claim требует полного `disconnect → fresh enrollment → fresh heartbeat` regression coverage из test-only PR `#143`. После синхронизации/интеграции тестов head изменится и потребует свежих CI/QA/Security evidence.
+
+### Control Center Visual UI
+
+PR `#138`, exact head `a38e2668c80a8f307722638d3ccd495a601f08f8`, после движения `1.1.x` сейчас не mergeable. Перед Integrator merge требуется синхронизация и свежие применимые exact-SHA CI/QA/Frontend Quality/Security evidence.
 
 ### AI Gateway
 
@@ -77,12 +78,14 @@ PR `#150` и default-branch dispatcher `#151` остаются заблокир�
 ## Website / RUVDS
 
 - **Единственный канонический production runtime публичного сайта, Client Portal и Website Admin — `control-center.pro` на сервере RUVDS.**
+- Website `main` после gated удаления legacy Cloudflare control plane PR `#63`: exact HEAD `a6ea0029b0a4c4d4ef1692c2f0945f705cac11dc`.
+- PR `#63` прошёл exact-head repository CI, RuVDS runtime tests, Contract & Regression QA и Independent Security Review; merge commit `a6ea0029b0a4c4d4ef1692c2f0945f705cac11dc` удалил retired Cloudflare workflows/helper/control-plane metadata без production runtime mutation.
 - Cloudflare больше не является частью действующей website hosting/deployment architecture и не является release gate. Старые Cloudflare workflow/check failures — legacy/non-blocking evidence и не должны блокировать website PR/release.
 - Все будущие website deployment/promotion/runtime acceptance выполняются только через безопасный RUVDS path с preflight, recovery/rollback и последующей проверкой HTTPS/TLS, nginx/reverse proxy, `/api/health`, релевантных public/client/admin endpoints и exact deployed revision, когда она доступна.
-- Website UX/CRO PR `control-center-website#55`, exact head `29a3b44eb612048b96ddbe33d74ab522e84aff4b`: repository CI PASS, Contract & Regression QA PASS, Frontend Quality PASS. До merge/promotion требуется актуальное применимое RUVDS runtime/deployment evidence; Cloudflare status не учитывается.
+- Website UX/CRO PR `control-center-website#55`, exact head `29a3b44eb612048b96ddbe33d74ab522e84aff4b`: repository CI, Contract & Regression QA и Frontend Quality были PASS на этом SHA до последнего движения `main`; Independent Security Review и применимое RUVDS promotion/runtime evidence не подтверждены. Перед merge требуется повторная сверка с текущим `main` и свежий полный применимый gate набор на неизменившемся candidate SHA.
 - Website Admin contract foundation `control-center-website#59` интегрирован в website `main`; это docs/test-only contract boundary без privileged runtime route.
-- Client Portal `#61` — contract/evidence foundation; после движения `main` требует синхронизации перед дальнейшей интеграцией.
-- Website Visual/Layout `#54` имеет зелёные repository CI/QA/Frontend Quality на текущем head, но финальный runtime smoke относится к RUVDS gate.
+- Client Portal `#61` — contract/evidence foundation и сейчас не mergeable относительно актуального `main`; требуется синхронизация, а фактическая user-facing реализация ждёт server-authoritative auth/session/profile/license contract.
+- Website Visual/Layout `#54` имеет ранее собранные repository CI/QA/Frontend Quality evidence, но после движения `main` требует повторной exact-SHA сверки и применимых Security/RUVDS gates перед merge/promotion.
 
 ## Android
 
