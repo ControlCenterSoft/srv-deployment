@@ -3,6 +3,13 @@ name: Perplexity Routine Engineer
 on:
   issues:
     types: [opened, edited, reopened]
+  workflow_call:
+    inputs:
+      code_ref:
+        description: Ref containing the routine engineer implementation
+        required: false
+        type: string
+        default: 1.1.x
   workflow_dispatch:
     inputs:
       task:
@@ -48,6 +55,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.code_ref || github.sha }}
 
       - name: Check Perplexity configuration
         id: config
