@@ -157,6 +157,7 @@ jobs:
             --package "$work/good-v2.tar.gz" \
             --public-key "$work/update-public.pem"
           systemctl is-active --quiet control-center-privileged-worker.service
+          systemctl is-enabled --quiet control-center-privileged-worker.service
           test -S /run/control-center/privileged-worker.sock
           test "$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)" = 'root:control-center:660'
           curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null
