@@ -34,6 +34,7 @@ esac
 
 target_version="${CONTROL_CENTER_UPDATE_TEST_TARGET_VERSION:-1.1.1-beta.1}"
 target_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+same_version_drift_commit="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 broken_version="${CONTROL_CENTER_UPDATE_TEST_BROKEN_VERSION:-1.1.1-beta.2}"
 broken_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 downgrade_version="${CONTROL_CENTER_UPDATE_TEST_DOWNGRADE_VERSION:-1.1.0-rc.1}"
@@ -135,14 +136,27 @@ after_success="$(readlink "$CURRENT_LINK")"
 [[ -L "$PREVIOUS_LINK" && "$(readlink "$PREVIOUS_LINK")" == "$initial_target" ]] \
   || fail "previous link was not set to the original release"
 
-# 2. Same-version package must be rejected without changing either runtime.
-if "$UPDATER" --package "$work/target.tar.gz" >"$work/same.out" 2>"$work/same.err"; then
-  fail "same-version update was accepted"
-fi
-[[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "same-version rejection changed current link"
+# 2. Replaying the exact same signed runtime must be an idempotent no-op.
+"$UPDATER" --package "$work/target.tar.gz" >"$work/same.out" 2>"$work/same.err" \
+  || fail "exact same-version replay was rejected"
+grep -Fq 'already active with exact signed identity; no update required' "$work/same.out" \
+  || fail "exact replay no-op was not recorded"
+[[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "exact replay changed current link"
+[[ "$(readlink "$PREVIOUS_LINK")" == "$initial_target" ]] || fail "exact replay changed previous link"
 assert_runtime "$target_version"
 
-# 3. Unverified main bytes must be rejected by the trusted schema-1 bridge
+# 3. Reusing the same version with a different signed commit identity must fail closed.
+build_main "$work/same-version-drift" "$target_version" "$same_version_drift_commit"
+package_v2 "$work/same-version-drift" "$work/worker-good" "$target_version" "$same_version_drift_commit" "$work/same-version-drift.tar.gz"
+if "$UPDATER" --package "$work/same-version-drift.tar.gz" >"$work/same-version-drift.out" 2>"$work/same-version-drift.err"; then
+  fail "same-version identity drift was accepted"
+fi
+grep -Fq 'reuses the current version with a different commit identity' "$work/same-version-drift.err" \
+  || fail "same-version identity drift rejection reason was not recorded"
+[[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "same-version drift rejection changed current link"
+assert_runtime "$target_version"
+
+# 4. Unverified main bytes must be rejected by the trusted schema-1 bridge
 # before candidate code is ever executed.
 mkdir "$work/artifact-tamper"
 tar -xzf "$work/target.tar.gz" -C "$work/artifact-tamper"
@@ -160,7 +174,7 @@ fi
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "artifact rejection changed current link"
 assert_runtime "$target_version"
 
-# 4. A seventh/unexpected package entry must fail before extraction/activation.
+# 5. A seventh/unexpected package entry must fail before extraction/activation.
 mkdir "$work/extra-entry"
 tar -xzf "$work/target.tar.gz" -C "$work/extra-entry"
 printf 'unexpected\n' > "$work/extra-entry/unexpected.txt"
@@ -174,7 +188,7 @@ grep -Fq 'unexpected entries' "$work/extra-entry.err" || fail "unexpected-entry 
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "unexpected-entry rejection changed current link"
 assert_runtime "$target_version"
 
-# 5. Correctly signed package-v2 for the wrong architecture must fail closed.
+# 6. Correctly signed package-v2 for the wrong architecture must fail closed.
 wrong_arch=arm64
 [[ "$goarch" == arm64 ]] && wrong_arch=amd64
 package_v2 "$work/target" "$work/worker-good" "$target_version" "$target_commit" "$work/wrong-arch.tar.gz" "$wrong_arch"
@@ -184,17 +198,17 @@ fi
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "platform rejection changed current link"
 assert_runtime "$target_version"
 
-# 6. A correctly signed downgrade package-v2 must be rejected by version policy.
+# 7. A correctly signed downgrade package-v2 must be rejected by version policy.
 build_main "$work/downgrade" "$downgrade_version" "$downgrade_commit"
 package_v2 "$work/downgrade" "$work/worker-good" "$downgrade_version" "$downgrade_commit" "$work/downgrade.tar.gz"
 if "$UPDATER" --package "$work/downgrade.tar.gz" >"$work/downgrade.out" 2>"$work/downgrade.err"; then
   fail "downgrade was accepted without --allow-downgrade"
 fi
-grep -Fq 'not newer than current' "$work/downgrade.err" || fail "downgrade rejection reason was not recorded"
+grep -Fq 'is older than current' "$work/downgrade.err" || fail "downgrade rejection reason was not recorded"
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "downgrade rejection changed current link"
 assert_runtime "$target_version"
 
-# 7. The main candidate may pass the schema-1 trust bridge, but a tampered
+# 8. The main candidate may pass the schema-1 trust bridge, but a tampered
 # schema-2 manifest must still fail its Ed25519 signature before any switch.
 mkdir "$work/tampered-manifest"
 tar -xzf "$work/target.tar.gz" -C "$work/tampered-manifest"
@@ -212,7 +226,7 @@ fi
 [[ "$(readlink "$CURRENT_LINK")" == "$after_success" ]] || fail "signature rejection changed current link"
 assert_runtime "$target_version"
 
-# 8. A correctly signed pair with a deliberately non-starting worker must
+# 9. A correctly signed pair with a deliberately non-starting worker must
 # switch neither runtime permanently. Rollback must restore current pointer,
 # main readiness, worker enable/active state and socket boundary.
 build_main "$work/broken-main" "$broken_version" "$broken_commit"
@@ -227,4 +241,4 @@ fi
 assert_runtime "$target_version"
 grep -Fq 'rolling back' "$work/broken-worker.out" || fail "worker rollback was not recorded in updater output"
 
-printf 'Safe update-v2 acceptance passed: signed dual-runtime update, same-version rejection, trusted-bridge artifact rejection without execution, package whitelist rejection, platform rejection, downgrade rejection, schema-2 signature rejection, and worker-first automatic rollback.\n'
+printf 'Safe update-v2 acceptance passed: signed dual-runtime update, exact idempotent replay, same-version identity-drift rejection, trusted-bridge artifact rejection without execution, package whitelist rejection, platform rejection, downgrade rejection, schema-2 signature rejection, and worker-first automatic rollback.\n'
