@@ -34,6 +34,8 @@ function showApp(session) {
   document.querySelector("#session-user").textContent = currentUser.username;
   document.querySelector("#session-role").textContent = currentUser.role;
   document.querySelector("#password-warning").hidden = !currentUser.must_change_password;
+  const rbacNavigation = document.querySelector('[data-page="rbac"]');
+  if (rbacNavigation) rbacNavigation.hidden = currentUser.role !== "admin";
 }
 
 async function restoreSession() {
@@ -145,6 +147,87 @@ document.querySelector("#fleet-form").addEventListener("submit", async (event) =
   } catch (error) { errorBox.textContent = error.message; }
 });
 
+function userStatusLabel(user) {
+  return `${user.username} · ${user.role}${user.blocked ? " · blocked" : " · active"}`;
+}
+
+async function setUserBlocked(user, blocked) {
+  const action = blocked ? "заблокировать" : "разблокировать";
+  if (!window.confirm(`Подтвердите: ${action} пользователя ${user.username}?`)) return;
+  const errorBox = document.querySelector("#rbac-error");
+  errorBox.textContent = "";
+  try {
+    await api(`/api/v1/rbac/users/${encodeURIComponent(user.username)}/blocked`, {method:"POST", body:JSON.stringify({blocked})});
+    await loadRBAC();
+  } catch (error) { errorBox.textContent = error.message; }
+}
+
+function renderRBACUsers(users) {
+  const container = document.querySelector("#rbac-users");
+  container.textContent = "";
+  const heading = document.createElement("h3");
+  heading.textContent = "Локальные пользователи";
+  container.appendChild(heading);
+  const list = document.createElement("ul");
+  list.className = "compact-list rbac-list";
+  for (const user of users) {
+    const item = document.createElement("li");
+    const info = document.createElement("span");
+    info.textContent = userStatusLabel(user);
+    item.appendChild(info);
+    if (currentUser?.role === "admin" && user.username !== currentUser.username) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button inline-action";
+      button.textContent = user.blocked ? "Разблокировать" : "Заблокировать";
+      button.setAttribute("aria-label", `${button.textContent} пользователя ${user.username}`);
+      button.addEventListener("click", () => setUserBlocked(user, !user.blocked));
+      item.appendChild(button);
+    }
+    list.appendChild(item);
+  }
+  if (!users.length) {
+    const item = document.createElement("li");
+    item.textContent = "Пользователи не найдены.";
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+  container.hidden = false;
+}
+
+async function loadRBAC() {
+  const container = document.querySelector("#rbac-users");
+  const form = document.querySelector("#rbac-create-form");
+  const errorBox = document.querySelector("#rbac-error");
+  container.textContent = "";
+  errorBox.textContent = "";
+  try {
+    const data = await api("/api/v1/rbac/users");
+    renderRBACUsers(data.users);
+    form.hidden = currentUser?.role !== "admin";
+  } catch (error) {
+    container.textContent = error.message;
+    container.hidden = false;
+    form.hidden = true;
+  }
+}
+
+document.querySelector("#rbac-create-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const errorBox = document.querySelector("#rbac-error");
+  errorBox.textContent = "";
+  try {
+    await api("/api/v1/rbac/users", {method:"POST", body:JSON.stringify({
+      username: document.querySelector("#rbac-username").value,
+      password: document.querySelector("#rbac-password").value,
+      role: document.querySelector("#rbac-role").value,
+    })});
+    event.target.reset();
+    document.querySelector("#rbac-role").value = "viewer";
+    await loadRBAC();
+  } catch (error) { errorBox.textContent = error.message; }
+});
+
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", async () => {
     document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active")); button.classList.add("active");
@@ -153,18 +236,13 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     const fleet = document.querySelector("#fleet-nodes"); fleet.hidden = true; fleet.textContent = "";
     const fleetForm = document.querySelector("#fleet-form"); fleetForm.hidden = true;
     const users = document.querySelector("#rbac-users"); users.hidden = true; users.textContent = "";
+    const rbacForm = document.querySelector("#rbac-create-form"); rbacForm.hidden = true;
     const systemDetails = document.querySelector("#system-details"); systemDetails.hidden = true; systemDetails.textContent = "";
     const networkInterfaces = document.querySelector("#network-interfaces"); networkInterfaces.hidden = true; networkInterfaces.textContent = "";
     const operations = document.querySelector("#operations-list"); operations.hidden = true; operations.textContent = "";
     const exportLink = document.querySelector("#diagnostics-export"); exportLink.hidden = true;
     if (button.dataset.page === "fleet") await loadFleet();
-    if (button.dataset.page === "rbac" && currentUser?.role === "admin") {
-      try {
-        const data = await api("/api/v1/rbac/users");
-        users.innerHTML = `<h3>Локальные пользователи</h3><ul>${data.users.map((u) => `<li>${u.username} — ${u.role}${u.blocked ? " — blocked" : ""}</li>`).join("")}</ul>`;
-        users.hidden = false;
-      } catch (error) { users.textContent = error.message; users.hidden = false; }
-    }
+    if (button.dataset.page === "rbac" && currentUser?.role === "admin") await loadRBAC();
     if (button.dataset.page === "system") {
       try {
         const [summary, inventory] = await Promise.all([api("/api/v1/diagnostics/summary"), api("/api/v1/network/interfaces")]);

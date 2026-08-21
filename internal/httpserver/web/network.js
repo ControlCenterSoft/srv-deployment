@@ -36,7 +36,7 @@ function installNetworkPage() {
     document.querySelector('#page-title').textContent = 'Сеть';
     document.querySelector('#card-title').textContent = 'Сетевые интерфейсы';
     document.querySelector('#card-text').textContent = 'Actual state и безопасный предпросмотр изменения IP с заранее сформированным rollback-состоянием.';
-    for (const selector of ['#fleet-nodes','#fleet-form','#rbac-users','#system-details','#network-interfaces','#operations-list','#diagnostics-export']) {
+    for (const selector of ['#fleet-nodes','#fleet-form','#rbac-users','#rbac-create-form','#system-details','#network-interfaces','#operations-list','#diagnostics-export']) {
       const element = document.querySelector(selector); if (element) element.hidden = true;
     }
     await loadNetworkPreviewPage();
