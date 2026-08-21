@@ -31,9 +31,12 @@
 PR `#161`, exact head `ca0d610aca75d3838c5d10eb841182529a95fc4d`:
 
 - Fast CI — PASS;
-- Contract & Regression QA — PASS на exact SHA;
-- apply остаётся отключённым;
-- свежий Independent Security Review на этом exact SHA ещё требуется до Integrator merge.
+- Contract & Regression QA — PASS;
+- Independent Security Review — PASS;
+- `apply_supported=false`, privileged mutation не добавлена;
+- Ops/Test Server staging/runtime evidence для этого exact SHA пока не подтверждено.
+
+До подтверждения требуемого staging/runtime evidence Integrator не объединяет этот user-facing infrastructure slice.
 
 ### Admin Web Audit
 
@@ -55,7 +58,14 @@ PR `#139`, exact head `e457678c3e3f14460cd4bb16516242ee21ac2fb4`, сейчас �
 
 Security-fix PR `#145` с fail-closed redirect handling, non-redirectable provider credentials и default-path regression coverage интегрирован в parent transport PR `#142`.
 
-Новый exact head `#142`: `5653b0c1c33494e24ced7b4ffc882bd45ebe813d`. После изменения SHA прежние parent evidence недействительны; новый Fast CI/ops bootstrap запущены и должны завершиться, затем требуются свежие exact-SHA QA/Security gates.
+Новый exact head `#142`: `5653b0c1c33494e24ced7b4ffc882bd45ebe813d`:
+
+- Fast CI — PASS;
+- Test ops agent bootstrap — PASS;
+- Independent Security Review — PASS;
+- свежий Contract & Regression QA на этом exact SHA пока отсутствует.
+
+До свежего exact-SHA QA parent `#142` не интегрируется в `1.1.x`.
 
 PR `#150` и default-branch dispatcher `#151` остаются заблокированы. `#150` всё ещё закреплён на старом vulnerable transport path; `#151` дополнительно нарушает действующий frozen-main post-release allowlist. Оба требуют перепривязки к принятому hardened transport и свежих QA/Security gates; текущие heads не merge.
 
