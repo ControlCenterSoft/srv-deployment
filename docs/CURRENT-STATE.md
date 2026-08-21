@@ -33,28 +33,28 @@ PR `#161`, exact head `ca0d610aca75d3838c5d10eb841182529a95fc4d`:
 
 - ранее подтверждены Fast CI, Contract & Regression QA и Independent Security Review на этом exact SHA;
 - `apply_supported=false`, privileged mutation не добавлена;
-- Ops/Test Server staging/runtime evidence для этого exact SHA не подтверждено;
-- после движения `1.1.x` PR сейчас не mergeable относительно актуальной интеграционной ветки.
+- GitHub сейчас сообщает `mergeable=true` относительно текущей `1.1.x`;
+- Ops/Test Server staging/runtime evidence для этого exact SHA не подтверждено.
 
-До интеграции требуется синхронизация с текущим `1.1.x`; новый SHA инвалидирует прежние QA/Security evidence и требует полного свежего gate набора плюс staging/runtime evidence.
+До интеграции требуется неизменившийся exact head с полным применимым gate набором и требуемым test-server staging/runtime evidence.
 
 ### Admin Web Audit
 
 PR `#141`, exact head `2303ab818388b5356f0c57eea6a08529540756ac`:
 
 - ранее подтверждены Fast CI, Contract & Regression QA, Frontend Quality и Independent Security Review на этом exact SHA;
-- Ops/Test Server staging evidence на этом exact SHA не подтверждено;
-- после движения `1.1.x` PR сейчас не mergeable относительно актуальной интеграционной ветки.
+- GitHub сейчас сообщает `mergeable=true` относительно текущей `1.1.x`;
+- Ops/Test Server staging evidence на этом exact SHA не подтверждено.
 
-До интеграции требуется синхронизация, полный свежий exact-SHA gate набор и staging на неизменившемся новом SHA.
+До интеграции требуется неизменившийся exact head и успешный test-server staging/runtime acceptance.
 
 ### Core A Fleet disconnect
 
-PR `#139`, exact head `e457678c3e3f14460cd4bb16516242ee21ac2fb4`, не mergeable относительно текущей `1.1.x`. Recovery claim требует полного `disconnect → fresh enrollment → fresh heartbeat` regression coverage из test-only PR `#143`. После синхронизации/интеграции тестов head изменится и потребует свежих CI/QA/Security evidence.
+PR `#139`, exact head `e457678c3e3f14460cd4bb16516242ee21ac2fb4`, сейчас `mergeable=true`. Recovery claim всё ещё требует полного `disconnect → fresh enrollment → fresh heartbeat` regression coverage из test-only PR `#143`. После интеграции этих тестов head изменится и прежние exact-SHA QA/Security evidence станут устаревшими; потребуется свежий полный gate набор и test-server staging.
 
 ### Control Center Visual UI
 
-PR `#138`, exact head `a38e2668c80a8f307722638d3ccd495a601f08f8`, после движения `1.1.x` сейчас не mergeable. Перед Integrator merge требуется синхронизация и свежие применимые exact-SHA CI/QA/Frontend Quality/Security evidence.
+PR `#138`, exact head `a38e2668c80a8f307722638d3ccd495a601f08f8`, сейчас `mergeable=true`. Перед Integrator merge требуется полный применимый exact-SHA CI/QA/Frontend Quality/Security набор и требуемое test-server runtime/staging evidence на неизменившемся candidate SHA.
 
 ### AI Gateway
 
@@ -62,7 +62,7 @@ PR `#142`, exact reviewed head `5653b0c1c33494e24ced7b4ffc882bd45ebe813d`, пр�
 
 Это внутренний advisory AI transport/security slice без product/Core/Admin Web/runtime/release authority; отдельный обычный product release из-за него не создаётся, потому что он не является завершённой User-facing improvement.
 
-Security-fix PR `#164` для Perplexity routine queue имеет Contract & Regression QA PASS и Security Review PASS на exact head `883b69d532e1bf6640011a07455e1c04c00def2e`, но собственного PR-triggered deterministic CI run на этом exact head нет. Поэтому Integrator не объединяет `#164` в parent `#150` до появления применимого exact-SHA CI evidence.
+Security-fix PR `#164` для Perplexity routine queue имеет Contract & Regression QA PASS и Security Review PASS на exact head `883b69d532e1bf6640011a07455e1c04c00def2e`, но собственного PR-triggered deterministic CI run на этом exact head по-прежнему нет. Поэтому Integrator не объединяет `#164` в parent `#150` до появления применимого exact-SHA CI evidence.
 
 PR `#150` и default-branch dispatcher `#151` остаются заблокированы. После будущей интеграции hardened transport в `#150` его head изменится и потребует свежих exact-SHA CI/QA/Security evidence; `#151` должен быть перепривязан к новому immutable parent SHA и повторно пройти требуемые gates. Frozen-main allowlist остаётся обязательным ограничением.
 
@@ -70,22 +70,27 @@ PR `#150` и default-branch dispatcher `#151` остаются заблокир�
 
 - На последнем подтверждённом typed preflight test server сообщал Control Center **1.1.0-rc.6** / `302eb6da97324d719849e7ae752fc10bdc557d9a`.
 - Установленный Ops Agent/Broker: **1.1.8**.
-- Diagnostics PR `ControlCenterSoft/control-center-server-diagnostics#14`, exact head `d4337bdd5f3111431ee06858fcd0d3338655751c`: CI PASS, Contract & Regression QA PASS, Independent Security Review PASS.
-- Технический staging PR `srv-deployment#158` остановился до mutation: SSH transport был доступен, но staging account не имеет general non-interactive sudo. Сервер не изменялся.
+- Diagnostics PR `ControlCenterSoft/control-center-server-diagnostics#14`, exact head `d4337bdd5f3111431ee06858fcd0d3338655751c`: CI PASS, Contract & Regression QA PASS, Independent Security Review PASS; agent candidate version **1.1.10**.
+- P0 staging enabler PR `srv-deployment#170`, exact head `6e15da1863701c497b39bbcf401829dd89024132`, сейчас `mergeable=true`; Fast CI и `Test ops agent bootstrap` успешны.
+- На exact head `#170` независимый Security Review дал **BLOCKED**: обнаружены downgrade/replay и race risks в passwordless restricted updater path. Минимальный hardening подготовлен в stacked PR `#171` (`8f2755bcc80806675dd7fd9daee01d6916cf6d60`).
+- На том же exact head `#170` Contract & Regression QA дал **FAIL**: builder не доказывает `source_commit + source_path ↔ authoritative Git blob` до подписания. Failing regression evidence зафиксирован в `#174`; fail-closed provenance fix подготовлен в stacked PR `#175` (`a2ac42ad55d1fa5e82b5e2f31b734cb11d30b958`) поверх `#171`.
+- `#171` и `#175` нельзя продвигать в parent только на основании их наличия: после их интеграции parent head изменится и потребует свежих exact-SHA CI, Contract & Regression QA и Security Review до любой test-server mutation.
+- Ни `#170`, ни diagnostics agent `#14` этим циклом на test server не устанавливались; general passwordless sudo не запрашивается и не разрешается.
 
-До успешного безопасного staging diagnostics PR `#14` не считается подтверждённо установленным на test server.
+До успешного исправления `#170`, свежих exact-SHA QA/Security gates и безопасного staging diagnostics PR `#14` не считается подтверждённо установленным на test server.
 
 ## Website / RUVDS
 
 - **Единственный канонический production runtime публичного сайта, Client Portal и Website Admin — `control-center.pro` на сервере RUVDS.**
-- Website `main` после gated удаления legacy Cloudflare control plane PR `#63`: exact HEAD `a6ea0029b0a4c4d4ef1692c2f0945f705cac11dc`.
-- PR `#63` прошёл exact-head repository CI, RuVDS runtime tests, Contract & Regression QA и Independent Security Review; merge commit `a6ea0029b0a4c4d4ef1692c2f0945f705cac11dc` удалил retired Cloudflare workflows/helper/control-plane metadata без production runtime mutation.
+- Website `main` после gated merge RuVDS production-target gate PR `#66`: exact HEAD `450bfbac5ac83121b9d559393f86608bf535803f`.
+- PR `#66`, exact reviewed head `0ff2c78caf984bbba9f63bbb49a0e879fe605b2d`, прошёл repository site CI, RuVDS runtime CI, exact production-target validation и final Security/Release Review без blocking findings. Он закрывает manifest→post-push-CI timing race и не добавляет CI deployment credentials.
+- Production manifest после merge `#66` **не изменён** и по-прежнему одобряет exact website SHA `455e77cd6bd06af6d2259ce32e0c1d8a12d76b54`; следовательно сам merge `#66` не является website promotion и не должен перезапускать production runtime.
 - Cloudflare больше не является частью действующей website hosting/deployment architecture и не является release gate. Старые Cloudflare workflow/check failures — legacy/non-blocking evidence и не должны блокировать website PR/release.
-- Все будущие website deployment/promotion/runtime acceptance выполняются только через безопасный RUVDS path с preflight, recovery/rollback и последующей проверкой HTTPS/TLS, nginx/reverse proxy, `/api/health`, релевантных public/client/admin endpoints и exact deployed revision, когда она доступна.
-- Website UX/CRO PR `control-center-website#55`, exact head `29a3b44eb612048b96ddbe33d74ab522e84aff4b`: repository CI, Contract & Regression QA и Frontend Quality были PASS на этом SHA до последнего движения `main`; Independent Security Review и применимое RUVDS promotion/runtime evidence не подтверждены. Перед merge требуется повторная сверка с текущим `main` и свежий полный применимый gate набор на неизменившемся candidate SHA.
+- Все будущие website deployment/promotion/runtime acceptance выполняются только через безопасный RUVDS path с exact approved target, successful exact-main production-target gate, preflight, recovery/rollback и последующей проверкой HTTPS/TLS, nginx/reverse proxy, `/api/health`, релевантных public/client/admin endpoints и exact deployed revision, когда она доступна.
+- Website UX/CRO PR `control-center-website#55`, exact head `29a3b44eb612048b96ddbe33d74ab522e84aff4b`, сейчас `mergeable=true`; завершённой Independent Security Review и применимого RUVDS promotion/runtime evidence на этом exact candidate пока нет, поэтому merge/promotion заблокирован.
 - Website Admin contract foundation `control-center-website#59` интегрирован в website `main`; это docs/test-only contract boundary без privileged runtime route.
-- Client Portal `#61` — contract/evidence foundation и сейчас не mergeable относительно актуального `main`; требуется синхронизация, а фактическая user-facing реализация ждёт server-authoritative auth/session/profile/license contract.
-- Website Visual/Layout `#54` имеет ранее собранные repository CI/QA/Frontend Quality evidence, но после движения `main` требует повторной exact-SHA сверки и применимых Security/RUVDS gates перед merge/promotion.
+- Client Portal `#61`, exact head `495de3ea6089611c4b6ff788f63f5706d013c728`, сейчас `mergeable=false` относительно актуального `main`; фактическая user-facing реализация также ждёт server-authoritative auth/session/profile/license contract.
+- Website Visual/Layout `#54`, exact head `dd5ddb09a3ae015c3d704d5b80fa1856e8d28d63`, сейчас `mergeable=true`, но требует полного актуального применимого QA/Frontend Quality/Security/RUVDS gate набора перед merge/promotion.
 
 ## Android
 
