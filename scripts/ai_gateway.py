@@ -15,7 +15,7 @@ from collections.abc import Callable, Collection, Mapping
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 TRANSIENT_HTTP_CODES = frozenset({408, 429, 500, 502, 503, 504})
 DEFAULT_MAX_RESPONSE_BYTES = 2_000_000
@@ -30,6 +30,26 @@ class ProviderTransportError(RuntimeError):
 
 class ProviderResponseError(ValueError):
     """A provider returned an invalid or unsafe response envelope."""
+
+
+class _RejectRedirectHandler(HTTPRedirectHandler):
+    """Fail closed on redirects so provider data and credentials never cross trust boundaries."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(
+            req.full_url,
+            code,
+            "provider redirects are not allowed",
+            headers,
+            fp,
+        )
+
+
+_NO_REDIRECT_OPENER = build_opener(_RejectRedirectHandler())
+
+
+def _open_no_redirect(request: Request, timeout: int):
+    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
 
 
 def _validate_endpoint(endpoint: str, allowed_hosts: Collection[str]) -> str:
@@ -91,15 +111,17 @@ def post_json(
     timeout: int,
     max_attempts: int = 4,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
-    opener: Callable[..., Any] = urlopen,
+    opener: Callable[..., Any] = _open_no_redirect,
     sleeper: Callable[[float], None] = time.sleep,
     jitter: Callable[[float, float], float] = random.uniform,
 ) -> dict[str, Any]:
     """POST one bounded JSON request with allowlisted HTTPS transport and transient retries.
 
-    Provider response bodies are never copied into error messages. This prevents untrusted
-    upstream error payloads from leaking submitted diffs, prompts, credentials, or other
-    sensitive material into CI logs.
+    Provider redirects are rejected. Provider-supplied headers are added as unredirected
+    headers as defense in depth, so credentials are never copied to a redirected request if
+    redirect behavior is changed later. Provider response bodies are never copied into error
+    messages, preventing untrusted upstream payloads from leaking submitted diffs, prompts,
+    credentials, or other sensitive material into CI logs.
     """
 
     provider_name = str(provider).strip() or "Provider"
@@ -112,9 +134,11 @@ def post_json(
         request = Request(
             safe_endpoint,
             data=encoded,
-            headers={**dict(headers), "Content-Type": "application/json"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
+        for name, value in dict(headers).items():
+            request.add_unredirected_header(name, value)
         try:
             with opener(request, timeout=timeout) as response:
                 raw = response.read(max_response_bytes + 1)
