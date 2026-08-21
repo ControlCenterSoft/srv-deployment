@@ -11,6 +11,16 @@ EXPECTED_PRODUCT_COMMIT=""
 BUILD_ONLY=""
 SIGNING_KEY_FILE=""
 
+# This staging slice is intentionally fail-closed to the independently gated
+# diagnostics candidate. A valid staging signing key authorizes deployment, but
+# it must not be able to mint a false source_commit/source_blob provenance claim
+# from caller-controlled metadata. Advancing the agent therefore requires an
+# explicit reviewed update of this immutable provenance tuple.
+APPROVED_SOURCE_REPO="ControlCenterSoft/control-center-server-diagnostics"
+APPROVED_SOURCE_PATH="agent/ccops_agent_v3.py"
+APPROVED_SOURCE_COMMIT="d4337bdd5f3111431ee06858fcd0d3338655751c"
+APPROVED_SOURCE_BLOB="412ec9e08432e34d82c64813af079a4177a6ac1e"
+
 usage() {
   echo "Usage: $0 --agent-file FILE --source-commit SHA --source-blob BLOB --agent-version VERSION --expected-product-version VERSION --expected-product-commit SHA [--signing-key FILE] [--build-only OUTPUT]" >&2
 }
@@ -33,6 +43,8 @@ done
 [[ "$AGENT_VERSION" =~ ^1\.1\.[0-9]+$ ]] || { echo "agent version invalid" >&2; exit 2; }
 [[ "$EXPECTED_PRODUCT_VERSION" =~ ^1\.1\.0-rc\.[0-9]+$ ]] || { echo "expected product version invalid" >&2; exit 2; }
 [[ "$EXPECTED_PRODUCT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "expected product commit invalid" >&2; exit 2; }
+[[ "$SOURCE_COMMIT" == "$APPROVED_SOURCE_COMMIT" ]] || { echo "source commit is not approved for staging" >&2; exit 2; }
+[[ "$SOURCE_BLOB" == "$APPROVED_SOURCE_BLOB" ]] || { echo "source commit/blob provenance mismatch" >&2; exit 2; }
 for bin in awk install mktemp openssl python3 sha256sum tar; do command -v "$bin" >/dev/null || { echo "missing $bin" >&2; exit 2; }; done
 
 work="$(mktemp -d /tmp/control-center-ops-agent-package.XXXXXX)"
@@ -57,15 +69,15 @@ for node in tree.body:
 if version != expected_version:
     raise SystemExit("agent version mismatch")
 PY
-python3 - "$work/manifest.json" "$SOURCE_COMMIT" "$SOURCE_BLOB" "$AGENT_VERSION" "$artifact_sha" "$EXPECTED_PRODUCT_VERSION" "$EXPECTED_PRODUCT_COMMIT" <<'PY'
+python3 - "$work/manifest.json" "$APPROVED_SOURCE_REPO" "$SOURCE_COMMIT" "$APPROVED_SOURCE_PATH" "$SOURCE_BLOB" "$AGENT_VERSION" "$artifact_sha" "$EXPECTED_PRODUCT_VERSION" "$EXPECTED_PRODUCT_COMMIT" <<'PY'
 import json, pathlib, sys
-path, commit, blob, version, digest, product_version, product_commit = sys.argv[1:]
+path, repo, commit, source_path, blob, version, digest, product_version, product_commit = sys.argv[1:]
 payload = {
     "schema": 1,
     "component": "control-center-ops-agent",
-    "source_repo": "ControlCenterSoft/control-center-server-diagnostics",
+    "source_repo": repo,
     "source_commit": commit,
-    "source_path": "agent/ccops_agent_v3.py",
+    "source_path": source_path,
     "source_blob": blob,
     "agent_version": version,
     "artifact_sha256": digest,
