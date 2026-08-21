@@ -66,12 +66,19 @@ func (s *Server) dnsResolverPreview(w http.ResponseWriter, r *http.Request, sess
 		writeError(w, http.StatusBadRequest, "dns_validation_failed", err.Error(), operationID(r))
 		return
 	}
+	sourceFingerprint := dnsmodel.ResolverStateFingerprint(actual)
+	if sourceFingerprint == "" {
+		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preview", "host", "failed", "dns_preflight_unavailable")
+		writeError(w, http.StatusServiceUnavailable, "dns_preflight_unavailable", "DNS resolver preflight fingerprint is unavailable", operationID(r))
+		return
+	}
 	s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preview", "host", "success", "")
 	writeJSON(w, http.StatusOK, envelope{
-		"plan":     plan,
-		"desired":  plan.Desired,
-		"actual":   plan.Actual,
-		"rollback": plan.Rollback,
+		"plan":               plan,
+		"source_fingerprint": sourceFingerprint,
+		"desired":            plan.Desired,
+		"actual":             plan.Actual,
+		"rollback":           plan.Rollback,
 		"management": envelope{
 			"preview_supported":   true,
 			"preflight_supported": true,
@@ -92,7 +99,7 @@ func (s *Server) dnsResolverPreflight(w http.ResponseWriter, r *http.Request, se
 		writeError(w, http.StatusForbidden, "csrf_rejected", "CSRF or origin validation failed", operationID(r))
 		return
 	}
-	var in dnsmodel.ResolverChangeRequest
+	var in dnsmodel.ResolverPreflightRequest
 	if err := decodeJSON(r, &in); err != nil {
 		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preflight", "host", "failed", "invalid_request")
 		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON request", operationID(r))
