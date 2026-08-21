@@ -35,7 +35,6 @@ func PreviewAddressChange(req AddressChangeRequest, interfaces []Interface) (Add
 	if err != nil {
 		return AddressChangePlan{}, errors.New("cidr must be a valid IPv4 or IPv6 prefix")
 	}
-	prefix = prefix.Masked()
 	addr := prefix.Addr()
 	if addr.IsUnspecified() || addr.IsMulticast() {
 		return AddressChangePlan{}, errors.New("unspecified or multicast addresses cannot be assigned")
