@@ -64,8 +64,6 @@ done
 chmod 0644 "$stage/bootstrap-manifest.json" "$stage/bootstrap-manifest.sig" "$stage/manifest.json" "$stage/manifest.sig"
 chmod 0755 "$stage/control-center" "$stage/control-center-privileged-worker"
 
-# Trust bridge for direct upgrades from accepted 1.0.0: the currently trusted
-# runtime authenticates the candidate main binary with immutable schema 1.
 bootstrap_field() {
   "$CURRENT_BIN" verify-release \
     --manifest "$stage/bootstrap-manifest.json" \
@@ -77,9 +75,6 @@ bootstrap_field() {
 bootstrap_version="$(bootstrap_field version)" || die "schema-1 bootstrap verification failed"
 bootstrap_commit="$(bootstrap_field commit)" || die "schema-1 bootstrap verification failed"
 
-# Only the already-authenticated candidate is allowed to verify schema 2. This
-# extends the accepted trust chain to the privileged worker without asking the
-# frozen 1.0.0 binary to understand a new manifest schema.
 verify_v2_field() {
   "$stage/control-center" verify-release-v2 \
     --manifest "$stage/manifest.json" \
@@ -139,16 +134,41 @@ unit_active "$SERVICE" && main_was_active=1 || true
 
 restore_unit_policy() {
   local unit="$1" enabled="$2" active="$3"
-  if (( enabled )); then systemctl enable "$unit" >/dev/null 2>&1 || true; else systemctl disable "$unit" >/dev/null 2>&1 || true; fi
-  if (( active )); then systemctl restart "$unit" >/dev/null 2>&1 || true; else systemctl stop "$unit" >/dev/null 2>&1 || true; fi
+  if (( enabled )); then
+    systemctl enable "$unit" >/dev/null
+  else
+    systemctl disable "$unit" >/dev/null
+  fi
+  if (( active )); then
+    systemctl restart "$unit" >/dev/null
+  else
+    systemctl stop "$unit" >/dev/null
+  fi
+}
+rollback_main_ready() {
+  local readiness_body version_body
+  systemctl is-active --quiet "$SERVICE" || return 1
+  curl -fsS --max-time 2 "${BASE_URL}/api/v1/health" >/dev/null 2>&1 || return 1
+  readiness_body="$(curl -fsS --max-time 2 "${BASE_URL}/api/v1/readiness" 2>/dev/null || true)"
+  version_body="$(curl -fsS --max-time 2 "${BASE_URL}/api/v1/version" 2>/dev/null || true)"
+  grep -Fq '"ready":true' <<<"$readiness_body" && grep -Fq "\"version\":\"$current_version\"" <<<"$version_body"
 }
 rollback() {
-  local reason="$1"
+  local reason="$1" rollback_ok=0 worker_restore_failed=0 main_restore_failed=0
   log "$reason; rolling back to $old_target"
   atomic_link "$old_target" "$CURRENT_LINK"
   systemctl reset-failed "$WORKER_SERVICE" "$SERVICE" >/dev/null 2>&1 || true
-  restore_unit_policy "$WORKER_SERVICE" "$worker_was_enabled" "$worker_was_active"
-  restore_unit_policy "$SERVICE" "$main_was_enabled" "$main_was_active"
+  restore_unit_policy "$WORKER_SERVICE" "$worker_was_enabled" "$worker_was_active" || worker_restore_failed=1
+  restore_unit_policy "$SERVICE" "$main_was_enabled" "$main_was_active" || main_restore_failed=1
+  if (( main_was_active )); then
+    for _ in {1..40}; do
+      if rollback_main_ready; then rollback_ok=1; break; fi
+      sleep 0.25
+    done
+    (( rollback_ok )) || die "rollback failed to restore previous runtime readiness"
+  fi
+  (( main_restore_failed == 0 )) || die "rollback failed to restore main service policy"
+  (( worker_restore_failed == 0 )) || die "rollback failed to restore privileged worker policy"
   die "update rolled back after failed dual-runtime acceptance"
 }
 
@@ -173,6 +193,9 @@ main_ready() {
 log "switching dual runtime $current_version -> $target_version ($release_id)"
 atomic_link "$release_rel" "$CURRENT_LINK"
 systemctl reset-failed "$WORKER_SERVICE" "$SERVICE" >/dev/null 2>&1 || true
+if ! systemctl enable "$WORKER_SERVICE" >/dev/null; then
+  rollback "privileged worker enable failed"
+fi
 if ! systemctl restart "$WORKER_SERVICE"; then
   rollback "privileged worker restart failed"
 fi

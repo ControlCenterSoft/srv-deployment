@@ -70,9 +70,22 @@ func run() error {
 		return err
 	}
 	defer os.Remove(socketPath)
-	if err := os.Chown(socketPath, 0, gid); err != nil {
+
+	info, err := os.Stat(socketPath)
+	if err != nil {
 		listener.Close()
-		return fmt.Errorf("set socket ownership: %w", err)
+		return fmt.Errorf("stat socket ownership: %w", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		listener.Close()
+		return fmt.Errorf("inspect socket ownership")
+	}
+	if stat.Uid != 0 || int(stat.Gid) != gid {
+		if err := os.Chown(socketPath, 0, gid); err != nil {
+			listener.Close()
+			return fmt.Errorf("set socket ownership: %w", err)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
