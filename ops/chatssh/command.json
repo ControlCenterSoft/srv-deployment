@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "enabled": true,
-  "id": "diagnose-platform-v2-prepare-20260821-0540Z",
-  "script_sha": "c5d0df8fb89d7f4c68543a60e9ef3975f44ea12c",
-  "script_path": "ops/chatssh/jobs/diagnose-platform-v2-prepare.sh",
-  "sha256": "6edb6263653f8f670126ca4cd2ff70ac70b2f9808c35f8f87a3672e3c1c612b0",
-  "timeout_seconds": 120
+  "id": "publish-platform-v2-diagnostic-20260821-0543Z",
+  "script_sha": "9f92b242e9928ec49cdc85b3cef851d995432fb2",
+  "script_path": "ops/chatssh/jobs/run-platform-v2-diagnostic-publisher.sh",
+  "sha256": "2810053c481e8515278e9073879d1d0c69f0245a8965697de6cd83be63dc0d02",
+  "timeout_seconds": 180
 }
