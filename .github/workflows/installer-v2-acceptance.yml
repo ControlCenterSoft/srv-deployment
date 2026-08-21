@@ -1,0 +1,113 @@
+name: Control Center 1.1.x Installer v2 Acceptance
+
+on:
+  pull_request:
+    branches: ['1.1.x']
+    paths:
+      - 'install/**'
+      - 'cmd/control-center/**'
+      - 'cmd/control-center-privileged-worker/**'
+      - 'cmd/release-tool/**'
+      - 'internal/release/**'
+      - 'packaging/systemd/**'
+      - '.github/workflows/installer-v2-acceptance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-center-installer-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+  GO_VERSION: '1.23.2'
+
+jobs:
+  clean-install-v2:
+    name: Clean dual-runtime install and signed v2 update
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build clean-install candidate and signed v2 target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(go env GOVERSION)" = "go${GO_VERSION}"
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          BUILT_AT="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
+          BASE_VERSION="1.1.0-beta.${GITHUB_RUN_NUMBER}"
+          TARGET_VERSION="1.1.1-beta.${GITHUB_RUN_NUMBER}"
+          mkdir -p dist "$RUNNER_TEMP/cc-v2"
+          openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/cc-v2/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/cc-v2/private.pem" -pubout -out "$RUNNER_TEMP/cc-v2/public.pem"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${BASE_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o dist/control-center-linux-amd64 ./cmd/control-center
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false -ldflags "-s -w" \
+            -o dist/control-center-privileged-worker-linux-amd64 ./cmd/control-center-privileged-worker
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${TARGET_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o "$RUNNER_TEMP/cc-v2/control-center-target" ./cmd/control-center
+          cp dist/control-center-privileged-worker-linux-amd64 "$RUNNER_TEMP/cc-v2/control-center-worker-target"
+
+          go run ./cmd/release-tool package-v2 \
+            --binary "$RUNNER_TEMP/cc-v2/control-center-target" \
+            --worker "$RUNNER_TEMP/cc-v2/control-center-worker-target" \
+            --version "$TARGET_VERSION" \
+            --channel beta \
+            --commit "$CANDIDATE_SHA" \
+            --arch amd64 \
+            --private-key "$RUNNER_TEMP/cc-v2/private.pem" \
+            --built-at "$BUILT_AT" \
+            --output "$RUNNER_TEMP/cc-v2/target-v2.tar.gz"
+
+          printf 'BASE_VERSION=%s\nTARGET_VERSION=%s\n' "$BASE_VERSION" "$TARGET_VERSION" >> "$GITHUB_ENV"
+      - name: Clean install and updater-v2 acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cleanup() { sudo bash install/uninstall.sh >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          sudo env \
+            CONTROL_CENTER_BINARY="$GITHUB_WORKSPACE/dist/control-center-linux-amd64" \
+            CONTROL_CENTER_PRIVILEGED_WORKER_BINARY="$GITHUB_WORKSPACE/dist/control-center-privileged-worker-linux-amd64" \
+            CONTROL_CENTER_UPDATE_PUBLIC_KEY="$RUNNER_TEMP/cc-v2/public.pem" \
+            bash install/install.sh
+
+          cmp -s install/update-v2.sh /usr/local/sbin/control-center-update
+          systemctl is-active --quiet control-center-privileged-worker.service
+          systemctl is-active --quiet control-center.service
+          test -S /run/control-center/privileged-worker.sock
+          test "$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)" = 'root:control-center:660'
+          curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq "\"version\":\"${BASE_VERSION}\""
+
+          sudo /usr/local/sbin/control-center-update \
+            --package "$RUNNER_TEMP/cc-v2/target-v2.tar.gz" \
+            --public-key "$RUNNER_TEMP/cc-v2/public.pem"
+
+          curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null
+          curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"ready":true'
+          curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq "\"version\":\"${TARGET_VERSION}\""
+          test -S /run/control-center/privileged-worker.sock
+          test "$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)" = 'root:control-center:660'
+
+          entries="$(tar -tzf "$RUNNER_TEMP/cc-v2/target-v2.tar.gz")"
+          expected=$'bootstrap-manifest.json\nbootstrap-manifest.sig\nmanifest.json\nmanifest.sig\ncontrol-center\ncontrol-center-privileged-worker'
+          test "$entries" = "$expected"
+          printf 'CLEAN_INSTALL_UPDATER_V2=PASSED\n'
+          printf 'PACKAGE_V2_CONTRACT=PASSED\n'
