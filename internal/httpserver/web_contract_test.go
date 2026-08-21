@@ -98,3 +98,33 @@ func TestAdminWebKeyboardFocusContract(t *testing.T) {
 		t.Fatal("interactive controls must expose a visible keyboard focus state")
 	}
 }
+
+func TestAdminWebFleetAccessibilityAndTabletContract(t *testing.T) {
+	index := readWebAsset(t, "web/index.html")
+	css := readWebAsset(t, "web/styles.css")
+
+	for _, required := range []string{
+		`id="fleet-form" class="workflow-form"`,
+		`<label for="fleet-name">`,
+		`<label for="fleet-address">`,
+		`<label for="fleet-group">`,
+		`<label for="fleet-environment">`,
+		`id="fleet-nodes" role="status" aria-live="polite"`,
+		`id="health" class="status" role="status" aria-live="polite"`,
+	} {
+		if !strings.Contains(index, required) {
+			t.Fatalf("Fleet/Admin Web accessibility contract is missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		`@media (max-width: 960px) and (min-width: 721px)`,
+		`.shell { grid-template-columns: 210px minmax(0, 1fr); }`,
+		`.compact-list li { min-width: 0; overflow-wrap: anywhere; }`,
+		`.content { padding: 28px 24px; }`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("tablet/long-content quality contract is missing %q", required)
+		}
+	}
+}

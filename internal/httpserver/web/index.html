@@ -38,7 +38,7 @@
     <main class="content">
       <header>
         <div><span class="eyebrow">Control Center</span><h1 id="page-title">Обзор</h1></div>
-        <span id="health" class="status">Проверка…</span>
+        <span id="health" class="status" role="status" aria-live="polite">Проверка…</span>
       </header>
       <section id="password-warning" class="warning" hidden>
         <strong>Требуется смена начального пароля.</strong>
@@ -57,17 +57,21 @@
           <div><dt>Commit</dt><dd id="commit">—</dd></div>
           <div><dt>Readiness</dt><dd id="readiness">—</dd></div>
         </dl>
-        <div id="fleet-nodes" hidden></div>
-        <form id="fleet-form" hidden>
+        <div id="fleet-nodes" role="status" aria-live="polite" hidden></div>
+        <form id="fleet-form" class="workflow-form" hidden>
           <h3>Добавить сервер</h3>
-          <input id="fleet-name" placeholder="Имя, например srv-01" required>
-          <input id="fleet-address" placeholder="IP или DNS-имя" required>
-          <input id="fleet-group" placeholder="Группа (необязательно)">
-          <input id="fleet-environment" placeholder="Окружение (необязательно)">
+          <label for="fleet-name">Имя сервера</label>
+          <input id="fleet-name" name="name" autocomplete="off" placeholder="Например, srv-01" required>
+          <label for="fleet-address">IP или DNS-имя</label>
+          <input id="fleet-address" name="address" autocomplete="off" placeholder="192.0.2.10 или srv-01.example" required>
+          <label for="fleet-group">Группа</label>
+          <input id="fleet-group" name="group" autocomplete="off" placeholder="Необязательно">
+          <label for="fleet-environment">Окружение</label>
+          <input id="fleet-environment" name="environment" autocomplete="off" placeholder="Необязательно">
           <button class="primary" type="submit">Добавить</button>
           <p id="fleet-error" class="error" role="alert"></p>
         </form>
-        <div id="rbac-users" hidden></div>
+        <div id="rbac-users" role="status" aria-live="polite" hidden></div>
         <form id="rbac-create-form" class="workflow-form" hidden>
           <h3>Создать пользователя</h3>
           <label for="rbac-username">Логин</label>
@@ -82,9 +86,9 @@
           <button class="primary" type="submit">Создать</button>
           <p id="rbac-error" class="error" role="alert"></p>
         </form>
-        <div id="system-details" hidden></div>
-        <div id="network-interfaces" hidden></div>
-        <div id="operations-list" hidden></div>
+        <div id="system-details" role="status" aria-live="polite" hidden></div>
+        <div id="network-interfaces" role="status" aria-live="polite" hidden></div>
+        <div id="operations-list" role="status" aria-live="polite" hidden></div>
         <a id="diagnostics-export" class="primary export-link" href="/api/v1/diagnostics/export" hidden>Экспорт диагностики</a>
       </section>
       <p class="note">Fleet: enrollment, authenticated heartbeat, basic inventory and health freshness for managed servers.</p>
