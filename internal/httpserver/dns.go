@@ -37,6 +37,7 @@ func (s *Server) dnsResolverInventory(w http.ResponseWriter, r *http.Request, se
 
 func (s *Server) dnsResolverPreview(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
 	if u.Role != state.RoleAdmin {
+		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preview", "host", "denied", "permission_denied")
 		writeError(w, http.StatusForbidden, "permission_denied", "Permission denied", operationID(r))
 		return
 	}
