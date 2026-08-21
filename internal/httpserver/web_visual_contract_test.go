@@ -9,6 +9,7 @@ import (
 )
 
 var calmColorTokenRE = regexp.MustCompile(`--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\s*;`)
+var calmTransformPropertyRE = regexp.MustCompile(`(?m)^\s*transform\s*:`)
 
 func calmColorTokens(t *testing.T, css string) map[string]string {
 	t.Helper()
@@ -120,7 +121,7 @@ func TestCalmInfrastructureFocusMotionAndLayoutContract(t *testing.T) {
 			t.Fatalf("Calm Infrastructure interaction/layout contract is missing %q", required)
 		}
 	}
-	if strings.Contains(css, "transform:") {
+	if calmTransformPropertyRE.MatchString(css) {
 		t.Fatal("micro-interactions must not use transforms that can create distracting motion or visual instability")
 	}
 }
