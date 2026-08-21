@@ -131,6 +131,43 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("source blob mismatch", proc.stderr)
 
+    def test_deployer_rejects_unbound_source_commit_blob_pair(self):
+        """A signed package must prove that source_blob belongs to source_commit/source_path.
+
+        The authoritative diagnostics PR14 fixture is commit d4337... at
+        agent/ccops_agent_v3.py blob 412ec9....  A caller-derived blob for different
+        source content must not be accepted merely because it is internally
+        self-consistent and carries the same claimed source commit.
+        """
+        authoritative_commit = "d4337bdd5f3111431ee06858fcd0d3338655751c"
+        authoritative_blob = "412ec9e08432e34d82c64813af079a4177a6ac1e"
+        with tempfile.TemporaryDirectory() as td_raw:
+            td = pathlib.Path(td_raw)
+            agent = td / "ccops_agent_v3.py"
+            agent.write_text('AGENT_VERSION = "1.1.10"\n', encoding="utf-8")
+            raw = agent.read_bytes()
+            caller_blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+            self.assertNotEqual(caller_blob, authoritative_blob)
+            key = td / "key.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = subprocess.run([
+                "bash", str(STAGE),
+                "--agent-file", str(agent),
+                "--source-commit", authoritative_commit,
+                "--source-blob", caller_blob,
+                "--agent-version", "1.1.10",
+                "--expected-product-version", "1.1.0-rc.6",
+                "--expected-product-commit", "302eb6da97324d719849e7ae752fc10bdc557d9a",
+                "--signing-key", str(key),
+                "--build-only", str(td / "package.tar.gz"),
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertNotEqual(
+                proc.returncode,
+                0,
+                "release blocker: builder signed content whose caller-supplied blob is not the blob at the claimed source commit/path",
+            )
+
     def test_remote_staging_has_read_only_preflight_before_upload(self):
         text = STAGE.read_text(encoding="utf-8")
         preflight = text.index("# Read-only preflight before package upload or sudo mutation.")
