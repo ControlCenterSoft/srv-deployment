@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 DIAG_REPO="ControlCenterSoft/control-center-server-diagnostics"
-DIAG_COMMIT="1db11c0874b4fab5319a12f623c0da92c5a991fd"
+DIAG_COMMIT="3ea5c4124d4eda8f048c1a6e8bd40f2f5e2f5d57"
 TOKEN_FILE="/etc/control-center-diagnostics-agent/github-token"
 CONFIG_FILE="/etc/control-center-diagnostics-agent/agent.conf"
 AGENT_STATE_BRANCH="agent-state"
@@ -49,17 +49,18 @@ if not token:
 
 files = {
     "agent/ccops_agent_v2.py": ("agent/ccops_agent_v2.py", "8ee6a3001016e1f127cb6050b77a80eee186823c"),
-    "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "4e63be0651ce5030c6c21b9a02194f710d9e7cd1"),
+    "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "219622f0750794eda9beea7a94f4c2f153e9dbcf"),
     "agent/ccops_broker.py": ("agent/ccops_broker.py", "de14cd6b0686d7fdd09fc76adbdc40db2cb17085"),
-    "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "318f7f165d99eb0349745120e680b91017b5d06c"),
-    "install/install-ops-v3.sh": ("install/install-ops-v3.sh", "6d80aa9855d61f00d75a7963897174bbef3fd868"),
+    "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "15903ccc2c94aa5ba96ec076732ce38c347ab680"),
+    "agent/platform_v2_prepare.py": ("agent/platform_v2_prepare.py", "1646959a5d3cf9e0869c38386aee45ec98d739e8"),
+    "install/install-ops-v3.sh": ("install/install-ops-v3.sh", "6d7020ddd02793ad64bd1fe8bc459d3668f70d52"),
 }
 
 owner, name = repo.split("/", 1)
 headers = {
     "Accept": "application/vnd.github+json",
     "Authorization": f"Bearer {token}",
-    "User-Agent": "control-center-ops-bootstrap/1.1.5",
+    "User-Agent": "control-center-ops-bootstrap/1.1.6",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
@@ -87,13 +88,18 @@ for source, (destination, expected_blob) in files.items():
 del token
 PY
 
-chmod 0755 "$WORK/agent/ccops_agent_v3.py" "$WORK/agent/ccops_socket_broker.py" "$WORK/install/install-ops-v3.sh"
+chmod 0755 \
+  "$WORK/agent/ccops_agent_v3.py" \
+  "$WORK/agent/ccops_socket_broker.py" \
+  "$WORK/agent/platform_v2_prepare.py" \
+  "$WORK/install/install-ops-v3.sh"
 chmod 0644 "$WORK/agent/ccops_agent_v2.py" "$WORK/agent/ccops_broker.py"
 python3 -m py_compile \
   "$WORK/agent/ccops_agent_v2.py" \
   "$WORK/agent/ccops_agent_v3.py" \
   "$WORK/agent/ccops_broker.py" \
-  "$WORK/agent/ccops_socket_broker.py"
+  "$WORK/agent/ccops_socket_broker.py" \
+  "$WORK/agent/platform_v2_prepare.py"
 bash -n "$WORK/install/install-ops-v3.sh"
 bash "$WORK/install/install-ops-v3.sh"
 
@@ -103,12 +109,18 @@ systemctl is-active --quiet control-center-ops-agent.timer \
   || fail "ops timer is not active after installation"
 systemctl is-active --quiet control-center-ops-broker.service \
   || fail "Unix root broker is not active after installation"
+systemctl cat control-center-platform-v2-prepare.service >/dev/null \
+  || fail "platform-v2 preparation oneshot is not registered"
 [[ -S /run/control-center-ops/broker.sock ]] \
   || fail "Unix root broker socket is missing"
 [[ "$(systemctl show control-center-ops-agent.service -p NoNewPrivileges --value)" == yes ]] \
   || fail "ops agent NoNewPrivileges hardening is not active"
+[[ "$(systemctl show control-center-platform-v2-prepare.service -p NoNewPrivileges --value)" == yes ]] \
+  || fail "platform prepare NoNewPrivileges hardening is not active"
+[[ "$(systemctl show control-center-platform-v2-prepare.service -p CapabilityBoundingSet --value)" == "" ]] \
+  || fail "platform prepare capability bounding set is not empty"
 systemctl start control-center-ops-agent.service \
-  || fail "ops agent first post-install run failed"
+  || fail "ops agent first run failed"
 
 registration_path="state/${server_id}/ops-registration.json"
 registration_url="https://api.github.com/repos/${DIAG_REPO}/contents/${registration_path}?ref=${AGENT_STATE_BRANCH}"
@@ -120,7 +132,7 @@ token=pathlib.Path(token_file).read_text(encoding='utf-8').strip()
 req=urllib.request.Request(url, headers={
     'Accept':'application/vnd.github+json',
     'Authorization':f'Bearer {token}',
-    'User-Agent':'control-center-ops-bootstrap/1.1.5',
+    'User-Agent':'control-center-ops-bootstrap/1.1.6',
     'X-GitHub-Api-Version':'2022-11-28',
 })
 with urllib.request.urlopen(req, timeout=20) as response:
@@ -128,19 +140,21 @@ with urllib.request.urlopen(req, timeout=20) as response:
 payload=json.loads(base64.b64decode(wrapper['content']).decode('utf-8'))
 assert payload.get('schema') == 1
 assert payload.get('server_id') == server_id
-assert payload.get('agent_version') == '1.1.4'
+assert payload.get('agent_version') == '1.1.6'
 assert payload.get('arbitrary_shell') is False
 assert payload.get('privilege_boundary') == 'unix-so-peercred-root-broker'
 assert payload.get('broker_transport') == 'unix'
 assert payload.get('sudo_required') is False
+assert 'platform.prepare-v2' in payload.get('capabilities', [])
 PY
 
 printf 'CONTROL_CENTER_OPS_BOOTSTRAP=PASSED\n'
 printf 'DIAGNOSTICS_SOURCE_COMMIT=%s\n' "$DIAG_COMMIT"
-printf 'REMOTE_AGENT_RELEASE=1.1.5\n'
-printf 'OPS_AGENT_VERSION=1.1.4\n'
+printf 'REMOTE_AGENT_RELEASE=1.1.6\n'
+printf 'OPS_AGENT_VERSION=1.1.6\n'
 printf 'BROKER_CORE_VERSION=1.1.5\n'
-printf 'BROKER_TRANSPORT_VERSION=1.1.4\n'
+printf 'BROKER_TRANSPORT_VERSION=1.1.6\n'
+printf 'PLATFORM_PREPARE_V2=typed-oneshot\n'
 printf 'TOKEN_REUSED=existing-diagnostics-token\n'
 printf 'ROOT_BOUNDARY=unix-so-peercred-root-broker\n'
 printf 'SUDO_REQUIRED=false\n'
