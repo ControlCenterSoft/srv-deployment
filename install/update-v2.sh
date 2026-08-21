@@ -41,7 +41,6 @@ unit_active() { systemctl is-active --quiet "$1"; }
 [[ -n "$PACKAGE" && -f "$PACKAGE" ]] || die "release package is required"
 [[ -f "$PUBLIC_KEY" ]] || die "trusted update public key not found: $PUBLIC_KEY"
 [[ -x "$CURRENT_BIN" ]] || die "trusted current runtime not found: $CURRENT_BIN"
-[[ -x "$CURRENT_WORKER" && ! -L "$CURRENT_WORKER" ]] || die "trusted current privileged worker not found: $CURRENT_WORKER"
 [[ -L "$CURRENT_LINK" ]] || die "current release link is missing"
 command -v tar >/dev/null || die "tar is required"
 command -v systemctl >/dev/null || die "systemd is required"
@@ -103,6 +102,7 @@ comparison="$("$CURRENT_BIN" compare-version --current "$current_version" --targ
 if (( comparison == 0 && ! ALLOW_DOWNGRADE )); then
   [[ "$current_version" == "$target_version" ]] || die "equal version comparison returned inconsistent identity"
   [[ "$current_commit" == "$target_commit" ]] || die "target $target_version reuses the current version with a different commit identity"
+  [[ -x "$CURRENT_WORKER" && ! -L "$CURRENT_WORKER" ]] || die "exact replay requires trusted current privileged worker: $CURRENT_WORKER"
   cmp -s -- "$stage/control-center" "$CURRENT_BIN" || die "target $target_version reuses the current version/commit with different main runtime bytes"
   cmp -s -- "$stage/control-center-privileged-worker" "$CURRENT_WORKER" || die "target $target_version reuses the current version/commit with different privileged worker bytes"
   log "target $target_version ($target_commit) is already active with exact signed identity; no update required"
