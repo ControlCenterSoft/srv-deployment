@@ -216,7 +216,9 @@ func ListenUnix(path string, mode os.FileMode) (*net.UnixListener, error) {
 	if mode&0600 != 0600 || mode&0007 != 0 {
 		return nil, fmt.Errorf("%w: socket mode must grant owner rw and deny world access", ErrInvalidRequest)
 	}
-	_ = os.Remove(path)
+	if err := removeOwnedStaleUnixSocket(path); err != nil {
+		return nil, err
+	}
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, err
@@ -227,6 +229,33 @@ func ListenUnix(path string, mode os.FileMode) (*net.UnixListener, error) {
 		return nil, err
 	}
 	return listener, nil
+}
+
+// removeOwnedStaleUnixSocket permits cleanup only for an existing Unix socket
+// owned by the current effective UID. A privileged worker must never turn a
+// configurable socket path into an arbitrary unlink primitive.
+func removeOwnedStaleUnixSocket(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("%w: existing socket path is not a Unix socket", ErrInvalidRequest)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("%w: existing socket ownership is unavailable", ErrInvalidRequest)
+	}
+	if stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("%w: existing Unix socket is not owned by current uid", ErrInvalidRequest)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove stale Unix socket: %w", err)
+	}
+	return nil
 }
 
 // bytesReader avoids accepting a streaming sequence of JSON documents while keeping a bounded payload.
