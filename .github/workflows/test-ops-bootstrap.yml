@@ -18,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Bootstrap shell syntax
-        run: bash -n scripts/bootstrap-ops-agent.sh
+        run: |
+          bash -n \
+            scripts/bootstrap-ops-agent.sh \
+            scripts/bootstrap-platform-v2-staging-complete.sh \
+            scripts/bootstrap-rc-staging-one-shot.sh
       - name: Bootstrap regression tests
-        run: python3 -m unittest discover -s tests -p 'test_ops_bootstrap.py' -v
+        run: |
+          python3 -m unittest discover -s tests -p 'test_ops_bootstrap.py' -v
+          python3 -m unittest discover -s tests -p 'test_staging_complete_bootstrap.py' -v
+          python3 -m unittest discover -s tests -p 'test_rc_staging_one_shot.py' -v
