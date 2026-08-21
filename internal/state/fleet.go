@@ -120,8 +120,14 @@ func (s *Store) CreateFleetNode(name, address, group, environment string) (Fleet
 	}
 	now := time.Now().UTC()
 	node := FleetNode{
-		ID: strings.ToLower(name), Name: name, Address: address, Group: group, Environment: environment,
-		Status: "pending_enrollment", CreatedAt: now, UpdatedAt: now,
+		ID:          strings.ToLower(name),
+		Name:        name,
+		Address:     address,
+		Group:       group,
+		Environment: environment,
+		Status:      "pending_enrollment",
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	nodes = append(nodes, node)
 	sortFleetNodes(nodes)
@@ -222,11 +228,21 @@ func (s *Store) RecordFleetHeartbeat(id, credential string, heartbeat FleetHeart
 		return FleetNode{}, errors.New("node id and agent credential are required")
 	}
 	var err error
-	if heartbeat.AgentVersion, err = boundedFleetValue(heartbeat.AgentVersion, 64, "agent version"); err != nil { return FleetNode{}, err }
-	if heartbeat.Hostname, err = boundedFleetValue(heartbeat.Hostname, 255, "hostname"); err != nil { return FleetNode{}, err }
-	if heartbeat.OSName, err = boundedFleetValue(heartbeat.OSName, 128, "os name"); err != nil { return FleetNode{}, err }
-	if heartbeat.OSVersion, err = boundedFleetValue(heartbeat.OSVersion, 128, "os version"); err != nil { return FleetNode{}, err }
-	if heartbeat.Architecture, err = boundedFleetValue(heartbeat.Architecture, 64, "architecture"); err != nil { return FleetNode{}, err }
+	if heartbeat.AgentVersion, err = boundedFleetValue(heartbeat.AgentVersion, 64, "agent version"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.Hostname, err = boundedFleetValue(heartbeat.Hostname, 255, "hostname"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.OSName, err = boundedFleetValue(heartbeat.OSName, 128, "os name"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.OSVersion, err = boundedFleetValue(heartbeat.OSVersion, 128, "os version"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.Architecture, err = boundedFleetValue(heartbeat.Architecture, 64, "architecture"); err != nil {
+		return FleetNode{}, err
+	}
 	digest := sha256.Sum256([]byte(credential))
 	providedHash := hex.EncodeToString(digest[:])
 
@@ -248,52 +264,111 @@ func (s *Store) RecordFleetHeartbeat(id, credential string, heartbeat FleetHeart
 	node.UpdatedAt = now
 	s.doc.Desired[fleetNodesKey] = nodes
 	s.doc.Revision++
-	if err := s.persistLocked(); err != nil { return FleetNode{}, err }
+	if err := s.persistLocked(); err != nil {
+		return FleetNode{}, err
+	}
 	return node.Public(), nil
 }
 
 func fleetNodeIndex(nodes []FleetNode, id string) int {
 	for i := range nodes {
-		if strings.EqualFold(nodes[i].ID, id) { return i }
+		if strings.EqualFold(nodes[i].ID, id) {
+			return i
+		}
 	}
 	return -1
 }
 
 func sortFleetNodes(nodes []FleetNode) {
-	sort.Slice(nodes, func(i, j int) bool { return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name) })
+	sort.Slice(nodes, func(i, j int) bool {
+		return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name)
+	})
 }
 
 func fleetNodesFromDesired(desired map[string]any) []FleetNode {
 	raw, ok := desired[fleetNodesKey]
-	if !ok || raw == nil { return []FleetNode{} }
+	if !ok || raw == nil {
+		return []FleetNode{}
+	}
 	items, ok := raw.([]any)
 	if !ok {
-		if typed, ok := raw.([]FleetNode); ok { out := append([]FleetNode(nil), typed...); sortFleetNodes(out); return out }
+		if typed, ok := raw.([]FleetNode); ok {
+			out := append([]FleetNode(nil), typed...)
+			sortFleetNodes(out)
+			return out
+		}
 		return []FleetNode{}
 	}
 	out := make([]FleetNode, 0, len(items))
 	for _, item := range items {
-		m, ok := item.(map[string]any); if !ok { continue }
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
 		node := FleetNode{}
-		if v, ok := m["id"].(string); ok { node.ID = v }
-		if v, ok := m["name"].(string); ok { node.Name = v }
-		if v, ok := m["address"].(string); ok { node.Address = v }
-		if v, ok := m["group"].(string); ok { node.Group = v }
-		if v, ok := m["environment"].(string); ok { node.Environment = v }
-		if v, ok := m["status"].(string); ok { node.Status = v }
-		if v, ok := m["agent_version"].(string); ok { node.AgentVersion = v }
-		if v, ok := m["hostname"].(string); ok { node.Hostname = v }
-		if v, ok := m["os_name"].(string); ok { node.OSName = v }
-		if v, ok := m["os_version"].(string); ok { node.OSVersion = v }
-		if v, ok := m["architecture"].(string); ok { node.Architecture = v }
-		if v, ok := m["enrollment_token_hash"].(string); ok { node.EnrollmentTokenHash = v }
-		if v, ok := m["agent_credential_hash"].(string); ok { node.AgentCredentialHash = v }
-		if v, ok := m["enrollment_expires_at"].(string); ok { if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil { node.EnrollmentExpiresAt = &parsed } }
-		if v, ok := m["enrolled_at"].(string); ok { if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil { node.EnrolledAt = &parsed } }
-		if v, ok := m["last_seen_at"].(string); ok { if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil { node.LastSeenAt = &parsed } }
-		if v, ok := m["created_at"].(string); ok { node.CreatedAt, _ = time.Parse(time.RFC3339Nano, v) }
-		if v, ok := m["updated_at"].(string); ok { node.UpdatedAt, _ = time.Parse(time.RFC3339Nano, v) }
-		if node.Name != "" && node.Address != "" { out = append(out, node) }
+		if v, ok := m["id"].(string); ok {
+			node.ID = v
+		}
+		if v, ok := m["name"].(string); ok {
+			node.Name = v
+		}
+		if v, ok := m["address"].(string); ok {
+			node.Address = v
+		}
+		if v, ok := m["group"].(string); ok {
+			node.Group = v
+		}
+		if v, ok := m["environment"].(string); ok {
+			node.Environment = v
+		}
+		if v, ok := m["status"].(string); ok {
+			node.Status = v
+		}
+		if v, ok := m["agent_version"].(string); ok {
+			node.AgentVersion = v
+		}
+		if v, ok := m["hostname"].(string); ok {
+			node.Hostname = v
+		}
+		if v, ok := m["os_name"].(string); ok {
+			node.OSName = v
+		}
+		if v, ok := m["os_version"].(string); ok {
+			node.OSVersion = v
+		}
+		if v, ok := m["architecture"].(string); ok {
+			node.Architecture = v
+		}
+		if v, ok := m["enrollment_token_hash"].(string); ok {
+			node.EnrollmentTokenHash = v
+		}
+		if v, ok := m["agent_credential_hash"].(string); ok {
+			node.AgentCredentialHash = v
+		}
+		if v, ok := m["enrollment_expires_at"].(string); ok {
+			if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				node.EnrollmentExpiresAt = &parsed
+			}
+		}
+		if v, ok := m["enrolled_at"].(string); ok {
+			if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				node.EnrolledAt = &parsed
+			}
+		}
+		if v, ok := m["last_seen_at"].(string); ok {
+			if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				node.LastSeenAt = &parsed
+			}
+		}
+		if v, ok := m["created_at"].(string); ok {
+			node.CreatedAt, _ = time.Parse(time.RFC3339Nano, v)
+		}
+		if v, ok := m["updated_at"].(string); ok {
+			node.UpdatedAt, _ = time.Parse(time.RFC3339Nano, v)
+		}
+		if node.Name != "" && node.Address != "" {
+			out = append(out, node)
+		}
 	}
 	sortFleetNodes(out)
 	return out
