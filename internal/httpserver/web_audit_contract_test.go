@@ -16,7 +16,7 @@ func TestAdminWebAuditWorkflowContract(t *testing.T) {
 		t.Fatal("Admin Web must load the audit workflow module")
 	}
 	for _, required := range []string{
-		`data-page = 'audit'`,
+		`button.dataset.page = 'audit'`,
 		`button.textContent = 'Аудит'`,
 		`currentUser?.role !== 'admin'`,
 		`/api/v1/audit?limit=50`,
