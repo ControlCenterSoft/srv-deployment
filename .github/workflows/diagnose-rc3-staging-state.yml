@@ -1,0 +1,85 @@
+name: Diagnose RC3 staging state
+
+on:
+  pull_request:
+    branches: [1.1.x]
+    paths:
+      - '.github/workflows/diagnose-rc3-staging-state.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only real staging state
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+      STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+      STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
+      STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+      STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+    steps:
+      - name: Configure pinned SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$STAGING_HOST"
+          test -n "$STAGING_USER"
+          test -n "$STAGING_SSH_KEY"
+          test -n "$STAGING_KNOWN_HOSTS"
+          STAGING_PORT="${STAGING_PORT:-22}"
+          install -d -m 0700 "$RUNNER_TEMP/ccdiag-ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$RUNNER_TEMP/ccdiag-ssh/id"
+          chmod 0600 "$RUNNER_TEMP/ccdiag-ssh/id"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/ccdiag-ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/ccdiag-ssh/known_hosts"
+          printf 'SSH_PORT=%s\n' "$STAGING_PORT" >> "$GITHUB_ENV"
+          printf 'SSH_KEY=%s\n' "$RUNNER_TEMP/ccdiag-ssh/id" >> "$GITHUB_ENV"
+          printf 'SSH_KNOWN_HOSTS=%s\n' "$RUNNER_TEMP/ccdiag-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: SSH connectivity
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'true'
+
+      - name: Worker active
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'systemctl is-active --quiet control-center-privileged-worker.service'
+
+      - name: Worker enabled
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'systemctl is-enabled --quiet control-center-privileged-worker.service'
+
+      - name: Worker socket exists
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'test -S /run/control-center/privileged-worker.sock'
+
+      - name: Worker socket boundary
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'test "$(stat -Lc "%U:%G:%a" /run/control-center/privileged-worker.sock)" = "root:control-center:660"'
+
+      - name: Health endpoint
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null'
+
+      - name: Readiness endpoint
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"'"'"ready":true'"'"''
+
+      - name: Exact RC3 version endpoint
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '"'"'"version":"1.1.0-rc.3"'"'"''
+
+      - name: Restricted staging updater self-test
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" 'sudo -n /usr/local/sbin/control-center-staging-update --self-test'
