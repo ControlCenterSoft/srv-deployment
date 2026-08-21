@@ -19,6 +19,7 @@ STAGING_DIR="$INSTALL_ROOT/staging"
 CURRENT_LINK="$INSTALL_ROOT/current"
 PREVIOUS_LINK="$INSTALL_ROOT/previous"
 CURRENT_BIN="$CURRENT_LINK/control-center"
+CURRENT_WORKER="$CURRENT_LINK/control-center-privileged-worker"
 SERVICE="${CONTROL_CENTER_SERVICE:-control-center.service}"
 WORKER_SERVICE="${CONTROL_CENTER_WORKER_SERVICE:-control-center-privileged-worker.service}"
 SOCKET="${CONTROL_CENTER_PRIVILEGED_SOCKET:-/run/control-center/privileged-worker.sock}"
@@ -96,9 +97,19 @@ candidate_commit="$("$stage/control-center" build-info --field commit)" || die "
 [[ "$candidate_commit" == "$target_commit" ]] || die "candidate commit does not match signed manifest"
 
 current_version="$("$CURRENT_BIN" build-info --field version)"
+current_commit="$("$CURRENT_BIN" build-info --field commit)"
 comparison="$("$CURRENT_BIN" compare-version --current "$current_version" --target "$target_version")" || die "unable to compare release versions"
-if (( comparison >= 0 && ! ALLOW_DOWNGRADE )); then
-  die "target $target_version is not newer than current $current_version; use --allow-downgrade only for an explicit controlled rollback"
+if (( comparison == 0 && ! ALLOW_DOWNGRADE )); then
+  [[ "$current_version" == "$target_version" ]] || die "equal version comparison returned inconsistent identity"
+  [[ "$current_commit" == "$target_commit" ]] || die "target $target_version reuses the current version with a different commit identity"
+  [[ -x "$CURRENT_WORKER" && ! -L "$CURRENT_WORKER" ]] || die "exact replay requires trusted current privileged worker: $CURRENT_WORKER"
+  cmp -s -- "$stage/control-center" "$CURRENT_BIN" || die "target $target_version reuses the current version/commit with different main runtime bytes"
+  cmp -s -- "$stage/control-center-privileged-worker" "$CURRENT_WORKER" || die "target $target_version reuses the current version/commit with different privileged worker bytes"
+  log "target $target_version ($target_commit) is already active with exact signed identity; no update required"
+  exit 0
+fi
+if (( comparison > 0 && ! ALLOW_DOWNGRADE )); then
+  die "target $target_version is older than current $current_version; use --allow-downgrade only for an explicit controlled rollback"
 fi
 
 release_dir="$RELEASES_DIR/$release_id"
