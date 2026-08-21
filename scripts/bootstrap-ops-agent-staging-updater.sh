@@ -44,6 +44,7 @@ AGENT_FILE="/opt/control-center-diagnostics-agent/ccops_agent_v3.py"
 STATE_DIR="/var/lib/control-center-ops-agent/state"
 BACKUP_ROOT="/var/lib/control-center-ops-agent/backups"
 STAGING_ROOT="/var/lib/control-center-ops-agent/staging"
+LOCK_FILE="/run/control-center-ops-agent-staging-update.lock"
 CONFIG_FILE="/etc/control-center-diagnostics-agent/agent.conf"
 TOKEN_FILE="/etc/control-center-diagnostics-agent/github-token"
 BROKER_SERVICE="control-center-ops-broker.service"
@@ -61,7 +62,7 @@ elif [[ ${1:-} == --package && $# -eq 2 ]]; then PACKAGE="$2"; shift 2
 else fail "usage: control-center-ops-agent-staging-update --self-test | --package PATH"
 fi
 [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "updater must run as root"
-for bin in awk curl date dirname grep id install mktemp mv openssl python3 realpath rm runuser sha256sum sleep stat systemctl; do command -v "$bin" >/dev/null 2>&1 || fail "missing required command: $bin"; done
+for bin in awk curl dirname flock grep id install mktemp mv openssl python3 realpath rm runuser sha256sum sleep stat systemctl; do command -v "$bin" >/dev/null 2>&1 || fail "missing required command: $bin"; done
 id "$STAGING_USER" >/dev/null 2>&1 || fail "staging user missing"
 id "$AGENT_USER" >/dev/null 2>&1 || fail "agent user missing"
 [[ -s "$PUBLIC_KEY" && ! -L "$PUBLIC_KEY" ]] || fail "staging public key unavailable"
@@ -79,6 +80,12 @@ if [[ "$MODE" == self-test ]]; then
   printf 'ROOT_BOUNDARY=restricted-sudo-wrapper\n'
   exit 0
 fi
+
+# The staging identity is intentionally allowed to invoke this root wrapper, so
+# serialize the entire mutation path. This prevents two individually-valid
+# signed packages from racing the timer, backup, registration, or rollback state.
+exec 9>"$LOCK_FILE"
+flock -n 9 || fail "another ops-agent staging update is active"
 
 [[ "$PACKAGE" =~ ^/tmp/control-center-ops-agent-staging-[0-9a-f]{40}/control-center-ops-agent-staging\.tar\.gz$ ]] \
   || fail "package path rejected"
@@ -203,13 +210,38 @@ read_product_identity || fail "test-server product identity/preflight rejected"
 
 current_sha="$(sha256sum "$AGENT_FILE" | awk '{print $1}')"
 current_stat="$(stat -c '%U:%G:%a' "$AGENT_FILE")"
+current_version="$(python3 - "$AGENT_FILE" <<'PY'
+import ast, pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+raw = path.read_text(encoding="utf-8", errors="strict")
+tree = ast.parse(raw, filename=str(path))
+version = None
+for node in tree.body:
+    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "AGENT_VERSION" for t in node.targets):
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            version = node.value.value
+        break
+if not isinstance(version, str) or not re.fullmatch(r"1\.1\.[0-9]+", version):
+    raise SystemExit("installed agent version rejected")
+print(version)
+PY
+)" || fail "installed agent version unavailable"
+[[ "$current_version" =~ ^1\.1\.([0-9]+)$ ]] || fail "installed agent version rejected"
+current_patch="${BASH_REMATCH[1]}"
+[[ "$agent_version" =~ ^1\.1\.([0-9]+)$ ]] || fail "candidate agent version rejected"
+target_patch="${BASH_REMATCH[1]}"
+if (( 10#$target_patch < 10#$current_patch )); then
+  fail "agent downgrade rejected"
+fi
+if (( 10#$target_patch == 10#$current_patch )) && [[ "$current_sha" != "$artifact_sha256" ]]; then
+  fail "same-version artifact replacement rejected"
+fi
 if [[ "$current_sha" == "$artifact_sha256" && "$current_stat" == "root:root:755" ]]; then
   printf 'OPS_AGENT_EXACT_ACTIVE=PASSED version=%s source_commit=%s source_blob=%s\n' "$agent_version" "$source_commit" "$source_blob"
   exit 0
 fi
 
-backup_dir="$BACKUP_ROOT/update-${source_commit}-$(date -u +%Y%m%dT%H%M%SZ)"
-install -d -o root -g root -m 0700 "$backup_dir"
+backup_dir="$(mktemp -d "$BACKUP_ROOT/update-${source_commit}.XXXXXX")"
 install -o root -g root -m 0755 "$AGENT_FILE" "$backup_dir/ccops_agent_v3.py"
 sha256sum "$backup_dir/ccops_agent_v3.py" > "$backup_dir/ccops_agent_v3.py.sha256"
 installed_new=0
