@@ -90,6 +90,7 @@ class AIGatewayTests(unittest.TestCase):
             opener=opener,
         )
         self.assertEqual(result, {"ok": True})
+        self.assertEqual(captured["headers"], {"Content-type": "application/json"})
         self.assertNotIn("Authorization", captured["headers"])
         self.assertNotIn("X-api-key", captured["headers"])
         self.assertEqual(captured["unredirected"].get("Authorization"), "Bearer secret")
