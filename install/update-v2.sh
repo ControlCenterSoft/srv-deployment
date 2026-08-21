@@ -19,7 +19,6 @@ STAGING_DIR="$INSTALL_ROOT/staging"
 CURRENT_LINK="$INSTALL_ROOT/current"
 PREVIOUS_LINK="$INSTALL_ROOT/previous"
 CURRENT_BIN="$CURRENT_LINK/control-center"
-CURRENT_WORKER="$CURRENT_LINK/control-center-privileged-worker"
 SERVICE="${CONTROL_CENTER_SERVICE:-control-center.service}"
 WORKER_SERVICE="${CONTROL_CENTER_WORKER_SERVICE:-control-center-privileged-worker.service}"
 SOCKET="${CONTROL_CENTER_PRIVILEGED_SOCKET:-/run/control-center/privileged-worker.sock}"
@@ -41,16 +40,17 @@ unit_active() { systemctl is-active --quiet "$1"; }
 [[ -n "$PACKAGE" && -f "$PACKAGE" ]] || die "release package is required"
 [[ -f "$PUBLIC_KEY" ]] || die "trusted update public key not found: $PUBLIC_KEY"
 [[ -x "$CURRENT_BIN" ]] || die "trusted current runtime not found: $CURRENT_BIN"
-[[ -x "$CURRENT_WORKER" ]] || die "trusted current privileged worker not found: $CURRENT_WORKER"
 [[ -L "$CURRENT_LINK" ]] || die "current release link is missing"
 command -v tar >/dev/null || die "tar is required"
 command -v systemctl >/dev/null || die "systemd is required"
 command -v curl >/dev/null || die "curl is required"
 command -v stat >/dev/null || die "stat is required"
 command -v getent >/dev/null || die "getent is required"
+systemctl cat "$SERVICE" >/dev/null 2>&1 || die "main systemd unit is not installed: $SERVICE"
+systemctl cat "$WORKER_SERVICE" >/dev/null 2>&1 || die "privileged worker systemd unit is not installed: $WORKER_SERVICE"
 
 entries="$(tar -tzf "$PACKAGE")" || die "unable to list release package"
-expected=$'manifest.json\nmanifest.sig\ncontrol-center\ncontrol-center-privileged-worker'
+expected=$'bootstrap-manifest.json\nbootstrap-manifest.sig\nmanifest.json\nmanifest.sig\ncontrol-center\ncontrol-center-privileged-worker'
 [[ "$entries" == "$expected" ]] || die "release package contains unexpected entries"
 
 install -d -o root -g root -m 0755 "$RELEASES_DIR" "$STAGING_DIR"
@@ -58,14 +58,30 @@ stage="$(mktemp -d "$STAGING_DIR/update-v2.XXXXXX")"
 cleanup() { rm -rf -- "$stage"; }
 trap cleanup EXIT
 tar --no-same-owner --no-same-permissions -xzf "$PACKAGE" -C "$stage"
-for f in manifest.json manifest.sig control-center control-center-privileged-worker; do
+for f in bootstrap-manifest.json bootstrap-manifest.sig manifest.json manifest.sig control-center control-center-privileged-worker; do
   [[ -f "$stage/$f" && ! -L "$stage/$f" ]] || die "invalid staged entry: $f"
 done
-chmod 0644 "$stage/manifest.json" "$stage/manifest.sig"
+chmod 0644 "$stage/bootstrap-manifest.json" "$stage/bootstrap-manifest.sig" "$stage/manifest.json" "$stage/manifest.sig"
 chmod 0755 "$stage/control-center" "$stage/control-center-privileged-worker"
 
-verify_field() {
-  "$CURRENT_BIN" verify-release-v2 \
+# Trust bridge for direct upgrades from accepted 1.0.0: the currently trusted
+# runtime authenticates the candidate main binary with immutable schema 1.
+bootstrap_field() {
+  "$CURRENT_BIN" verify-release \
+    --manifest "$stage/bootstrap-manifest.json" \
+    --signature "$stage/bootstrap-manifest.sig" \
+    --public-key "$PUBLIC_KEY" \
+    --artifact "$stage/control-center" \
+    --field "$1"
+}
+bootstrap_version="$(bootstrap_field version)" || die "schema-1 bootstrap verification failed"
+bootstrap_commit="$(bootstrap_field commit)" || die "schema-1 bootstrap verification failed"
+
+# Only the already-authenticated candidate is allowed to verify schema 2. This
+# extends the accepted trust chain to the privileged worker without asking the
+# frozen 1.0.0 binary to understand a new manifest schema.
+verify_v2_field() {
+  "$stage/control-center" verify-release-v2 \
     --manifest "$stage/manifest.json" \
     --signature "$stage/manifest.sig" \
     --public-key "$PUBLIC_KEY" \
@@ -73,9 +89,11 @@ verify_field() {
     --worker "$stage/control-center-privileged-worker" \
     --field "$1"
 }
-release_id="$(verify_field release-id)" || die "release v2 verification failed"
-target_version="$(verify_field version)" || die "release v2 verification failed"
-target_commit="$(verify_field commit)" || die "release v2 verification failed"
+release_id="$(verify_v2_field release-id)" || die "release v2 verification failed"
+target_version="$(verify_v2_field version)" || die "release v2 verification failed"
+target_commit="$(verify_v2_field commit)" || die "release v2 verification failed"
+[[ "$target_version" == "$bootstrap_version" ]] || die "schema-1/schema-2 version identity mismatch"
+[[ "$target_commit" == "$bootstrap_commit" ]] || die "schema-1/schema-2 commit identity mismatch"
 
 candidate_version="$("$stage/control-center" build-info --field version)" || die "verified candidate cannot report version"
 candidate_commit="$("$stage/control-center" build-info --field commit)" || die "verified candidate cannot report commit"
@@ -100,6 +118,8 @@ else
   tmp_release="$(mktemp -d "$RELEASES_DIR/.release-v2.XXXXXX")"
   install -m 0555 "$stage/control-center" "$tmp_release/control-center"
   install -m 0555 "$stage/control-center-privileged-worker" "$tmp_release/control-center-privileged-worker"
+  install -m 0444 "$stage/bootstrap-manifest.json" "$tmp_release/bootstrap-manifest.json"
+  install -m 0444 "$stage/bootstrap-manifest.sig" "$tmp_release/bootstrap-manifest.sig"
   install -m 0444 "$stage/manifest.json" "$tmp_release/manifest.json"
   install -m 0444 "$stage/manifest.sig" "$tmp_release/manifest.sig"
   chmod 0555 "$tmp_release"
@@ -134,12 +154,11 @@ rollback() {
 
 socket_ready() {
   [[ -S "$SOCKET" ]] || return 1
-  local owner group mode expected_gid
+  local owner group mode
   owner="$(stat -Lc '%U' "$SOCKET" 2>/dev/null)" || return 1
   group="$(stat -Lc '%G' "$SOCKET" 2>/dev/null)" || return 1
   mode="$(stat -Lc '%a' "$SOCKET" 2>/dev/null)" || return 1
-  expected_gid="$(getent group "$EXPECTED_SOCKET_GROUP" | awk -F: '{print $3}')"
-  [[ -n "$expected_gid" ]] || return 1
+  getent group "$EXPECTED_SOCKET_GROUP" >/dev/null || return 1
   [[ "$owner" == "root" && "$group" == "$EXPECTED_SOCKET_GROUP" && "$mode" == "660" ]]
 }
 main_ready() {
