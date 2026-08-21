@@ -84,16 +84,16 @@ func TestFleetSecureEnrollmentLifecycle(t *testing.T) {
 		t.Fatal("enrollment hash leaked in API response")
 	}
 
-	rr = requestJSON(t, app.handler, http.MethodPost, "/api/v1/fleet/enroll", `{"node_id":"srv-01","token":"wrong","agent_version":"1.1.8"}`, "", "")
+	rr = requestJSON(t, app.handler, http.MethodPost, "/api/v1/fleet/enroll", `{"node_id":"srv-01","token":"wrong","agent_version":"1.1.8"}`, nil, "")
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong enrollment token status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	body := `{"node_id":"srv-01","token":"` + prepared.Enrollment.Token + `","agent_version":"1.1.8"}`
-	rr = requestJSON(t, app.handler, http.MethodPost, "/api/v1/fleet/enroll", body, "", "")
+	rr = requestJSON(t, app.handler, http.MethodPost, "/api/v1/fleet/enroll", body, nil, "")
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":"enrolled"`) || !strings.Contains(rr.Body.String(), `"agent_version":"1.1.8"`) {
 		t.Fatalf("enroll status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	rr = requestJSON(t, app.handler, http.MethodPost, "/api/v1/fleet/enroll", body, "", "")
+	rr = requestJSON(t, app.handler, http.MethodPost, "/api/v1/fleet/enroll", body, nil, "")
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("replay enrollment status=%d body=%s", rr.Code, rr.Body.String())
 	}
