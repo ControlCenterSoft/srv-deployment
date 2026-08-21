@@ -80,7 +80,9 @@ async function issueEnrollment(node, li) {
     const expires = data.enrollment.expires_at ? new Date(data.enrollment.expires_at).toLocaleString() : "через 15 минут";
     box.textContent = `Одноразовый enrollment token (показывается только сейчас, действует до ${expires}): ${data.enrollment.token}`;
     li.appendChild(box);
-    await loadFleet();
+    node.status = "enrollment_ready";
+    const button = li.querySelector("button");
+    if (button) button.textContent = "Перевыпустить enrollment token";
   } catch (error) {
     const box = document.createElement("div"); box.className = "error enrollment-secret"; box.textContent = error.message; li.appendChild(box);
   }
