@@ -5,7 +5,7 @@ const pages = {
   overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],
   market: ["Маркет", "Маркет", "Module lifecycle будет подключён после завершения foundation релиза."],
   rbac: ["RBAC", "RBAC", "Локальные пользователи и server-side роли admin/viewer."],
-  system: ["Система", "Система", "Runtime diagnostics и безопасная эксплуатационная информация платформы."],
+  system: ["Система", "Система", "Runtime diagnostics, сетевые интерфейсы и безопасная эксплуатационная информация платформы."],
 };
 
 async function api(path, options = {}) {
@@ -70,6 +70,7 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     document.querySelector("#page-title").textContent = title; document.querySelector("#card-title").textContent = cardTitle; document.querySelector("#card-text").textContent = text;
     const users = document.querySelector("#rbac-users"); users.hidden = true; users.textContent = "";
     const systemDetails = document.querySelector("#system-details"); systemDetails.hidden = true; systemDetails.textContent = "";
+    const networkInterfaces = document.querySelector("#network-interfaces"); networkInterfaces.hidden = true; networkInterfaces.textContent = "";
     const operations = document.querySelector("#operations-list"); operations.hidden = true; operations.textContent = "";
     const exportLink = document.querySelector("#diagnostics-export"); exportLink.hidden = true;
     if (button.dataset.page === "rbac" && currentUser?.role === "admin") {
@@ -81,17 +82,29 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     }
     if (button.dataset.page === "system") {
       try {
-        const summary = await api("/api/v1/diagnostics/summary");
+        const [summary, inventory] = await Promise.all([api("/api/v1/diagnostics/summary"), api("/api/v1/network/interfaces")]);
         systemDetails.textContent = `Uptime: ${Math.round(summary.uptime_seconds)} сек. · Operations: ${summary.operation_count} · Audit: ${summary.audit_readable ? "OK" : "Unavailable"}`;
         systemDetails.hidden = false;
+
+        const heading = document.createElement("h3"); heading.textContent = `Сетевые интерфейсы (${inventory.count})`; networkInterfaces.appendChild(heading);
+        const list = document.createElement("ul"); list.className = "compact-list";
+        for (const iface of inventory.interfaces) {
+          const li = document.createElement("li");
+          const addresses = iface.addresses.length ? iface.addresses.join(", ") : "без адресов";
+          const state = iface.flags.includes("up") ? "UP" : "DOWN";
+          li.textContent = `${iface.name} · ${state} · MTU ${iface.mtu} · ${addresses}`;
+          list.appendChild(li);
+        }
+        networkInterfaces.appendChild(list); networkInterfaces.hidden = false;
+
         if (currentUser?.role === "admin") {
           const data = await api("/api/v1/operations?limit=10");
           const title = document.createElement("h3"); title.textContent = "Последние операции"; operations.appendChild(title);
-          const list = document.createElement("ul"); list.className = "compact-list";
+          const opList = document.createElement("ul"); opList.className = "compact-list";
           for (const op of data.operations) {
-            const li = document.createElement("li"); li.textContent = `${op.kind} · ${op.status} · ${op.actor}`; list.appendChild(li);
+            const li = document.createElement("li"); li.textContent = `${op.kind} · ${op.status} · ${op.actor}`; opList.appendChild(li);
           }
-          operations.appendChild(list); operations.hidden = false; exportLink.hidden = false;
+          operations.appendChild(opList); operations.hidden = false; exportLink.hidden = false;
         }
       } catch (error) { systemDetails.textContent = error.message; systemDetails.hidden = false; }
     }
