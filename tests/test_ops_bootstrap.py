@@ -14,7 +14,7 @@ class OpsBootstrapTests(unittest.TestCase):
     def test_private_source_is_pinned_to_exact_commit(self):
         match = re.search(r'^DIAG_COMMIT="([0-9a-f]{40})"$', self.text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual("fdfd4fababfde339c0d381505ff2306af5571e59", match.group(1))
+        self.assertEqual("f19c9b582c8e83ea47bc5e4f07a59dcbfc7d565c", match.group(1))
 
     def test_all_bootstrap_files_have_exact_pinned_git_blob_ids(self):
         expected = {
@@ -22,7 +22,7 @@ class OpsBootstrapTests(unittest.TestCase):
             "agent/ccops_agent_v3.py": "7f5c04b4ae5d96e1eeceb890d5433a5bdd328fa9",
             "agent/ccops_broker.py": "de14cd6b0686d7fdd09fc76adbdc40db2cb17085",
             "agent/ccops_socket_broker.py": "c24946e297e68f40472de1d7f88e40e8bf6343c2",
-            "agent/platform_v2_prepare.py": "1646959a5d3cf9e0869c38386aee45ec98d739e8",
+            "agent/platform_v2_prepare.py": "b29b3578a826c3503d8a145d5d3077e19c49c3ef",
             "install/install-ops-v3.sh": "6d7020ddd02793ad64bd1fe8bc459d3668f70d52",
         }
         for path, blob in expected.items():
@@ -37,7 +37,7 @@ class OpsBootstrapTests(unittest.TestCase):
         self.assertNotRegex(self.text, r'echo[^\n]*\$TOKEN')
         self.assertNotRegex(self.text, r'printf[^\n]*\$TOKEN')
 
-    def test_installs_accepted_remote_agent_1_1_8_bundle(self):
+    def test_installs_accepted_remote_agent_bundle_with_helper_1_1_9(self):
         self.assertIn("ccops_agent_v3.py", self.text)
         self.assertIn("ccops_socket_broker.py", self.text)
         self.assertIn("platform_v2_prepare.py", self.text)
@@ -46,6 +46,7 @@ class OpsBootstrapTests(unittest.TestCase):
         self.assertIn("OPS_AGENT_VERSION=1.1.8", self.text)
         self.assertIn("BROKER_CORE_VERSION=1.1.5", self.text)
         self.assertIn("BROKER_TRANSPORT_VERSION=1.1.8", self.text)
+        self.assertIn("PLATFORM_PREPARE_HELPER_VERSION=1.1.9", self.text)
         self.assertIn("PLATFORM_PREPARE_V2=typed-oneshot", self.text)
         self.assertIn("ROOT_BOUNDARY=unix-so-peercred-root-broker", self.text)
         self.assertIn("SUDO_REQUIRED=false", self.text)
