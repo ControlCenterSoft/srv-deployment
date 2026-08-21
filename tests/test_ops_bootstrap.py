@@ -14,15 +14,15 @@ class OpsBootstrapTests(unittest.TestCase):
     def test_private_source_is_pinned_to_exact_commit(self):
         match = re.search(r'^DIAG_COMMIT="([0-9a-f]{40})"$', self.text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual("2ea76c60cc6ce80a0594867004c32669f5f3944e", match.group(1))
+        self.assertEqual("1db11c0874b4fab5319a12f623c0da92c5a991fd", match.group(1))
 
     def test_all_bootstrap_files_have_exact_pinned_git_blob_ids(self):
         expected = {
             "agent/ccops_agent_v2.py": "8ee6a3001016e1f127cb6050b77a80eee186823c",
-            "agent/ccops_agent_v3.py": "00fbfdde35425b97d46015b5794a38e3343dabc7",
-            "agent/ccops_broker.py": "dcbeb90b5e78e2c77545a2a56468cd86e8a7327e",
-            "agent/ccops_socket_broker.py": "d2245532af47b5ef12fcfc0a0cf1e88a9ff9a1dc",
-            "install/install-ops-v3.sh": "4c82ab9c86ab2f1c9651de41e20934ef340672c4",
+            "agent/ccops_agent_v3.py": "4e63be0651ce5030c6c21b9a02194f710d9e7cd1",
+            "agent/ccops_broker.py": "de14cd6b0686d7fdd09fc76adbdc40db2cb17085",
+            "agent/ccops_socket_broker.py": "318f7f165d99eb0349745120e680b91017b5d06c",
+            "install/install-ops-v3.sh": "6d80aa9855d61f00d75a7963897174bbef3fd868",
         }
         for path, blob in expected.items():
             self.assertIn(f'"{path}": ("{path}", "{blob}")', self.text)
@@ -36,13 +36,22 @@ class OpsBootstrapTests(unittest.TestCase):
         self.assertNotRegex(self.text, r'echo[^\n]*\$TOKEN')
         self.assertNotRegex(self.text, r'printf[^\n]*\$TOKEN')
 
-    def test_installs_unix_broker_agent_v3(self):
+    def test_installs_accepted_remote_agent_1_1_5_bundle(self):
         self.assertIn("ccops_agent_v3.py", self.text)
         self.assertIn("ccops_socket_broker.py", self.text)
         self.assertIn("install-ops-v3.sh", self.text)
-        self.assertIn("OPS_AGENT_VERSION=1.1.3", self.text)
+        self.assertIn("REMOTE_AGENT_RELEASE=1.1.5", self.text)
+        self.assertIn("OPS_AGENT_VERSION=1.1.4", self.text)
+        self.assertIn("BROKER_CORE_VERSION=1.1.5", self.text)
+        self.assertIn("BROKER_TRANSPORT_VERSION=1.1.4", self.text)
         self.assertIn("ROOT_BOUNDARY=unix-so-peercred-root-broker", self.text)
         self.assertIn("SUDO_REQUIRED=false", self.text)
+
+    def test_registration_contract_matches_accepted_agent(self):
+        self.assertIn("payload.get('agent_version') == '1.1.4'", self.text)
+        self.assertIn("payload.get('broker_transport') == 'unix'", self.text)
+        self.assertIn("payload.get('arbitrary_shell') is False", self.text)
+        self.assertIn("payload.get('sudo_required') is False", self.text)
 
     def test_installation_requires_root_and_post_validates_runtime(self):
         self.assertIn('[[ ${EUID:-$(id -u)} -eq 0 ]]', self.text)
