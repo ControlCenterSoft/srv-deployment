@@ -3,7 +3,7 @@ let currentUser = null;
 
 const pages = {
   overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],
-  fleet: ["Серверы", "Управляемые серверы", "Единый инвентарь серверов. Новые узлы создаются в состоянии ожидания безопасного enrollment."],
+  fleet: ["Серверы", "Управляемые серверы", "Единый инвентарь серверов с одноразовым безопасным enrollment."],
   market: ["Маркет", "Маркет", "Module lifecycle будет подключён после завершения foundation релиза."],
   rbac: ["RBAC", "RBAC", "Локальные пользователи и server-side роли admin/viewer."],
   system: ["Система", "Система", "Runtime diagnostics и безопасная эксплуатационная информация платформы."],
@@ -64,6 +64,28 @@ document.querySelector("#password-form").addEventListener("submit", async (event
   } catch (error) { document.querySelector("#password-error").textContent = error.message; }
 });
 
+function enrollmentStatusLabel(node) {
+  if (node.status === "enrolled") return `enrolled${node.agent_version ? ` · agent ${node.agent_version}` : ""}`;
+  if (node.status === "enrollment_ready") return "enrollment token issued";
+  return node.status;
+}
+
+async function issueEnrollment(node, li) {
+  const previous = li.querySelector(".enrollment-secret");
+  if (previous) previous.remove();
+  try {
+    const data = await api(`/api/v1/fleet/nodes/${encodeURIComponent(node.id)}/enrollment`, {method:"POST", body:"{}"});
+    const box = document.createElement("div");
+    box.className = "enrollment-secret";
+    const expires = data.enrollment.expires_at ? new Date(data.enrollment.expires_at).toLocaleString() : "через 15 минут";
+    box.textContent = `Одноразовый enrollment token (показывается только сейчас, действует до ${expires}): ${data.enrollment.token}`;
+    li.appendChild(box);
+    await loadFleet();
+  } catch (error) {
+    const box = document.createElement("div"); box.className = "error enrollment-secret"; box.textContent = error.message; li.appendChild(box);
+  }
+}
+
 async function loadFleet() {
   const container = document.querySelector("#fleet-nodes");
   const form = document.querySelector("#fleet-form");
@@ -71,14 +93,25 @@ async function loadFleet() {
   try {
     const data = await api("/api/v1/fleet/nodes");
     const summary = document.createElement("p");
-    summary.textContent = `Всего серверов: ${data.summary.total} · Ожидают enrollment: ${data.summary.pending_enrollment}`;
+    summary.textContent = `Всего серверов: ${data.summary.total} · Enrolled: ${data.summary.enrolled} · Ожидают enrollment: ${data.summary.pending_enrollment}`;
     container.appendChild(summary);
     const list = document.createElement("ul");
     list.className = "compact-list";
     for (const node of data.nodes) {
       const li = document.createElement("li");
       const scope = [node.group, node.environment].filter(Boolean).join(" · ");
-      li.textContent = `${node.name} · ${node.address} · ${node.status}${scope ? ` · ${scope}` : ""}`;
+      const info = document.createElement("span");
+      info.textContent = `${node.name} · ${node.address} · ${enrollmentStatusLabel(node)}${scope ? ` · ${scope}` : ""}`;
+      li.appendChild(info);
+      if (currentUser?.role === "admin" && node.status !== "enrolled") {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "text-button";
+        button.textContent = node.status === "enrollment_ready" ? "Перевыпустить enrollment token" : "Создать enrollment token";
+        button.addEventListener("click", () => issueEnrollment(node, li));
+        li.appendChild(document.createTextNode(" "));
+        li.appendChild(button);
+      }
       list.appendChild(li);
     }
     if (!data.nodes.length) {
