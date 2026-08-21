@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 DIAG_REPO="ControlCenterSoft/control-center-server-diagnostics"
-DIAG_COMMIT="f19c9b582c8e83ea47bc5e4f07a59dcbfc7d565c"
+DIAG_COMMIT="f4dd18a8bc48c6e92ad702fcfa2d33f903f6f085"
 TOKEN_FILE="/etc/control-center-diagnostics-agent/github-token"
 CONFIG_FILE="/etc/control-center-diagnostics-agent/agent.conf"
 AGENT_STATE_BRANCH="agent-state"
@@ -49,9 +49,9 @@ if not token:
 
 files = {
     "agent/ccops_agent_v2.py": ("agent/ccops_agent_v2.py", "8ee6a3001016e1f127cb6050b77a80eee186823c"),
-    "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "7f5c04b4ae5d96e1eeceb890d5433a5bdd328fa9"),
+    "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "babc9c53e6724011b0d1e32476846f330a78582d"),
     "agent/ccops_broker.py": ("agent/ccops_broker.py", "de14cd6b0686d7fdd09fc76adbdc40db2cb17085"),
-    "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "c24946e297e68f40472de1d7f88e40e8bf6343c2"),
+    "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "59818adf4e50d87f58b9561c517b117f2ef306ab"),
     "agent/platform_v2_prepare.py": ("agent/platform_v2_prepare.py", "b29b3578a826c3503d8a145d5d3077e19c49c3ef"),
     "install/install-ops-v3.sh": ("install/install-ops-v3.sh", "6d7020ddd02793ad64bd1fe8bc459d3668f70d52"),
 }
@@ -60,7 +60,7 @@ owner, name = repo.split("/", 1)
 headers = {
     "Accept": "application/vnd.github+json",
     "Authorization": f"Bearer {token}",
-    "User-Agent": "control-center-ops-bootstrap/1.1.8",
+    "User-Agent": "control-center-ops-bootstrap/1.1.9",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
@@ -132,7 +132,7 @@ token=pathlib.Path(token_file).read_text(encoding='utf-8').strip()
 req=urllib.request.Request(url, headers={
     'Accept':'application/vnd.github+json',
     'Authorization':f'Bearer {token}',
-    'User-Agent':'control-center-ops-bootstrap/1.1.8',
+    'User-Agent':'control-center-ops-bootstrap/1.1.9',
     'X-GitHub-Api-Version':'2022-11-28',
 })
 with urllib.request.urlopen(req, timeout=20) as response:
@@ -140,20 +140,22 @@ with urllib.request.urlopen(req, timeout=20) as response:
 payload=json.loads(base64.b64decode(wrapper['content']).decode('utf-8'))
 assert payload.get('schema') == 1
 assert payload.get('server_id') == server_id
-assert payload.get('agent_version') == '1.1.8'
+assert payload.get('agent_version') == '1.1.9'
 assert payload.get('arbitrary_shell') is False
 assert payload.get('privilege_boundary') == 'unix-so-peercred-root-broker'
 assert payload.get('broker_transport') == 'unix'
 assert payload.get('sudo_required') is False
 assert 'platform.prepare-v2' in payload.get('capabilities', [])
+assert 'control-center-privileged-worker.service' in payload.get('observable_services', [])
+assert 'control-center-privileged-worker.service' not in payload.get('restartable_services', [])
 PY
 
 printf 'CONTROL_CENTER_OPS_BOOTSTRAP=PASSED\n'
 printf 'DIAGNOSTICS_SOURCE_COMMIT=%s\n' "$DIAG_COMMIT"
-printf 'REMOTE_AGENT_RELEASE=1.1.8\n'
-printf 'OPS_AGENT_VERSION=1.1.8\n'
+printf 'REMOTE_AGENT_RELEASE=1.1.9\n'
+printf 'OPS_AGENT_VERSION=1.1.9\n'
 printf 'BROKER_CORE_VERSION=1.1.5\n'
-printf 'BROKER_TRANSPORT_VERSION=1.1.8\n'
+printf 'BROKER_TRANSPORT_VERSION=1.1.9\n'
 printf 'PLATFORM_PREPARE_HELPER_VERSION=1.1.9\n'
 printf 'PLATFORM_PREPARE_V2=typed-oneshot\n'
 printf 'TOKEN_REUSED=existing-diagnostics-token\n'
