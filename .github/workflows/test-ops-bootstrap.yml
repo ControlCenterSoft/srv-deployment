@@ -21,12 +21,15 @@ jobs:
         run: |
           bash -n \
             scripts/bootstrap-ops-agent.sh \
+            scripts/bootstrap-ops-agent-staging-updater.sh \
             scripts/bootstrap-platform-v2-staging-complete.sh \
             scripts/bootstrap-rc-staging-one-shot.sh \
-            scripts/resume-real-staging-after-port-sigpipe.sh
+            scripts/resume-real-staging-after-port-sigpipe.sh \
+            scripts/stage-ops-agent-signed.sh
       - name: Bootstrap regression tests
         run: |
           python3 -m unittest discover -s tests -p 'test_ops_bootstrap.py' -v
+          python3 -m unittest discover -s tests -p 'test_ops_agent_staging_updater.py' -v
           python3 -m unittest discover -s tests -p 'test_staging_complete_bootstrap.py' -v
           python3 -m unittest discover -s tests -p 'test_rc_staging_one_shot.py' -v
           python3 -m unittest discover -s tests -p 'test_real_staging_resume.py' -v
