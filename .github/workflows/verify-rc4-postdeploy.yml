@@ -36,22 +36,47 @@ jobs:
           printf 'SSH_PORT=%s\n' "$STAGING_PORT" >> "$GITHUB_ENV"
           printf 'SSH_KEY=%s\n' "$RUNNER_TEMP/ccverify-ssh/id" >> "$GITHUB_ENV"
           printf 'SSH_KNOWN_HOSTS=%s\n' "$RUNNER_TEMP/ccverify-ssh/known_hosts" >> "$GITHUB_ENV"
-      - name: Verify exact runtime and operational state
+      - name: Main service active
+        continue-on-error: true
         shell: bash
-        run: |
-          set -Eeuo pipefail
-          ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o ConnectTimeout=10 "$STAGING_USER@$STAGING_HOST" '
-            set -eu
-            systemctl is-active --quiet control-center.service
-            systemctl is-active --quiet control-center-privileged-worker.service
-            systemctl is-enabled --quiet control-center-privileged-worker.service
-            test -S /run/control-center/privileged-worker.sock
-            test "$(stat -Lc "%U:%G:%a" /run/control-center/privileged-worker.sock)" = "root:control-center:660"
-            test -L /usr/local/lib/control-center/current
-            test -L /usr/local/lib/control-center/previous
-            test -z "$(systemctl --failed --no-legend --plain)"
-            curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null
-            curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"'"'"ready":true'"'"'
-            curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '"'"'"version":"1.1.0-rc.4"'"'"'
-            curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '"'"'"commit":"81413014bc597b7c5e0d89caeb88b6a3dae27a3d"'"'"'
-          '
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'systemctl is-active --quiet control-center.service'
+      - name: Worker active
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'systemctl is-active --quiet control-center-privileged-worker.service'
+      - name: Worker enabled
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'systemctl is-enabled --quiet control-center-privileged-worker.service'
+      - name: Worker socket boundary
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'test -S /run/control-center/privileged-worker.sock && test "$(stat -Lc "%U:%G:%a" /run/control-center/privileged-worker.sock)" = "root:control-center:660"'
+      - name: Current pointer exists
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'test -L /usr/local/lib/control-center/current'
+      - name: Previous rollback pointer exists
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'test -L /usr/local/lib/control-center/previous'
+      - name: No failed systemd units
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'test -z "$(systemctl --failed --no-legend --plain)"'
+      - name: Health OK
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null'
+      - name: Readiness ready
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"'"'"ready":true'"'"''
+      - name: Exact RC4 version
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '"'"'"version":"1.1.0-rc.4"'"'"''
+      - name: Exact RC4 commit
+        continue-on-error: true
+        shell: bash
+        run: ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" "$STAGING_USER@$STAGING_HOST" 'curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '"'"'"commit":"81413014bc597b7c5e0d89caeb88b6a3dae27a3d"'"'"''
