@@ -1,0 +1,21 @@
+name: Run Control Center 1.1.0-rc.3 acceptance cdcc
+
+on:
+  push:
+    branches:
+      - 'ops/run-1.1.0-rc.3-acceptance-cdcc9d4d'
+  pull_request:
+    branches:
+      - '1.1.x'
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    if: github.event_name == 'push' || github.head_ref == 'ops/run-1.1.0-rc.3-acceptance-cdcc9d4d'
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1.yml@cdcc9d4d6499a26e8ffb8b520525740afc8d2589
+    with:
+      candidate_sha: cdcc9d4d6499a26e8ffb8b520525740afc8d2589
+      candidate_version: 1.1.0-rc.3
+    secrets: inherit
