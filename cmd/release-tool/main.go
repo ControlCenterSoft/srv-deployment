@@ -102,6 +102,18 @@ func runPackageV2(args []string) {
 	must(err)
 	workerBytes, workerMeta, err := readArtifact("control-center-privileged-worker", *worker)
 	must(err)
+
+	// The schema-1 bootstrap manifest authenticates the candidate main runtime
+	// with the already accepted 1.0.0 verifier. Only after that trust bridge is
+	// established may the candidate verifier authenticate the schema-2 pair.
+	bootstrap := release.Manifest{
+		Schema: release.ManifestSchema, Product: "Control Center", Version: *version, Channel: *channel,
+		Commit: *commit, BuiltAt: *builtAt, OS: "linux", Arch: *arch, StateSchemaMin: 1, StateSchemaMax: 1,
+		Artifact: primaryMeta,
+	}
+	must(bootstrap.Validate())
+	bootstrapManifest := marshalManifest(bootstrap)
+
 	m := release.ManifestV2{
 		Schema: release.ManifestSchemaV2, Product: "Control Center", Version: *version, Channel: *channel,
 		Commit: *commit, BuiltAt: *builtAt, OS: "linux", Arch: *arch, StateSchemaMin: 1, StateSchemaMax: 1,
@@ -109,10 +121,14 @@ func runPackageV2(args []string) {
 	}
 	must(m.Validate())
 	manifest := marshalManifest(m)
+
 	priv := loadPrivateKey(*privateKey)
+	bootstrapSig := ed25519.Sign(priv, bootstrapManifest)
 	sig := ed25519.Sign(priv, manifest)
 	modTime := parseBuiltAt(*builtAt)
 	must(writePackage(*output, []packageEntry{
+		{name: "bootstrap-manifest.json", mode: 0o444, data: bootstrapManifest},
+		{name: "bootstrap-manifest.sig", mode: 0o444, data: bootstrapSig},
 		{name: "manifest.json", mode: 0o444, data: manifest},
 		{name: "manifest.sig", mode: 0o444, data: sig},
 		{name: "control-center", mode: 0o555, data: primaryBytes},
