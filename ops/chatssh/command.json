@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "enabled": true,
-  "id": "publish-platform-v2-diagnostic-20260821-0543Z",
-  "script_sha": "9f92b242e9928ec49cdc85b3cef851d995432fb2",
-  "script_path": "ops/chatssh/jobs/run-platform-v2-diagnostic-publisher.sh",
-  "sha256": "2810053c481e8515278e9073879d1d0c69f0245a8965697de6cd83be63dc0d02",
-  "timeout_seconds": 180
+  "id": "install-ops-agent-1.1.7-20260821-0549Z",
+  "script_sha": "10b283465064f2beb5bffb81b6ff0c9da1b8251a",
+  "script_path": "ops/chatssh/jobs/install-ops-agent-1.1.7.sh",
+  "sha256": "408e193959998787a205b2d036861e14b12aa44df2298c9cdb2e8b096a8396dd",
+  "timeout_seconds": 300
 }
