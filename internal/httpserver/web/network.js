@@ -45,6 +45,68 @@ function installNetworkPage() {
   document.querySelector('#network-preview-form').addEventListener('submit', previewNetworkAddressChange);
 }
 
+function renderNetworkInventory(container, inventory) {
+  container.textContent = '';
+  const heading = document.createElement('h3');
+  heading.textContent = `Actual state · ${inventory.count} интерф.`;
+  container.appendChild(heading);
+
+  const list = document.createElement('ul');
+  list.className = 'compact-list';
+  for (const iface of inventory.interfaces) {
+    const item = document.createElement('li');
+    const name = document.createElement('strong');
+    name.textContent = iface.name;
+    item.appendChild(name);
+    item.appendChild(document.createTextNode(` · ${iface.flags.includes('up') ? 'UP' : 'DOWN'} · MTU ${iface.mtu}`));
+    item.appendChild(document.createElement('br'));
+    const addresses = document.createElement('span');
+    addresses.className = 'muted';
+    addresses.textContent = iface.addresses.join(', ') || 'без адресов';
+    item.appendChild(addresses);
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+}
+
+function appendPlanLine(container, label, value) {
+  const paragraph = document.createElement('p');
+  paragraph.appendChild(document.createTextNode(`${label}: `));
+  const strong = document.createElement('strong');
+  strong.textContent = value;
+  paragraph.appendChild(strong);
+  container.appendChild(paragraph);
+}
+
+function renderNetworkPlan(container, plan) {
+  container.textContent = '';
+  const heading = document.createElement('h3');
+  heading.textContent = 'План проверен';
+  container.appendChild(heading);
+
+  appendPlanLine(container, 'Интерфейс', plan.interface);
+  appendPlanLine(container, 'Desired', plan.desired_cidr);
+
+  const status = document.createElement('p');
+  status.textContent = plan.no_op ? 'Изменение не требуется.' : 'Потребуется изменение.';
+  container.appendChild(status);
+
+  appendPlanLine(container, 'Actual', plan.actual_addresses.join(', ') || 'без адресов');
+  appendPlanLine(container, 'Rollback', plan.rollback_addresses.join(', ') || 'вернуть пустой набор адресов');
+
+  const warnings = document.createElement('p');
+  warnings.className = 'muted';
+  warnings.textContent = plan.warnings.join(' ');
+  container.appendChild(warnings);
+
+  const apply = document.createElement('p');
+  const applyLabel = document.createElement('strong');
+  applyLabel.textContent = 'Apply отключён: ';
+  apply.appendChild(applyLabel);
+  apply.appendChild(document.createTextNode('операция только валидирует изменение и recovery path; конфигурация сервера не меняется.'));
+  container.appendChild(apply);
+}
+
 async function loadNetworkPreviewPage() {
   const page = document.querySelector('#network-page');
   const inventoryBox = document.querySelector('#network-inventory');
@@ -54,7 +116,7 @@ async function loadNetworkPreviewPage() {
   result.hidden = true; result.textContent = '';
   try {
     const inventory = await api('/api/v1/network/interfaces');
-    inventoryBox.innerHTML = `<h3>Actual state · ${inventory.count} интерф.</h3><ul class="compact-list">${inventory.interfaces.map((iface) => `<li><strong>${iface.name}</strong> · ${iface.flags.includes('up') ? 'UP' : 'DOWN'} · MTU ${iface.mtu}<br><span class="muted">${iface.addresses.join(', ') || 'без адресов'}</span></li>`).join('')}</ul>`;
+    renderNetworkInventory(inventoryBox, inventory);
     select.textContent = '';
     for (const iface of inventory.interfaces.filter((iface) => !iface.flags.includes('loopback'))) {
       const option = document.createElement('option'); option.value = iface.name; option.textContent = iface.name; select.appendChild(option);
@@ -73,8 +135,7 @@ async function previewNetworkAddressChange(event) {
   errorBox.textContent = ''; result.hidden = true; result.textContent = '';
   try {
     const data = await api('/api/v1/network/address-change/preview', {method:'POST', body:JSON.stringify({interface:document.querySelector('#network-interface').value, cidr:document.querySelector('#network-cidr').value})});
-    const plan = data.plan;
-    result.innerHTML = `<h3>План проверен</h3><p>Интерфейс: <strong>${plan.interface}</strong> · Desired: <strong>${plan.desired_cidr}</strong> · ${plan.no_op ? 'изменение не требуется' : 'потребуется изменение'}</p><p>Actual: ${plan.actual_addresses.join(', ') || 'без адресов'}</p><p>Rollback: ${plan.rollback_addresses.join(', ') || 'вернуть пустой набор адресов'}</p><p class="muted">${plan.warnings.join(' ')}</p><p><strong>Apply отключён:</strong> операция только валидирует изменение и recovery path; конфигурация сервера не меняется.</p>`;
+    renderNetworkPlan(result, data.plan);
     result.hidden = false;
   } catch (error) { errorBox.textContent = error.message; }
 }
