@@ -48,6 +48,8 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
             'source_repo") != "ControlCenterSoft/control-center-server-diagnostics"',
             'source_path") != "agent/ccops_agent_v3.py"',
             "manifest signature rejected",
+            'tarfile.open(package, "r|gz")',
+            "if tf.next() is not None",
             "artifact SHA-256 mismatch",
             "Git blob identity mismatch",
             "agent source version mismatch",
@@ -58,9 +60,12 @@ class OpsAgentStagingUpdaterTests(unittest.TestCase):
             'NoNewPrivileges --value',
             'root:ccdiag:660',
             "product identity/readiness changed after agent update",
+            'current_stat="$(stat -c',
         ]
         for marker in required:
             self.assertIn(marker, updater)
+        self.assertNotIn("getmembers()", updater)
+        self.assertNotIn("extractall", updater)
         self.assertNotIn("service.restart", updater)
         self.assertNotIn("control-center-update", updater)
         self.assertNotIn("ccops_socket_broker.py", updater)
