@@ -4,12 +4,16 @@ on:
   push:
     branches:
       - 'ops/run-1.1.0-rc.1-acceptance-ae0c2dbf'
+  pull_request:
+    branches:
+      - '1.1.x'
 
 permissions:
   contents: read
 
 jobs:
   acceptance:
+    if: github.event_name == 'push' || github.head_ref == 'ops/run-1.1.0-rc.1-acceptance-ae0c2dbf'
     uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1.yml@ae0c2dbf5786aebe933e1f779659dda3eafe5e59
     with:
       candidate_sha: ae0c2dbf5786aebe933e1f779659dda3eafe5e59
