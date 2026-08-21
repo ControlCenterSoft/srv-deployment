@@ -72,7 +72,7 @@ require_file "$ACCEPTANCE" "Full Acceptance" "root:control-center:660"
 # updater and, worse, would stop exercising worker-first rollback semantics.
 require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'go run ./cmd/release-tool package-v2'
 require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" '--worker "$worker"'
-require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'control-center-privileged-worker ./cmd/control-center-privileged-worker'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" './cmd/control-center-privileged-worker'
 require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" "V2_ENTRIES=\$'bootstrap-manifest.json\\nbootstrap-manifest.sig\\nmanifest.json\\nmanifest.sig\\ncontrol-center\\ncontrol-center-privileged-worker'"
 require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'unverified-candidate-executed'
 require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'tampered schema-2 manifest was accepted'
