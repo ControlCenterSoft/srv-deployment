@@ -99,24 +99,28 @@ import pathlib, sys, tarfile
 package, target, max_agent_raw = sys.argv[1:]
 max_agent = int(max_agent_raw)
 expected = ["manifest.json", "manifest.sig", "ccops_agent_v3.py"]
-with tarfile.open(package, "r:gz") as tf:
-    members = tf.getmembers()
-    if [m.name for m in members] != expected:
-        raise SystemExit("package entries rejected")
-    limits = {"manifest.json": 16384, "manifest.sig": 4096, "ccops_agent_v3.py": max_agent}
-    root = pathlib.Path(target)
-    for member in members:
-        if not member.isfile() or member.size <= 0 or member.size > limits[member.name]:
-            raise SystemExit(f"package member rejected: {member.name}")
+limits = {"manifest.json": 16384, "manifest.sig": 4096, "ccops_agent_v3.py": max_agent}
+root = pathlib.Path(target)
+# Stream the untrusted compressed archive and stop after the fourth header at
+# most. Do not build an unbounded member list and never extract paths as root.
+with tarfile.open(package, "r|gz") as tf:
+    for expected_name in expected:
+        member = tf.next()
+        if member is None or member.name != expected_name:
+            raise SystemExit("package entries rejected")
+        if not member.isfile() or member.size <= 0 or member.size > limits[expected_name]:
+            raise SystemExit(f"package member rejected: {expected_name}")
         fh = tf.extractfile(member)
         if fh is None:
-            raise SystemExit(f"package member unreadable: {member.name}")
-        data = fh.read(limits[member.name] + 1)
-        if len(data) != member.size or len(data) > limits[member.name]:
-            raise SystemExit(f"package member size mismatch: {member.name}")
-        path = root / member.name
+            raise SystemExit(f"package member unreadable: {expected_name}")
+        data = fh.read(limits[expected_name] + 1)
+        if len(data) != member.size or len(data) > limits[expected_name]:
+            raise SystemExit(f"package member size mismatch: {expected_name}")
+        path = root / expected_name
         path.write_bytes(data)
         path.chmod(0o600)
+    if tf.next() is not None:
+        raise SystemExit("package entries rejected")
 PY
 
 openssl pkeyutl -verify -pubin -inkey "$PUBLIC_KEY" -rawin \
@@ -198,7 +202,8 @@ PY
 read_product_identity || fail "test-server product identity/preflight rejected"
 
 current_sha="$(sha256sum "$AGENT_FILE" | awk '{print $1}')"
-if [[ "$current_sha" == "$artifact_sha256" ]]; then
+current_stat="$(stat -c '%U:%G:%a' "$AGENT_FILE")"
+if [[ "$current_sha" == "$artifact_sha256" && "$current_stat" == "root:root:755" ]]; then
   printf 'OPS_AGENT_EXACT_ACTIVE=PASSED version=%s source_commit=%s source_blob=%s\n' "$agent_version" "$source_commit" "$source_blob"
   exit 0
 fi
@@ -241,13 +246,13 @@ python3 -m py_compile "$AGENT_FILE"
 [[ "$(sha256sum "$AGENT_FILE" | awk '{print $1}')" == "$artifact_sha256" ]] || fail "installed agent digest mismatch"
 [[ "$(stat -c '%U:%G:%a' "$AGENT_FILE")" == "root:root:755" ]] || fail "installed agent ownership/mode rejected"
 runuser -u "$AGENT_USER" -- /usr/bin/python3 "$AGENT_FILE" --register --state-dir "$STATE_DIR"
-systemctl start "$AGENT_TIMER"
-restore_timer=0
 systemctl is-active --quiet "$BROKER_SERVICE" || fail "broker inactive after agent update"
-systemctl is-active --quiet "$AGENT_TIMER" || fail "timer inactive after agent update"
 [[ "$(systemctl show "$AGENT_SERVICE" -p NoNewPrivileges --value)" == yes ]] || fail "agent NoNewPrivileges lost after update"
 [[ "$(stat -Lc '%U:%G:%a' "$BROKER_SOCKET")" == "root:ccdiag:660" ]] || fail "broker socket boundary changed"
 read_product_identity || fail "product identity/readiness changed after agent update"
+systemctl start "$AGENT_TIMER"
+systemctl is-active --quiet "$AGENT_TIMER" || fail "timer inactive after agent update"
+restore_timer=0
 installed_new=0
 printf 'OPS_AGENT_STAGE=PASSED version=%s source_commit=%s source_blob=%s\n' "$agent_version" "$source_commit" "$source_blob"
 printf 'ARBITRARY_SHELL=disabled\n'
