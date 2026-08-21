@@ -316,18 +316,18 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          install -d -m 0700 "$HOME/.ssh"
-          printf '%s\n' "$STAGING_SSH_KEY" > "$HOME/.ssh/id_control_center_staging"
-          chmod 0600 "$HOME/.ssh/id_control_center_staging"
-          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 0600 "$HOME/.ssh/known_hosts"
+          install -d -m 0700 "$RUNNER_TEMP/control-center-staging-ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$RUNNER_TEMP/control-center-staging-ssh/id_control_center_staging"
+          chmod 0600 "$RUNNER_TEMP/control-center-staging-ssh/id_control_center_staging"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/control-center-staging-ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/control-center-staging-ssh/known_hosts"
       - name: Deploy exact signed candidate
         env:
           CONTROL_CENTER_STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
           CONTROL_CENTER_STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
           CONTROL_CENTER_STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
-          CONTROL_CENTER_STAGING_SSH_KEY_FILE: ${{ env.HOME }}/.ssh/id_control_center_staging
-          CONTROL_CENTER_STAGING_KNOWN_HOSTS_FILE: ${{ env.HOME }}/.ssh/known_hosts
+          CONTROL_CENTER_STAGING_SSH_KEY_FILE: ${{ runner.temp }}/control-center-staging-ssh/id_control_center_staging
+          CONTROL_CENTER_STAGING_KNOWN_HOSTS_FILE: ${{ runner.temp }}/control-center-staging-ssh/known_hosts
         shell: bash
         run: |
           set -Eeuo pipefail
