@@ -29,7 +29,7 @@ func TestDNSResolverInventoryRequiresAuthenticationAndReturnsActualState(t *test
 			SourceKind     string   `json:"source_kind"`
 			Nameservers    []string `json:"nameservers"`
 		} `json:"actual"`
-		Desired any `json:"desired"`
+		Desired    any `json:"desired"`
 		Management struct {
 			Supported bool   `json:"supported"`
 			Reason    string `json:"reason"`
