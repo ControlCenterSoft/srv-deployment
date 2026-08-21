@@ -5,13 +5,15 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 UPDATER="$ROOT/install/update-v2.sh"
 MIGRATION_CONTRACT="$ROOT/scripts/platform-v2-migration-contract.sh"
 ACCEPTANCE="$ROOT/.github/workflows/acceptance-1.1.yml"
+UPDATE_ACCEPTANCE="$ROOT/scripts/update-acceptance.sh"
 STAGING_DEPLOY="$ROOT/scripts/staging-deploy.sh"
 
 [[ -f "$UPDATER" ]] || { echo "missing update-v2.sh" >&2; exit 1; }
 [[ -f "$MIGRATION_CONTRACT" ]] || { echo "missing platform-v2 migration contract" >&2; exit 1; }
 [[ -f "$ACCEPTANCE" ]] || { echo "missing acceptance-1.1.yml" >&2; exit 1; }
+[[ -f "$UPDATE_ACCEPTANCE" ]] || { echo "missing update-acceptance.sh" >&2; exit 1; }
 [[ -f "$STAGING_DEPLOY" ]] || { echo "missing staging-deploy.sh" >&2; exit 1; }
-bash -n "$UPDATER" "$STAGING_DEPLOY"
+bash -n "$UPDATER" "$UPDATE_ACCEPTANCE" "$STAGING_DEPLOY"
 
 require() {
   local pattern="$1"
@@ -64,14 +66,30 @@ require_file "$ACCEPTANCE" "Full Acceptance" "expected_entries=\$'bootstrap-mani
 require_file "$ACCEPTANCE" "Full Acceptance" "systemctl is-active --quiet control-center-privileged-worker.service"
 require_file "$ACCEPTANCE" "Full Acceptance" "systemctl is-enabled --quiet control-center-privileged-worker.service"
 require_file "$ACCEPTANCE" "Full Acceptance" "root:control-center:660"
+
+# The lifecycle acceptance invoked after clean install must itself produce and
+# attack package-v2. A schema-1 test here would fail against the installed v2
+# updater and, worse, would stop exercising worker-first rollback semantics.
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'go run ./cmd/release-tool package-v2'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" '--worker "$worker"'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" './cmd/control-center-privileged-worker'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" "V2_ENTRIES=\$'bootstrap-manifest.json\\nbootstrap-manifest.sig\\nmanifest.json\\nmanifest.sig\\ncontrol-center\\ncontrol-center-privileged-worker'"
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'unverified-candidate-executed'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'tampered schema-2 manifest was accepted'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'worker-broken'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'assert_worker_ready'
+require_file "$UPDATE_ACCEPTANCE" "update-v2 acceptance" 'root:control-center:660'
+
 require_file "$STAGING_DEPLOY" "real staging" "systemctl is-active --quiet control-center-privileged-worker.service"
 require_file "$STAGING_DEPLOY" "real staging" "systemctl is-enabled --quiet control-center-privileged-worker.service"
 require_file "$STAGING_DEPLOY" "real staging" "root:control-center:660"
 
-if grep -Eq '(^|[[:space:]])(eval|bash[[:space:]]+-c|sh[[:space:]]+-c)([[:space:]]|$)' "$UPDATER"; then
-  echo "updater-v2 contains an arbitrary shell execution primitive" >&2
-  exit 1
-fi
+for file in "$UPDATER" "$UPDATE_ACCEPTANCE"; do
+  if grep -Eq '(^|[[:space:]])(eval|bash[[:space:]]+-c|sh[[:space:]]+-c)([[:space:]]|$)' "$file"; then
+    echo "arbitrary shell execution primitive detected in $(basename "$file")" >&2
+    exit 1
+  fi
+done
 
 bash "$MIGRATION_CONTRACT"
 printf 'update-v2 contract: PASS\n'
