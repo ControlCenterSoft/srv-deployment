@@ -7,8 +7,9 @@ Control Center — локальная серверная платформа уп
 - **Принятый production baseline:** `1.0.0`.
 - **Канонический production release:** `deployment.json` → `1.0.0`, `production-ready`, acceptance `passed`.
 - **Активная линия разработки:** `1.1.x`.
-- **Текущий проверяемый кандидат:** `1.1.0-rc.2`, exact source `eabca443287996044a26ff23dfb35104cb55fde8`.
-- **Тестовый сервер:** фактически уже работает на `1.1.0-rc.2`; повторный real-staging сейчас блокируется не установкой, а тем, что update path трактует exact same-version candidate как ошибку. Это отслеживается в issue `#116` и **не означает принятие 1.1.0**.
+- **Последний exact candidate с полным acceptance:** `1.1.0-rc.3`, source `cdcc9d4d6499a26e8ffb8b520525740afc8d2589`.
+- **Текущий `1.1.x` HEAD:** `b72fed6abd32b0607ff8a9751a6e864eb84d1a0a`; поверх candidate source добавлен bootstrap pin Ops Agent 1.1.8.
+- **Тестовый сервер:** фактически сообщает `1.1.0-rc.3`, но final real-staging gate остаётся красным: установленный на сервере предыдущий updater-v2 отвергает same-version target до запуска candidate updater. Актуальный blocker отслеживается в issue `#116`.
 
 До прохождения полного real-server acceptance `main` и канонический production release остаются на `1.0.0`.
 
@@ -74,6 +75,12 @@ Bootstrap local `admin` создаётся только при пустом user
 Разработка ведётся короткими feature-ветками от актуальной `1.1.x`. Fast CI проверяет policy/secret scan, Go, shell/install, relevant contract/regression tests и быстрый runtime build. Полный candidate gate включает deterministic validation, reproducible amd64/arm64, exact rebuild stable `1.0.0`, disposable install/update/rollback, signed staging package и real test-server staging.
 
 Production promotion 1.1.x запрещён без успешного full acceptance и подтверждённого real-server evidence.
+
+### Release governance
+
+Каждый обычный новый релиз Control Center обязан включать минимум одну завершённую **User-facing improvement** — новую пользовательскую возможность либо заметное расширение существующего сценария. Release notes должны явно содержать пользовательскую доработку и связанное acceptance evidence.
+
+Refactor, CI/CD, dependencies, документация, тесты, infrastructure, internal agent/transport и performance-only изменения могут интегрироваться в development line, но не должны сами инициировать обычный продуктовый релиз. Исключение — явно обозначенный emergency maintenance/security/hotfix release при риске безопасности, потери данных, недоступности продукта либо поломке update/rollback.
 
 ## Архитектурные решения
 
