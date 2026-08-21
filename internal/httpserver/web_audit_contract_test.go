@@ -36,6 +36,12 @@ func TestAdminWebAuditWorkflowContract(t *testing.T) {
 	if strings.Contains(audit, "remote_ip") {
 		t.Fatal("Admin Web audit view must not surface remote IP data by default")
 	}
+	if strings.Contains(audit, "fetch(") {
+		t.Fatal("audit workflow must reuse the authenticated same-origin api helper")
+	}
+	if len(audit) > 8*1024 {
+		t.Fatalf("audit workflow exceeds the 8 KiB frontend budget: %d bytes", len(audit))
+	}
 }
 
 func TestAdminWebAuditModuleSyntax(t *testing.T) {
