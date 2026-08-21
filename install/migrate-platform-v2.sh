@@ -30,9 +30,6 @@ current_commit="$("$CURRENT_BIN" build-info --field commit)" || die "current run
 [[ "$current_commit" == "$EXPECTED_CURRENT_COMMIT" ]] \
   || die "migration source commit rejected: current=$current_commit"
 
-# A 1.0.0 host must not have an active privileged worker before the signed
-# dual-runtime release is switched in. This prevents an ExecStart target from
-# resolving to an incomplete or untrusted release layout.
 if systemctl is-active --quiet "$WORKER_SERVICE" 2>/dev/null; then
   die "privileged worker is unexpectedly active before platform-v2 migration"
 fi
@@ -51,7 +48,7 @@ Before=control-center.service
 [Service]
 Type=simple
 User=root
-Group=root
+Group=control-center
 Environment=CONTROL_CENTER_ALLOWED_USER=control-center
 Environment=CONTROL_CENTER_ALLOWED_SERVICES=control-center.service
 Environment=CONTROL_CENTER_PRIVILEGED_SOCKET=/run/control-center/privileged-worker.sock
