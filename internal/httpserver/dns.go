@@ -12,6 +12,7 @@ import (
 func (s *Server) registerDNSRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/dns/resolver", s.requirePermission("system.read", s.dnsResolverInventory))
 	mux.HandleFunc("POST /api/v1/dns/resolver/preview", s.requireAuth(s.dnsResolverPreview))
+	mux.HandleFunc("POST /api/v1/dns/resolver/preflight", s.requireAuth(s.dnsResolverPreflight))
 }
 
 func (s *Server) dnsResolverInventory(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
@@ -26,10 +27,11 @@ func (s *Server) dnsResolverInventory(w http.ResponseWriter, r *http.Request, se
 		"actual":  resolver,
 		"desired": nil,
 		"management": envelope{
-			"supported":         false,
-			"preview_supported": true,
-			"apply_supported":   false,
-			"reason":            "recovery_executor_not_implemented",
+			"supported":           false,
+			"preview_supported":   true,
+			"preflight_supported": true,
+			"apply_supported":     false,
+			"reason":              "recovery_executor_not_implemented",
 		},
 		"observed_at": time.Now().UTC().Format(time.RFC3339),
 	})
@@ -71,9 +73,60 @@ func (s *Server) dnsResolverPreview(w http.ResponseWriter, r *http.Request, sess
 		"actual":   plan.Actual,
 		"rollback": plan.Rollback,
 		"management": envelope{
-			"preview_supported": true,
-			"apply_supported":   false,
-			"reason":            "recovery_executor_not_implemented",
+			"preview_supported":   true,
+			"preflight_supported": true,
+			"apply_supported":     false,
+			"reason":              "recovery_executor_not_implemented",
+		},
+	})
+}
+
+func (s *Server) dnsResolverPreflight(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
+	if u.Role != state.RoleAdmin {
+		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preflight", "host", "denied", "permission_denied")
+		writeError(w, http.StatusForbidden, "permission_denied", "Permission denied", operationID(r))
+		return
+	}
+	if !validMutation(r, sess) {
+		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preflight", "host", "denied", "csrf_rejected")
+		writeError(w, http.StatusForbidden, "csrf_rejected", "CSRF or origin validation failed", operationID(r))
+		return
+	}
+	var in dnsmodel.ResolverChangeRequest
+	if err := decodeJSON(r, &in); err != nil {
+		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preflight", "host", "failed", "invalid_request")
+		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON request", operationID(r))
+		return
+	}
+	actual, err := dnsmodel.Inventory()
+	if err != nil {
+		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preflight", "host", "failed", "dns_resolver_unavailable")
+		writeError(w, http.StatusServiceUnavailable, "dns_resolver_unavailable", "DNS resolver state is unavailable", operationID(r))
+		return
+	}
+	preflight, err := dnsmodel.PreflightResolverChange(in, actual)
+	if err != nil {
+		s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preflight", "host", "failed", "dns_validation_failed")
+		writeError(w, http.StatusBadRequest, "dns_validation_failed", err.Error(), operationID(r))
+		return
+	}
+	result := "success"
+	errorCode := ""
+	if !preflight.Passed {
+		result = "failed"
+		errorCode = "dns_preflight_failed"
+	}
+	s.auditEvent(r, u.Username, string(u.Role), "dns.resolver.preflight", "host", result, errorCode)
+	writeJSON(w, http.StatusOK, envelope{
+		"preflight": preflight,
+		"desired":   preflight.Desired,
+		"actual":    preflight.Actual,
+		"rollback":  preflight.Rollback,
+		"management": envelope{
+			"preview_supported":   true,
+			"preflight_supported": true,
+			"apply_supported":     false,
+			"reason":              "recovery_executor_not_implemented",
 		},
 	})
 }
