@@ -82,8 +82,12 @@ scp "${scp_opts[@]}" "$PACKAGE" "$remote:$remote_dir/control-center-staging.tar.
 
 ssh "${ssh_opts[@]}" "$remote" \
   "sudo -n /usr/local/sbin/control-center-staging-update --package '$remote_dir/control-center-staging.tar.gz' && \
+   systemctl is-active --quiet control-center-privileged-worker.service && \
+   systemctl is-enabled --quiet control-center-privileged-worker.service && \
+   test -S /run/control-center/privileged-worker.sock && \
+   test \"\$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)\" = 'root:control-center:660' && \
    curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null && \
    curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '\"ready\":true' && \
    curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '\"version\":\"${CANDIDATE_VERSION}\"'"
 
-echo "STAGING_ACCEPTANCE=PASSED version=${CANDIDATE_VERSION} sha=${CANDIDATE_SHA}"
+echo "STAGING_ACCEPTANCE=PASSED version=${CANDIDATE_VERSION} sha=${CANDIDATE_SHA} dual_runtime=true"
