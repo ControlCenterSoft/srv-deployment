@@ -40,7 +40,7 @@ worker_binary="${CONTROL_CENTER_PRIVILEGED_WORKER_BINARY:-$REPO_ROOT/dist/contro
 [[ -f "$worker_binary" && ! -L "$worker_binary" ]] || die "privileged worker binary not found or invalid: $worker_binary"
 [[ -f "$REPO_ROOT/packaging/systemd/control-center.service" ]] || die "systemd unit template is missing"
 [[ -f "$REPO_ROOT/packaging/systemd/control-center-privileged-worker.service" ]] || die "privileged worker unit template is missing"
-[[ -f "$REPO_ROOT/install/update.sh" ]] || die "update script is missing"
+[[ -f "$REPO_ROOT/install/update-v2.sh" ]] || die "update v2 script is missing"
 
 version="$("$binary" build-info --field version)" || die "candidate cannot report version"
 commit="$("$binary" build-info --field commit)" || die "candidate cannot report commit"
@@ -129,7 +129,7 @@ else
 fi
 install -m 0644 "$REPO_ROOT/packaging/systemd/control-center.service" "$UNIT_PATH"
 install -m 0644 "$REPO_ROOT/packaging/systemd/control-center-privileged-worker.service" "$WORKER_UNIT_PATH"
-install -m 0755 "$REPO_ROOT/install/update.sh" "$UPDATE_SCRIPT"
+install -m 0755 "$REPO_ROOT/install/update-v2.sh" "$UPDATE_SCRIPT"
 install -d -o root -g control-center -m 0750 "$CONFIG_DIR"
 install -d -o control-center -g control-center -m 0750 "$STATE_DIR" "$LOG_DIR"
 install -d -o root -g root -m 0700 "$PRIVILEGED_LOG_DIR"
@@ -162,7 +162,7 @@ for _ in {1..24}; do
   if curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/health" >/dev/null 2>&1 && curl -fsS --max-time 2 "${ACCEPTANCE_URL}/api/v1/readiness" | grep -Fq '"ready":true'; then
     trap - ERR
     rm -f -- "$LEGACY_BINARY"
-    log "$MODE completed; current=$release_rel privileged-worker=active"
+    log "$MODE completed; current=$release_rel privileged-worker=active updater=v2"
     [[ -f "$TRUST_KEY" ]] || log "Update trust key is not configured; signed updates remain disabled until $TRUST_KEY is provisioned."
     exit 0
   fi
