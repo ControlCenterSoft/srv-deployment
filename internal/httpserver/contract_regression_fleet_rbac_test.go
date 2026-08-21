@@ -239,7 +239,7 @@ func TestContractLabFleetEnrollmentRotationOneTimeUseAndFailedHeartbeatIsNonMuta
 	}
 }
 
-func TestContractLabFleetBootstrapAssetsArePublicImmutableContractWithBoundedMethods(t *testing.T) {
+func TestContractLabFleetBootstrapAssetsArePublicReadOnlyContract(t *testing.T) {
 	app := newTestApp(t)
 	paths := []struct {
 		path        string
@@ -278,8 +278,11 @@ func TestContractLabFleetBootstrapAssetsArePublicImmutableContractWithBoundedMet
 		rr = httptest.NewRecorder()
 		req = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader("{}"))
 		app.handler.ServeHTTP(rr, req)
-		if rr.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("POST %s=%d, want 405", tc.path, rr.Code)
+		if rr.Code < 400 {
+			t.Fatalf("POST %s unexpectedly served bootstrap content: status=%d", tc.path, rr.Code)
+		}
+		if rr.Header().Get("X-Control-Center-Fleet-Agent-Version") != "" || rr.Header().Get("X-Control-Center-Fleet-Agent-SHA256") != "" {
+			t.Fatalf("non-GET %s must not be handled as a bootstrap asset", tc.path)
 		}
 	}
 }
