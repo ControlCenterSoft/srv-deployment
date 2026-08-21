@@ -93,7 +93,7 @@ destination.chmod(0o700)
 print('STAGING_RESUME_PATCH=SIGPIPE_SAFE')
 PY
 
-bash -n "$WORK/bootstrap-real-staging.safe.sh" 
+bash -n "$WORK/bootstrap-real-staging.safe.sh"
 bash "$WORK/bootstrap-real-staging.safe.sh"
 
 assert_frozen_runtime
