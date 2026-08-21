@@ -10,6 +10,7 @@ import (
 
 func (s *Server) registerNetworkRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/network/address-change/preview", s.requireAuth(s.networkAddressChangePreview))
+	s.registerDNSRoutes(mux)
 }
 
 func (s *Server) networkAddressChangePreview(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
