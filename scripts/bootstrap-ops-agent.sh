@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 DIAG_REPO="ControlCenterSoft/control-center-server-diagnostics"
-DIAG_COMMIT="a9aba16e42fa207d8951fe079a08553474c261a0"
+DIAG_COMMIT="d127cb8d8f144162d628e14684e79d5b1343d034"
 TOKEN_FILE="/etc/control-center-diagnostics-agent/github-token"
 CONFIG_FILE="/etc/control-center-diagnostics-agent/agent.conf"
 AGENT_STATE_BRANCH="agent-state"
@@ -50,7 +50,7 @@ if not token:
 files = {
     "agent/ccops_agent_v2.py": ("agent/ccops_agent_v2.py", "8ee6a3001016e1f127cb6050b77a80eee186823c"),
     "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "4e63be0651ce5030c6c21b9a02194f710d9e7cd1"),
-    "agent/ccops_broker.py": ("agent/ccops_broker.py", "dcbeb90b5e78e2c77545a2a56468cd86e8a7327e"),
+    "agent/ccops_broker.py": ("agent/ccops_broker.py", "de14cd6b0686d7fdd09fc76adbdc40db2cb17085"),
     "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "318f7f165d99eb0349745120e680b91017b5d06c"),
     "install/install-ops-v3.sh": ("install/install-ops-v3.sh", "6d80aa9855d61f00d75a7963897174bbef3fd868"),
 }
@@ -59,7 +59,7 @@ owner, name = repo.split("/", 1)
 headers = {
     "Accept": "application/vnd.github+json",
     "Authorization": f"Bearer {token}",
-    "User-Agent": "control-center-ops-bootstrap/1.1.4",
+    "User-Agent": "control-center-ops-bootstrap/1.1.4-diskfix1",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
@@ -120,7 +120,7 @@ token=pathlib.Path(token_file).read_text(encoding='utf-8').strip()
 req=urllib.request.Request(url, headers={
     'Accept':'application/vnd.github+json',
     'Authorization':f'Bearer {token}',
-    'User-Agent':'control-center-ops-bootstrap/1.1.4',
+    'User-Agent':'control-center-ops-bootstrap/1.1.4-diskfix1',
     'X-GitHub-Api-Version':'2022-11-28',
 })
 with urllib.request.urlopen(req, timeout=20) as response:
@@ -137,6 +137,7 @@ PY
 printf 'CONTROL_CENTER_OPS_BOOTSTRAP=PASSED\n'
 printf 'DIAGNOSTICS_SOURCE_COMMIT=%s\n' "$DIAG_COMMIT"
 printf 'OPS_AGENT_VERSION=1.1.4\n'
+printf 'BROKER_CORE_VERSION=1.1.5\n'
 printf 'TOKEN_REUSED=existing-diagnostics-token\n'
 printf 'ROOT_BOUNDARY=unix-so-peercred-root-broker\n'
 printf 'SUDO_REQUIRED=false\n'
