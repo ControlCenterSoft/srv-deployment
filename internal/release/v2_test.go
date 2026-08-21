@@ -35,14 +35,12 @@ func TestDecodeV2RejectsUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = bytes.Replace(data, []byte(`"schema":2`), []byte(`"schema":2,"unexpected":true`), 1)
-	if bytes.Contains(data, []byte(`"unexpected"`)) {
-		t.Fatal("test fixture must use unescaped JSON field names")
+	needle := []byte("\"schema\":2")
+	replacement := []byte("\"schema\":2,\"unexpected\":true")
+	data = bytes.Replace(data, needle, replacement, 1)
+	if !bytes.Contains(data, []byte("\"unexpected\":true")) {
+		t.Fatal("failed to prepare unknown-field fixture")
 	}
-	data = bytes.Replace(data, []byte(`"schema":2`), []byte(`"schema":2,"unexpected":true`), 1)
-	data = bytes.Replace(data, []byte(`"schema"`), []byte(`"schema"`), 1)
-	data = bytes.Replace(data, []byte(`"unexpected"`), []byte(`"unexpected"`), 1)
-	data = bytes.Replace(data, []byte(`{"schema":2`), []byte(`{"schema":2,"unexpected":true`), 1)
 	if _, err := DecodeV2(data); err == nil {
 		t.Fatal("unknown manifest field must be rejected")
 	}
