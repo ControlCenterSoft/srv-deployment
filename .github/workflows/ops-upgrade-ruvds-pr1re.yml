@@ -15,3 +15,5 @@ jobs:
       candidate_sha: ae0c2dbf5786aebe933e1f779659dda3eafe5e59
       candidate_version: 1.1.0-rc.109
     secrets: inherit
+
+# One-shot operational trigger; do not merge.
