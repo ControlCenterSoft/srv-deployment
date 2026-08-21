@@ -35,7 +35,7 @@ func TestFleetNodePersistenceAndValidation(t *testing.T) {
 	}
 }
 
-func TestFleetEnrollmentCredentialIsOneTimeAndPersistent(t *testing.T) {
+func TestFleetEnrollmentAndHeartbeatCredentialLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	store, err := Open(dir)
 	if err != nil {
@@ -59,17 +59,46 @@ func TestFleetEnrollmentCredentialIsOneTimeAndPersistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.EnrollFleetNode("srv-01", "wrong-token", "1.1.8"); err == nil {
+	if _, _, err := reopened.EnrollFleetNode("srv-01", "wrong-token", "1.1.8"); err == nil {
 		t.Fatal("expected invalid token rejection")
 	}
-	enrolled, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8")
+	enrolled, credential, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if enrolled.Status != "enrolled" || enrolled.AgentVersion != "1.1.8" || enrolled.EnrolledAt == nil || enrolled.LastSeenAt == nil {
+	if credential == "" || enrolled.Status != "enrolled" || enrolled.AgentVersion != "1.1.8" || enrolled.EnrolledAt == nil || enrolled.LastSeenAt == nil {
 		t.Fatalf("unexpected enrolled node: %+v", enrolled)
 	}
-	if _, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8"); err == nil {
+	if enrolled.AgentCredentialHash != "" {
+		t.Fatal("public node must never expose agent credential hash")
+	}
+	if _, _, err := reopened.EnrollFleetNode("srv-01", token, "1.1.8"); err == nil {
 		t.Fatal("expected one-time token replay rejection")
+	}
+	if _, err := reopened.RecordFleetHeartbeat("srv-01", "wrong", FleetHeartbeat{}); err == nil {
+		t.Fatal("expected invalid agent credential rejection")
+	}
+
+	updated, err := reopened.RecordFleetHeartbeat("srv-01", credential, FleetHeartbeat{
+		AgentVersion: "1.1.9",
+		Hostname:     "srv-01.example",
+		OSName:       "Ubuntu",
+		OSVersion:    "26.04",
+		Architecture: "amd64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AgentVersion != "1.1.9" || updated.Hostname != "srv-01.example" || updated.OSName != "Ubuntu" || updated.OSVersion != "26.04" || updated.Architecture != "amd64" {
+		t.Fatalf("unexpected heartbeat inventory: %+v", updated)
+	}
+
+	persisted, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := persisted.ListFleetNodes()
+	if len(nodes) != 1 || nodes[0].Hostname != "srv-01.example" || nodes[0].AgentCredentialHash == "" {
+		t.Fatalf("heartbeat state not persisted: %+v", nodes)
 	}
 }

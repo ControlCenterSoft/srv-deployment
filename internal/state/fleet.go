@@ -25,16 +25,30 @@ type FleetNode struct {
 	Environment         string     `json:"environment,omitempty"`
 	Status              string     `json:"status"`
 	AgentVersion        string     `json:"agent_version,omitempty"`
+	Hostname            string     `json:"hostname,omitempty"`
+	OSName              string     `json:"os_name,omitempty"`
+	OSVersion           string     `json:"os_version,omitempty"`
+	Architecture        string     `json:"architecture,omitempty"`
 	EnrollmentTokenHash string     `json:"enrollment_token_hash,omitempty"`
 	EnrollmentExpiresAt *time.Time `json:"enrollment_expires_at,omitempty"`
+	AgentCredentialHash string     `json:"agent_credential_hash,omitempty"`
 	EnrolledAt          *time.Time `json:"enrolled_at,omitempty"`
 	LastSeenAt          *time.Time `json:"last_seen_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
+type FleetHeartbeat struct {
+	AgentVersion string
+	Hostname     string
+	OSName       string
+	OSVersion    string
+	Architecture string
+}
+
 func (n FleetNode) Public() FleetNode {
 	n.EnrollmentTokenHash = ""
+	n.AgentCredentialHash = ""
 	return n
 }
 
@@ -52,6 +66,24 @@ func normalizeNodeAddress(address string) (string, error) {
 		return "", errors.New("node address must be a hostname or IP address without spaces or path")
 	}
 	return address, nil
+}
+
+func boundedFleetValue(value string, max int, name string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) > max || strings.ContainsAny(value, "\r\n\t") {
+		return "", errors.New("invalid " + name)
+	}
+	return value, nil
+}
+
+func randomFleetCredential() (string, string, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(secret)
+	digest := sha256.Sum256([]byte(token))
+	return token, hex.EncodeToString(digest[:]), nil
 }
 
 func (s *Store) ListFleetNodes() []FleetNode {
@@ -88,8 +120,14 @@ func (s *Store) CreateFleetNode(name, address, group, environment string) (Fleet
 	}
 	now := time.Now().UTC()
 	node := FleetNode{
-		ID: strings.ToLower(name), Name: name, Address: address, Group: group, Environment: environment,
-		Status: "pending_enrollment", CreatedAt: now, UpdatedAt: now,
+		ID:          strings.ToLower(name),
+		Name:        name,
+		Address:     address,
+		Group:       group,
+		Environment: environment,
+		Status:      "pending_enrollment",
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	nodes = append(nodes, node)
 	sortFleetNodes(nodes)
@@ -109,12 +147,10 @@ func (s *Store) PrepareFleetEnrollment(id string, ttl time.Duration) (FleetNode,
 	if ttl <= 0 || ttl > 24*time.Hour {
 		return FleetNode{}, "", errors.New("enrollment ttl must be between 1 second and 24 hours")
 	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
+	token, digest, err := randomFleetCredential()
+	if err != nil {
 		return FleetNode{}, "", err
 	}
-	token := base64.RawURLEncoding.EncodeToString(secret)
-	digest := sha256.Sum256([]byte(token))
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -125,7 +161,7 @@ func (s *Store) PrepareFleetEnrollment(id string, ttl time.Duration) (FleetNode,
 	}
 	now := time.Now().UTC()
 	expires := now.Add(ttl)
-	nodes[idx].EnrollmentTokenHash = hex.EncodeToString(digest[:])
+	nodes[idx].EnrollmentTokenHash = digest
 	nodes[idx].EnrollmentExpiresAt = &expires
 	nodes[idx].Status = "enrollment_ready"
 	nodes[idx].UpdatedAt = now
@@ -137,39 +173,93 @@ func (s *Store) PrepareFleetEnrollment(id string, ttl time.Duration) (FleetNode,
 	return nodes[idx].Public(), token, nil
 }
 
-func (s *Store) EnrollFleetNode(id, token, agentVersion string) (FleetNode, error) {
+func (s *Store) EnrollFleetNode(id, token, agentVersion string) (FleetNode, string, error) {
 	id = strings.TrimSpace(strings.ToLower(id))
 	token = strings.TrimSpace(token)
-	agentVersion = strings.TrimSpace(agentVersion)
-	if id == "" || token == "" {
-		return FleetNode{}, errors.New("node id and enrollment token are required")
+	agentVersion, err := boundedFleetValue(agentVersion, 64, "agent version")
+	if err != nil {
+		return FleetNode{}, "", err
 	}
-	if len(agentVersion) > 64 || strings.ContainsAny(agentVersion, "\r\n\t") {
-		return FleetNode{}, errors.New("invalid agent version")
+	if id == "" || token == "" {
+		return FleetNode{}, "", errors.New("node id and enrollment token are required")
 	}
 	digest := sha256.Sum256([]byte(token))
 	providedHash := hex.EncodeToString(digest[:])
+	agentCredential, agentHash, err := randomFleetCredential()
+	if err != nil {
+		return FleetNode{}, "", err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	nodes := fleetNodesFromDesired(s.doc.Desired)
 	idx := fleetNodeIndex(nodes, id)
 	if idx < 0 {
-		return FleetNode{}, errors.New("invalid or expired enrollment credential")
+		return FleetNode{}, "", errors.New("invalid or expired enrollment credential")
 	}
 	node := &nodes[idx]
 	now := time.Now().UTC()
 	if node.Status != "enrollment_ready" || node.EnrollmentTokenHash == "" || node.EnrollmentExpiresAt == nil || !now.Before(*node.EnrollmentExpiresAt) {
-		return FleetNode{}, errors.New("invalid or expired enrollment credential")
+		return FleetNode{}, "", errors.New("invalid or expired enrollment credential")
 	}
 	if subtle.ConstantTimeCompare([]byte(node.EnrollmentTokenHash), []byte(providedHash)) != 1 {
-		return FleetNode{}, errors.New("invalid or expired enrollment credential")
+		return FleetNode{}, "", errors.New("invalid or expired enrollment credential")
 	}
 	node.Status = "enrolled"
 	node.AgentVersion = agentVersion
+	node.AgentCredentialHash = agentHash
 	node.EnrollmentTokenHash = ""
 	node.EnrollmentExpiresAt = nil
 	node.EnrolledAt = &now
+	node.LastSeenAt = &now
+	node.UpdatedAt = now
+	s.doc.Desired[fleetNodesKey] = nodes
+	s.doc.Revision++
+	if err := s.persistLocked(); err != nil {
+		return FleetNode{}, "", err
+	}
+	return node.Public(), agentCredential, nil
+}
+
+func (s *Store) RecordFleetHeartbeat(id, credential string, heartbeat FleetHeartbeat) (FleetNode, error) {
+	id = strings.TrimSpace(strings.ToLower(id))
+	credential = strings.TrimSpace(credential)
+	if id == "" || credential == "" {
+		return FleetNode{}, errors.New("node id and agent credential are required")
+	}
+	var err error
+	if heartbeat.AgentVersion, err = boundedFleetValue(heartbeat.AgentVersion, 64, "agent version"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.Hostname, err = boundedFleetValue(heartbeat.Hostname, 255, "hostname"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.OSName, err = boundedFleetValue(heartbeat.OSName, 128, "os name"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.OSVersion, err = boundedFleetValue(heartbeat.OSVersion, 128, "os version"); err != nil {
+		return FleetNode{}, err
+	}
+	if heartbeat.Architecture, err = boundedFleetValue(heartbeat.Architecture, 64, "architecture"); err != nil {
+		return FleetNode{}, err
+	}
+	digest := sha256.Sum256([]byte(credential))
+	providedHash := hex.EncodeToString(digest[:])
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nodes := fleetNodesFromDesired(s.doc.Desired)
+	idx := fleetNodeIndex(nodes, id)
+	if idx < 0 || nodes[idx].Status != "enrolled" || nodes[idx].AgentCredentialHash == "" || subtle.ConstantTimeCompare([]byte(nodes[idx].AgentCredentialHash), []byte(providedHash)) != 1 {
+		return FleetNode{}, errors.New("invalid agent credential")
+	}
+	now := time.Now().UTC()
+	node := &nodes[idx]
+	node.AgentVersion = heartbeat.AgentVersion
+	node.Hostname = heartbeat.Hostname
+	node.OSName = heartbeat.OSName
+	node.OSVersion = heartbeat.OSVersion
+	node.Architecture = heartbeat.Architecture
 	node.LastSeenAt = &now
 	node.UpdatedAt = now
 	s.doc.Desired[fleetNodesKey] = nodes
@@ -190,7 +280,9 @@ func fleetNodeIndex(nodes []FleetNode, id string) int {
 }
 
 func sortFleetNodes(nodes []FleetNode) {
-	sort.Slice(nodes, func(i, j int) bool { return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name) })
+	sort.Slice(nodes, func(i, j int) bool {
+		return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name)
+	})
 }
 
 func fleetNodesFromDesired(desired map[string]any) []FleetNode {
@@ -235,8 +327,23 @@ func fleetNodesFromDesired(desired map[string]any) []FleetNode {
 		if v, ok := m["agent_version"].(string); ok {
 			node.AgentVersion = v
 		}
+		if v, ok := m["hostname"].(string); ok {
+			node.Hostname = v
+		}
+		if v, ok := m["os_name"].(string); ok {
+			node.OSName = v
+		}
+		if v, ok := m["os_version"].(string); ok {
+			node.OSVersion = v
+		}
+		if v, ok := m["architecture"].(string); ok {
+			node.Architecture = v
+		}
 		if v, ok := m["enrollment_token_hash"].(string); ok {
 			node.EnrollmentTokenHash = v
+		}
+		if v, ok := m["agent_credential_hash"].(string); ok {
+			node.AgentCredentialHash = v
 		}
 		if v, ok := m["enrollment_expires_at"].(string); ok {
 			if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
