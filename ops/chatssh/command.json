@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "enabled": true,
-  "id": "configure-repo-and-probe-20260820-2310",
-  "script_sha": "82b9c3e8cb423f02f8ffc8f6d148b47ff88f77ef",
-  "script_path": "ops/chatssh/jobs/configure-repo-and-probe.sh",
-  "sha256": "d0af177edb5b1f7af0ac431a293135d8dfb3cce30b5a8c755e569b662edf8b36",
-  "timeout_seconds": 240
+  "id": "upgrade-ops-agent-1.1.6-complete-v2-20260821-0534Z",
+  "script_sha": "2e1f93d3e241817fd4e1f3954511d008b5bea1c1",
+  "script_path": "ops/chatssh/jobs/upgrade-ops-agent-1.1.6-and-complete-v2.sh",
+  "sha256": "48100f6bccc8d05f6265a4db4c4cdc64b1ccb7507961aaf9117ddde9d3f2630e",
+  "timeout_seconds": 600
 }
