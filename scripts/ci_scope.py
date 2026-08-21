@@ -11,10 +11,14 @@ from typing import Iterable
 AI_PATHS = {
     "scripts/gemini_review.py",
     "scripts/perplexity_research.py",
+    "scripts/perplexity_routine.py",
     "scripts/ci_scope.py",
     "tests/test_gemini_review.py",
     "tests/test_perplexity_research.py",
+    "tests/test_perplexity_routine.py",
     "tests/test_ci_scope.py",
+    ".github/workflows/perplexity-research.yml",
+    ".github/workflows/perplexity-routine.yml",
 }
 
 
