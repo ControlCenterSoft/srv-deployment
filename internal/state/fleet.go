@@ -107,14 +107,30 @@ func fleetNodesFromDesired(desired map[string]any) []FleetNode {
 			continue
 		}
 		node := FleetNode{}
-		if v, ok := m["id"].(string); ok { node.ID = v }
-		if v, ok := m["name"].(string); ok { node.Name = v }
-		if v, ok := m["address"].(string); ok { node.Address = v }
-		if v, ok := m["group"].(string); ok { node.Group = v }
-		if v, ok := m["environment"].(string); ok { node.Environment = v }
-		if v, ok := m["status"].(string); ok { node.Status = v }
-		if v, ok := m["created_at"].(string); ok { node.CreatedAt, _ = time.Parse(time.RFC3339Nano, v) }
-		if v, ok := m["updated_at"].(string); ok { node.UpdatedAt, _ = time.Parse(time.RFC3339Nano, v) }
+		if v, ok := m["id"].(string); ok {
+			node.ID = v
+		}
+		if v, ok := m["name"].(string); ok {
+			node.Name = v
+		}
+		if v, ok := m["address"].(string); ok {
+			node.Address = v
+		}
+		if v, ok := m["group"].(string); ok {
+			node.Group = v
+		}
+		if v, ok := m["environment"].(string); ok {
+			node.Environment = v
+		}
+		if v, ok := m["status"].(string); ok {
+			node.Status = v
+		}
+		if v, ok := m["created_at"].(string); ok {
+			node.CreatedAt, _ = time.Parse(time.RFC3339Nano, v)
+		}
+		if v, ok := m["updated_at"].(string); ok {
+			node.UpdatedAt, _ = time.Parse(time.RFC3339Nano, v)
+		}
 		if node.Name != "" && node.Address != "" {
 			out = append(out, node)
 		}
