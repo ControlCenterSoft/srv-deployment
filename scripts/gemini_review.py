@@ -6,20 +6,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import re
 import sys
-import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+
+try:
+    from .ai_gateway import post_json
+except ImportError:  # pragma: no cover - direct script execution
+    from ai_gateway import post_json
 
 SEVERITIES = ("BLOCKER", "HIGH", "MEDIUM", "LOW")
 VERDICTS = ("PASS", "PASS_WITH_NOTES", "CHANGES_REQUIRED")
 MAX_DIFF_CHARS = 180_000
-TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 
 
 def build_prompt(diff_text: str, repository: str, change_id: str, sha: str) -> str:
@@ -175,10 +175,6 @@ def extract_candidate_text(response: dict[str, Any]) -> str:
     return text
 
 
-def _retry_delay(attempt: int) -> float:
-    return min(8.0, float(2**attempt)) + random.uniform(0.0, 0.5)
-
-
 def call_gemini(
     api_key: str,
     model: str,
@@ -194,39 +190,15 @@ def call_gemini(
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"},
     }
-    request = Request(
+    return post_json(
         endpoint,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        },
-        method="POST",
+        body,
+        {"x-goog-api-key": api_key},
+        provider="Gemini",
+        allowed_hosts={"generativelanguage.googleapis.com"},
+        timeout=timeout,
+        max_attempts=max_attempts,
     )
-
-    last_error: Exception | None = None
-    for attempt in range(max_attempts):
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                return json.load(response)
-        except HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")[:2000]
-            last_error = RuntimeError(f"Gemini API HTTP {exc.code}: {details}")
-            if exc.code not in TRANSIENT_HTTP_CODES or attempt + 1 >= max_attempts:
-                raise last_error from exc
-        except URLError as exc:
-            last_error = RuntimeError(f"Gemini API request failed: {exc.reason}")
-            if attempt + 1 >= max_attempts:
-                raise last_error from exc
-
-        delay = _retry_delay(attempt)
-        print(
-            f"Gemini transient failure; retrying attempt {attempt + 2}/{max_attempts} after {delay:.1f}s",
-            file=sys.stderr,
-        )
-        time.sleep(delay)
-
-    raise RuntimeError(f"Gemini API request failed: {last_error}")
 
 
 def _escape_table(value: Any) -> str:
