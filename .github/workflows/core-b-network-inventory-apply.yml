@@ -1,0 +1,89 @@
+name: Core B network inventory apply
+
+on:
+  push:
+    branches: [feature/core-b-network-inventory-v1]
+    paths:
+      - 'internal/network/**'
+      - '.github/workflows/core-b-network-inventory-apply.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[core-b-generated]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/core-b-network-inventory-v1
+      - name: Wire API, RBAC and UI
+        shell: python
+        run: |
+          from pathlib import Path
+
+          server = Path('internal/httpserver/server.go')
+          s = server.read_text()
+          s = s.replace('"github.com/ControlCenterSoft/srv-deployment/internal/diagnostics"\n', '"github.com/ControlCenterSoft/srv-deployment/internal/diagnostics"\n\t"github.com/ControlCenterSoft/srv-deployment/internal/network"\n')
+          s = s.replace('mux.HandleFunc("GET /api/v1/system/status", s.requirePermission("system.read", s.systemStatus))\n', 'mux.HandleFunc("GET /api/v1/system/status", s.requirePermission("system.read", s.systemStatus))\n\tmux.HandleFunc("GET /api/v1/network/interfaces", s.requirePermission("network.read", s.networkInterfaces))\n')
+          anchor = 'func (s *Server) listUsers(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {'
+          method = '''func (s *Server) networkInterfaces(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {\n\tsnapshot, err := (network.SystemProvider{}).Snapshot()\n\tif err != nil {\n\t\ts.auditEvent(r, u.Username, string(u.Role), "network.inventory.read", "local-host", "failed", "network_inventory_unavailable")\n\t\twriteError(w, http.StatusServiceUnavailable, "network_inventory_unavailable", "Network inventory is unavailable", operationID(r))\n\t\treturn\n\t}\n\ts.auditEvent(r, u.Username, string(u.Role), "network.inventory.read", "local-host", "success", "")\n\twriteJSON(w, http.StatusOK, envelope{"desired": envelope{"managed": false}, "actual": snapshot, "drift": false, "apply_supported": false})\n}\n\n'''
+          if method not in s:
+              s = s.replace(anchor, method + anchor)
+          s = s.replace('return permission == "system.read"', 'return permission == "system.read" || permission == "network.read"')
+          server.write_text(s)
+
+          index = Path('internal/httpserver/web/index.html')
+          h = index.read_text()
+          h = h.replace('<button class="nav-item active" data-page="overview">Обзор</button>', '<button class="nav-item active" data-page="overview">Обзор</button>\n        <button class="nav-item" data-page="network">Сеть</button>')
+          h = h.replace('<div id="rbac-users" hidden></div>', '<div id="network-interfaces" hidden></div>\n        <div id="rbac-users" hidden></div>')
+          h = h.replace('1.0.0-alpha.3 — operations, audit и diagnostics foundation.', '1.1.x — Network Inventory: фактическое состояние интерфейсов без изменения конфигурации.')
+          index.write_text(h)
+
+          app = Path('internal/httpserver/web/app.js')
+          a = app.read_text()
+          a = a.replace('overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],', 'overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],\n  network: ["Сеть", "Сетевые интерфейсы", "Фактическое состояние интерфейсов. На этом этапе Control Center не меняет сетевую конфигурацию."],')
+          a = a.replace('const users = document.querySelector("#rbac-users"); users.hidden = true; users.textContent = "";', 'const networkInterfaces = document.querySelector("#network-interfaces"); networkInterfaces.hidden = true; networkInterfaces.textContent = "";\n    const users = document.querySelector("#rbac-users"); users.hidden = true; users.textContent = "";')
+          marker = 'if (button.dataset.page === "rbac" && currentUser?.role === "admin") {'
+          block = '''if (button.dataset.page === "network") {\n      try {\n        const data = await api("/api/v1/network/interfaces");\n        const items = data.actual.interfaces || [];\n        networkInterfaces.innerHTML = `<h3>Actual state · ${items.length} интерф.</h3><ul class="compact-list">${items.map((item) => `<li><strong>${item.name}</strong> · ${item.operational_state} · MTU ${item.mtu} · ${item.mac || "без MAC"}<br><span class="muted">${(item.addresses || []).map((address) => address.cidr).join(", ") || "адреса не назначены"}</span></li>`).join("")}</ul><p class="muted">Desired state: unmanaged · Drift: ${data.drift ? "есть" : "нет"} · Apply: отключён до safe network operations.</p>`;\n        networkInterfaces.hidden = false;\n      } catch (error) { networkInterfaces.textContent = error.message; networkInterfaces.hidden = false; }\n    }\n    '''
+          if block not in a:
+              a = a.replace(marker, block + marker)
+          app.write_text(a)
+
+          test = Path('internal/httpserver/network_inventory_test.go')
+          test.write_text(r'''package httpserver
+
+import (
+    "net/http"
+    "net/http/httptest"
+    "testing"
+
+    "github.com/ControlCenterSoft/srv-deployment/internal/state"
+)
+
+func TestViewerHasNetworkReadPermission(t *testing.T) {
+    if !hasPermission(state.RoleViewer, "network.read") { t.Fatal("viewer must have network.read") }
+    if hasPermission(state.RoleViewer, "network.write") { t.Fatal("viewer must not have network.write") }
+}
+
+func TestNetworkInventoryRequiresAuthentication(t *testing.T) {
+    handler, _ := newTestServer(t)
+    req := httptest.NewRequest(http.MethodGet, "/api/v1/network/interfaces", nil)
+    rec := httptest.NewRecorder()
+    handler.ServeHTTP(rec, req)
+    if rec.Code != http.StatusUnauthorized { t.Fatalf("status=%d want=%d", rec.Code, http.StatusUnauthorized) }
+}
+''')
+      - name: Format and test
+        run: |
+          gofmt -w internal/network/*.go internal/httpserver/server.go internal/httpserver/network_inventory_test.go
+          go test ./...
+      - name: Commit generated slice wiring
+        run: |
+          git config user.name control-center-automation
+          git config user.email 40738562+ControlCenterSoft@users.noreply.github.com
+          git add -- internal/httpserver/server.go internal/httpserver/network_inventory_test.go internal/httpserver/web/app.js internal/httpserver/web/index.html
+          git diff --cached --check
+          git commit -m 'feat(network): expose inventory in API and UI [core-b-generated]'
+          git push origin HEAD:feature/core-b-network-inventory-v1
