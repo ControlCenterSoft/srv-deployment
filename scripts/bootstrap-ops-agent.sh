@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 DIAG_REPO="ControlCenterSoft/control-center-server-diagnostics"
-DIAG_COMMIT="fdfd4fababfde339c0d381505ff2306af5571e59"
+DIAG_COMMIT="f19c9b582c8e83ea47bc5e4f07a59dcbfc7d565c"
 TOKEN_FILE="/etc/control-center-diagnostics-agent/github-token"
 CONFIG_FILE="/etc/control-center-diagnostics-agent/agent.conf"
 AGENT_STATE_BRANCH="agent-state"
@@ -52,7 +52,7 @@ files = {
     "agent/ccops_agent_v3.py": ("agent/ccops_agent_v3.py", "7f5c04b4ae5d96e1eeceb890d5433a5bdd328fa9"),
     "agent/ccops_broker.py": ("agent/ccops_broker.py", "de14cd6b0686d7fdd09fc76adbdc40db2cb17085"),
     "agent/ccops_socket_broker.py": ("agent/ccops_socket_broker.py", "c24946e297e68f40472de1d7f88e40e8bf6343c2"),
-    "agent/platform_v2_prepare.py": ("agent/platform_v2_prepare.py", "1646959a5d3cf9e0869c38386aee45ec98d739e8"),
+    "agent/platform_v2_prepare.py": ("agent/platform_v2_prepare.py", "b29b3578a826c3503d8a145d5d3077e19c49c3ef"),
     "install/install-ops-v3.sh": ("install/install-ops-v3.sh", "6d7020ddd02793ad64bd1fe8bc459d3668f70d52"),
 }
 
@@ -154,6 +154,7 @@ printf 'REMOTE_AGENT_RELEASE=1.1.8\n'
 printf 'OPS_AGENT_VERSION=1.1.8\n'
 printf 'BROKER_CORE_VERSION=1.1.5\n'
 printf 'BROKER_TRANSPORT_VERSION=1.1.8\n'
+printf 'PLATFORM_PREPARE_HELPER_VERSION=1.1.9\n'
 printf 'PLATFORM_PREPARE_V2=typed-oneshot\n'
 printf 'TOKEN_REUSED=existing-diagnostics-token\n'
 printf 'ROOT_BOUNDARY=unix-so-peercred-root-broker\n'
