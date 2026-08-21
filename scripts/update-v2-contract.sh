@@ -15,9 +15,13 @@ require() {
   }
 }
 
-require "manifest.json\\nmanifest.sig\\ncontrol-center\\ncontrol-center-privileged-worker"
-require "verify-release-v2"
+require "bootstrap-manifest.json\\nbootstrap-manifest.sig\\nmanifest.json\\nmanifest.sig\\ncontrol-center\\ncontrol-center-privileged-worker"
+require '"$CURRENT_BIN" verify-release'
+require 'bootstrap_version="$(bootstrap_field version)"'
+require '"$stage/control-center" verify-release-v2'
 require "--worker"
+require '[[ "$target_version" == "$bootstrap_version" ]]'
+require '[[ "$target_commit" == "$bootstrap_commit" ]]'
 require 'systemctl restart "$WORKER_SERVICE"'
 require 'socket_ready'
 require 'systemctl restart "$SERVICE"'
