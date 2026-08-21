@@ -7,83 +7,94 @@
 ## Production
 
 - Канонический production release: **1.0.0**.
-- `deployment.json`: `status=production-ready`, `acceptance=passed`.
+- `deployment.json`: `channel=stable`, `status=production-ready`, `acceptance=passed`.
 - Accepted source commit: `1b364ae88789696bf98537d21544de8a259d086d`.
-- Линия `main` не должна продвигаться на 1.1.x без отдельного promotion после полного acceptance.
+- Production promotion на 1.1.x не выполнялся.
 
 ## Development 1.1.x
 
 - Интеграционная ветка: `1.1.x`.
-- Exact HEAD на момент сверки: `b72fed6abd32b0607ff8a9751a6e864eb84d1a0a`.
-- Последний exact release candidate, для которого запущен полный acceptance: **1.1.0-rc.3** / `cdcc9d4d6499a26e8ffb8b520525740afc8d2589`.
-- HEAD дополнительно содержит bootstrap pin Ops Agent **1.1.8** на diagnostics commit `fdfd4fababfde339c0d381505ff2306af5571e59`; это техническое изменение после candidate source и само по себе не повышает release status.
+- Exact HEAD после интеграции DNS resolver preview: `d988b2dc1400f23473c8984bc50a8840ee987600`.
+- Merge `#147` добавил безопасный admin-only `POST /api/v1/dns/resolver/preview` с Desired/Actual/Rollback моделью, no-op detection, validation/audit и `apply_supported=false`; никаких resolver/service mutations этот slice не выполняет.
+- Предыдущий merge `#140` уже добавил read-only resolver actual-state inventory; preview строится поверх этого принятого состояния.
 
-### Подтверждённые gate results для 1.1.0-rc.3
+## Последний подтверждённый staging candidate
 
-GitHub Actions run `32453862099` подтвердил:
+Последний exact candidate, полностью прошедший real test-server Full Acceptance для продуктового slice: **1.1.0-rc.6** / `302eb6da97324d719849e7ae752fc10bdc557d9a`.
 
-1. Full deterministic validation — PASS.
-2. Reproducible amd64 dual runtime — PASS.
-3. Reproducible arm64 dual runtime — PASS.
-4. Exact stable 1.0.0 reproducibility — PASS.
-5. Disposable runtime install / update / rollback — PASS.
-6. Signed staging candidate preparation — PASS.
-7. Fast CI — PASS.
+Для этого exact SHA подтверждены:
 
-Не закрыт:
+1. Control Center 1.1.x Fast CI — PASS.
+2. Contract & Regression QA — PASS.
+3. Independent Security Review — PASS.
+4. Full Acceptance / real test-server staging — PASS.
+5. Test server после acceptance сообщал `1.1.0-rc.6` на commit `302eb6da97324d719849e7ae752fc10bdc557d9a`.
 
-- **Real test-server staging final gate** — FAIL на шаге `Deploy exact signed candidate`.
+После merge `#147` интеграционный HEAD изменился на `d988b2dc1400f23473c8984bc50a8840ee987600`, поэтому **новый release candidate ещё не зафиксирован** и прежнее staging evidence не повышает новый HEAD до production-ready автоматически.
 
-### Текущий real-staging blocker
+## Текущие gated кандидаты
 
-PR #115 изменил новый `update-v2.sh`: exact same-version replay теперь допускается только как безопасный no-op при совпадении version, commit и байтов обоих runtime; same-version identity drift и downgrade остаются fail-closed.
+### Admin Web Audit
 
-Однако реальный test server уже сообщает установленный `1.1.0-rc.3`, а staging deploy до запуска candidate code выполняет **ранее установленный server-side `control-center-update-v2`**. Этот старый updater ещё не содержит новую idempotent semantics и завершает операцию ошибкой:
+PR `#141`, exact head `2303ab818388b5356f0c57eea6a08529540756ac`:
 
-`target 1.1.0-rc.3 is not newer than current 1.1.0-rc.3`
+- Fast CI — PASS;
+- Contract & Regression QA — PASS;
+- Frontend Quality — PASS после исправления focus/live-region regression;
+- Independent Security Review — PASS;
+- Ops/Test Server staging evidence на этом exact SHA пока не подтверждено.
 
-Следовательно, source fix #115 сам по себе не закрывает upgrade-bridge для хоста, на котором тот же candidate уже установлен старым updater binary. Актуальное evidence и критерий закрытия зафиксированы в issue **#116**.
+До staging на неизменившемся SHA PR не интегрируется.
 
-До успешного `REMOTE_STAGING=PASSED` с exact identity + health/readiness/version verification `1.1.0` не считается accepted/production-ready.
+### Core A Fleet disconnect
 
-## Test server
+PR `#139`, exact head `e457678c3e3f14460cd4bb16516242ee21ac2fb4` остаётся QA-conditional: recovery claim требует полного `disconnect → fresh enrollment → fresh heartbeat` regression coverage из test-only PR `#143`. После интеграции тестов head изменится и потребует свежих CI/QA/Security evidence.
 
-Из real-staging evidence подтверждено:
+### AI Gateway
 
-- pinned SSH transport работает и доходит до test server;
-- staging secrets/signing path позволяют построить и передать signed dual-runtime candidate;
-- server-side updater отвечает как `control-center-update-v2`;
-- текущая server-side version при последнем acceptance: `1.1.0-rc.3`;
-- final deploy gate всё ещё не может подтвердить successful exact no-op из-за backward-compatibility gap установленного updater.
+PR `#150` и default-branch dispatcher `#151` не могут быть активированы/merged, пока routine queue не переведён на hardened provider transport. Независимый Security Review подтвердил redirect/credential attack path в старом transport. Security-fix chain `#145` содержит fail-closed redirect handling и credential-header hardening, но должна быть корректно интегрирована в parent AI transport и пройти свежие exact-SHA gates.
 
-Нельзя документировать полный acceptance как PASS, пока workflow не подтвердит exact release identity и post-deploy health/readiness/version.
+## Test server / Ops Agent
 
-## Ops Agent
+- На последнем подтверждённом typed preflight test server сообщал Control Center **1.1.0-rc.6** / `302eb6da97324d719849e7ae752fc10bdc557d9a`.
+- Установленный Ops Agent/Broker на preflight: **1.1.8**.
+- Diagnostics PR `ControlCenterSoft/control-center-server-diagnostics#14` поднимает agent identity до **1.1.10** и устраняет повторную публикацию одного и того же rejected command ID.
+- Exact head diagnostics `d4337bdd5f3111431ee06858fcd0d3338655751c`: CI PASS, Contract & Regression QA PASS, Independent Security Review PASS.
+- Технический staging PR `srv-deployment#158` не прошёл deploy: SSH transport доступен, но текущий staging account не имеет non-interactive `sudo`; workflow остановился до установки agent fix. Product runtime/release identity не менялась.
 
-- Последний интегрированный diagnostics bundle: **Ops Agent 1.1.8**.
-- Diagnostics source commit: `fdfd4fababfde339c0d381505ff2306af5571e59`.
-- `1.1.x` bootstrap pinned на exact blob identities этого bundle.
-- Transport сохраняет Unix `SO_PEERCRED` root broker boundary, typed/allowlisted actions и отсутствие arbitrary shell.
-- Следующее runtime evidence должно подтвердить фактическую регистрацию `agent_version=1.1.8` на test server; наличие bootstrap pin в Git само по себе не является доказательством установленной версии.
+До успешного безопасного staging PR `#14` не должен считаться подтверждённо установленным на test server.
+
+## Website
+
+- Website UX/CRO PR `control-center-website#55` exact head `29a3b44eb612048b96ddbe33d74ab522e84aff4b`: repository CI PASS, Contract & Regression QA PASS, Frontend Quality PASS после 44px/focus fix.
+- Cloudflare deployment status для этого exact head сообщает deployment failure, поэтому merge/deploy остаётся gated до устранения site deployment blocker и повторной проверки.
+- Client Portal `#61` и Website Admin `#59` являются contract/evidence foundation; они намеренно не создают privileged/public account routes до появления server-authoritative backend contracts.
+- Website Visual/Layout `#54` остаётся отдельным визуальным потоком и не должен конфликтовать с functional UX/CRO files.
+
+## Android
+
+- Android SDK Fleet contract уже интегрирован в `control-center-android-sdk/main`.
+- `control-center-android-admin#2` остаётся draft: typed Fleet inventory parsing есть, но user-facing Compose screen, focused UI/parser tests и финальные exact-head quality/security gates ещё не завершены.
+- iOS полностью вне scope и не участвует в release gate.
 
 ## Update / rollback policy
 
 - Same-version и downgrade apply не должны молча перезаписывать runtime.
-- Явный controlled rollback может использовать специальный downgrade path, но не обходит signature/digest/platform/state-schema checks.
-- Для idempotent staging допускается только безопасный no-op, когда доверенно совпадают version, exact commit/build identity и требуемые runtime bytes.
-- Совпадение только версии при несовпадении identity должно завершаться fail-closed.
-- Acceptance обязан учитывать version skew самого установленного updater; новая candidate semantics не считается доступной до фактического переключения/обновления соответствующего trusted updater path.
+- Controlled rollback не обходит signature/digest/platform/state-schema checks.
+- Для idempotent staging допускается только безопасный no-op при совпадении version, exact commit/build identity и требуемых runtime bytes.
+- Любое изменение candidate SHA инвалидирует прежние QA/Security/Quality/Staging evidence.
 
 ## Release governance
 
-- Каждый обычный новый релиз Control Center должен включать минимум одну завершённую **User-facing improvement** — новую пользовательскую capability либо заметное расширение существующего пользовательского сценария.
-- Release notes должны явно фиксировать эту пользовательскую ценность и связанное acceptance evidence.
-- Refactor, CI/CD, dependencies, docs, tests, infrastructure, internal agent/transport и performance-only изменения могут интегрироваться, но не должны самостоятельно инициировать обычный продуктовый релиз.
-- Исключение допускается только для явно обозначенного emergency maintenance/security/hotfix release, когда задержка создаёт риск безопасности, потери данных, недоступности продукта или нарушает update/rollback.
+- Каждый обычный новый релиз Control Center должен включать минимум одну завершённую **User-facing improvement**.
+- Release notes должны фиксировать пользовательскую ценность и связанное acceptance evidence.
+- Refactor, CI/CD, dependencies, docs, tests, infrastructure и internal agent/transport изменения не должны самостоятельно инициировать обычный продуктовый релиз.
+- Emergency maintenance/security/hotfix release без новой пользовательской функции допускается только при объективном риске и должен быть явно маркирован.
+- Финальный merge/release/promotion выполняется только после зелёных применимых CI, QA, Quality, Security и staging gates на неизменившихся exact SHA.
 
 ## Документационная дисциплина
 
 - Исторические release records `docs/releases/1.0.0*.md` не переписываются задним числом.
 - `deployment.json` остаётся authoritative source production release status.
-- Плановые Google Drive документы используются как roadmap/requirements, но не повышают фактический release status.
-- Runtime/CI discrepancy оформляется технической задачей, а не маскируется документацией.
+- Google Drive roadmap/requirements не повышают release status без code/CI/runtime evidence.
+- Runtime/CI discrepancy оформляется технической задачей и не маскируется документацией.
