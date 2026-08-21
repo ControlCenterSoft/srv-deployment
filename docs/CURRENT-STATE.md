@@ -1,6 +1,6 @@
 # Control Center — текущее подтверждённое состояние
 
-Дата сверки: 2026-08-21.
+Дата сверки: 2026-08-22.
 
 Этот документ описывает **фактическое подтверждённое состояние** по коду, release metadata, GitHub CI и runtime/staging evidence. При расхождении с планами или старыми документами приоритет имеют exact release metadata и проверяемое CI/runtime evidence.
 
@@ -14,8 +14,9 @@
 ## Development 1.1.x
 
 - Интеграционная ветка: `1.1.x`.
-- Exact HEAD: `6e279af1f45db4b501ee40035985aee289d9b82d`.
+- Exact HEAD после gated merge AI provider transport PR `#142`: `bbbd4b586b61a1ad7a4c673bef5515edd54e767e`.
 - Приняты DNS resolver actual-state inventory и безопасный admin-only resolver preview с Desired/Actual/Rollback моделью, no-op detection, validation/audit и `apply_supported=false`.
+- Принят shared AI provider transport для Gemini/Perplexity с HTTPS/host allowlist, fail-closed redirects, bounded timeout/retry/response и без отражения provider error bodies/redirect targets в surfaced errors.
 - Resolver/service mutations пока не включены.
 
 ## Последний подтверждённый staging candidate
@@ -56,18 +57,13 @@ PR `#139`, exact head `e457678c3e3f14460cd4bb16516242ee21ac2fb4`, сейчас �
 
 ### AI Gateway
 
-Security-fix PR `#145` с fail-closed redirect handling, non-redirectable provider credentials и default-path regression coverage интегрирован в parent transport PR `#142`.
+PR `#142`, exact reviewed head `5653b0c1c33494e24ced7b4ffc882bd45ebe813d`, прошёл Fast CI, Contract & Regression QA, Independent Security Review и был интегрирован P0 Integrator в `1.1.x` merge commit `bbbd4b586b61a1ad7a4c673bef5515edd54e767e`.
 
-Новый exact head `#142`: `5653b0c1c33494e24ced7b4ffc882bd45ebe813d`:
+Это внутренний advisory AI transport/security slice без product/Core/Admin Web/runtime/release authority; отдельный обычный product release из-за него не создаётся, потому что он не является завершённой User-facing improvement.
 
-- Fast CI — PASS;
-- Test ops agent bootstrap — PASS;
-- Independent Security Review — PASS;
-- свежий Contract & Regression QA на этом exact SHA пока отсутствует.
+Security-fix PR `#164` для Perplexity routine queue имеет Contract & Regression QA PASS и Security Review PASS на exact head `883b69d532e1bf6640011a07455e1c04c00def2e`, но собственного PR-triggered deterministic CI run на этом exact head нет. Поэтому Integrator не объединяет `#164` в parent `#150` до появления применимого exact-SHA CI evidence.
 
-До свежего exact-SHA QA parent `#142` не интегрируется в `1.1.x`.
-
-PR `#150` и default-branch dispatcher `#151` остаются заблокированы. `#150` всё ещё закреплён на старом vulnerable transport path; `#151` дополнительно нарушает действующий frozen-main post-release allowlist. Оба требуют перепривязки к принятому hardened transport и свежих QA/Security gates; текущие heads не merge.
+PR `#150` и default-branch dispatcher `#151` остаются заблокированы. После будущей интеграции hardened transport в `#150` его head изменится и потребует свежих exact-SHA CI/QA/Security evidence; `#151` должен быть перепривязан к новому immutable parent SHA и повторно пройти требуемые gates. Frozen-main allowlist остаётся обязательным ограничением.
 
 ## Test server / Ops Agent
 
