@@ -1,0 +1,170 @@
+name: Control Center 1.1.x Direct Upgrade v2
+
+on:
+  pull_request:
+    branches: ['1.1.x']
+    paths:
+      - 'install/**'
+      - 'cmd/control-center/**'
+      - 'cmd/control-center-privileged-worker/**'
+      - 'cmd/release-tool/**'
+      - 'internal/release/**'
+      - 'packaging/systemd/**'
+      - 'scripts/platform-v2-migration-contract.sh'
+      - 'scripts/update-v2-contract.sh'
+      - '.github/workflows/direct-upgrade-v2.yml'
+  push:
+    branches: ['1.1.x']
+    paths:
+      - 'install/**'
+      - 'cmd/control-center/**'
+      - 'cmd/control-center-privileged-worker/**'
+      - 'cmd/release-tool/**'
+      - 'internal/release/**'
+      - 'packaging/systemd/**'
+      - 'scripts/platform-v2-migration-contract.sh'
+      - 'scripts/update-v2-contract.sh'
+      - '.github/workflows/direct-upgrade-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-center-direct-upgrade-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+  GO_VERSION: '1.23.2'
+  ACCEPTED_1_0_0_COMMIT: 1b364ae88789696bf98537d21544de8a259d086d
+
+jobs:
+  direct-upgrade:
+    name: Accepted 1.0.0 → dual-runtime candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Exact toolchain and source identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(go env GOVERSION)" = "go${GO_VERSION}"
+          git merge-base --is-ancestor "$ACCEPTED_1_0_0_COMMIT" HEAD
+          bash scripts/platform-v2-migration-contract.sh
+          bash scripts/update-v2-contract.sh
+      - name: Direct signed upgrade and rollback acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_VERSION="1.1.0-rc.${GITHUB_RUN_NUMBER}"
+          BROKEN_VERSION="1.1.1-beta.${GITHUB_RUN_NUMBER}"
+          BUILT_AT="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
+          work="$RUNNER_TEMP/direct-upgrade-v2"
+          mkdir -p "$work"
+
+          cleanup() {
+            sudo bash install/uninstall.sh >/dev/null 2>&1 || true
+            git worktree remove --force "$work/stable" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          openssl genpkey -algorithm ED25519 -out "$work/update-private.pem"
+          openssl pkey -in "$work/update-private.pem" -pubout -out "$work/update-public.pem"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${CANDIDATE_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o "$work/control-center-good" ./cmd/control-center
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false -ldflags "-s -w" \
+            -o "$work/control-center-worker-good" ./cmd/control-center-privileged-worker
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${BROKEN_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o "$work/control-center-broken-main" ./cmd/control-center
+          printf '#!/bin/sh\nexit 70\n' > "$work/control-center-worker-broken"
+          chmod 0755 "$work/control-center-worker-broken"
+
+          go run ./cmd/release-tool package-v2 \
+            --binary "$work/control-center-broken-main" \
+            --worker "$work/control-center-worker-broken" \
+            --version "$BROKEN_VERSION" \
+            --channel beta \
+            --commit "$CANDIDATE_SHA" \
+            --arch amd64 \
+            --private-key "$work/update-private.pem" \
+            --built-at "$BUILT_AT" \
+            --output "$work/broken-v2.tar.gz"
+          go run ./cmd/release-tool package-v2 \
+            --binary "$work/control-center-good" \
+            --worker "$work/control-center-worker-good" \
+            --version "$CANDIDATE_VERSION" \
+            --channel beta \
+            --commit "$CANDIDATE_SHA" \
+            --arch amd64 \
+            --private-key "$work/update-private.pem" \
+            --built-at "$BUILT_AT" \
+            --output "$work/good-v2.tar.gz"
+
+          git worktree add --detach "$work/stable" "$ACCEPTED_1_0_0_COMMIT"
+          (
+            cd "$work/stable"
+            ./scripts/build-release.sh
+          )
+          stable_binary="$work/stable/dist/control-center-linux-amd64"
+          test -x "$stable_binary"
+          test "$("$stable_binary" build-info --field version)" = 1.0.0
+          test "$("$stable_binary" build-info --field commit)" = "$ACCEPTED_1_0_0_COMMIT"
+
+          sudo env \
+            CONTROL_CENTER_BINARY="$stable_binary" \
+            CONTROL_CENTER_UPDATE_PUBLIC_KEY="$work/update-public.pem" \
+            bash "$work/stable/install/install.sh"
+          curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null
+          curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '"version":"1.0.0"'
+          stable_target="$(readlink /usr/local/lib/control-center/current)"
+          test -n "$stable_target"
+          ! systemctl cat control-center-privileged-worker.service >/dev/null 2>&1
+
+          sudo bash install/migrate-platform-v2.sh
+          systemctl cat control-center-privileged-worker.service >/dev/null
+          ! systemctl is-active --quiet control-center-privileged-worker.service
+          ! systemctl is-enabled --quiet control-center-privileged-worker.service
+          test "$(readlink /usr/local/lib/control-center/current)" = "$stable_target"
+
+          if sudo bash install/update-v2.sh \
+              --package "$work/broken-v2.tar.gz" \
+              --public-key "$work/update-public.pem"; then
+            echo 'broken dual-runtime package unexpectedly passed' >&2
+            exit 1
+          fi
+          test "$(readlink /usr/local/lib/control-center/current)" = "$stable_target"
+          curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null
+          curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq '"version":"1.0.0"'
+          ! systemctl is-active --quiet control-center-privileged-worker.service
+          ! systemctl is-enabled --quiet control-center-privileged-worker.service
+
+          sudo bash install/update-v2.sh \
+            --package "$work/good-v2.tar.gz" \
+            --public-key "$work/update-public.pem"
+          systemctl is-active --quiet control-center-privileged-worker.service
+          test -S /run/control-center/privileged-worker.sock
+          test "$(stat -Lc '%U:%G:%a' /run/control-center/privileged-worker.sock)" = 'root:control-center:660'
+          curl -fsS http://127.0.0.1:8876/api/v1/health >/dev/null
+          curl -fsS http://127.0.0.1:8876/api/v1/readiness | grep -Fq '"ready":true'
+          curl -fsS http://127.0.0.1:8876/api/v1/version | grep -Fq "\"version\":\"${CANDIDATE_VERSION}\""
+          test "$(readlink /usr/local/lib/control-center/previous)" = "$stable_target"
+
+          printf 'DIRECT_UPGRADE_V2=PASSED\n'
+          printf 'FROM=1.0.0\n'
+          printf 'TO=%s\n' "$CANDIDATE_VERSION"
+          printf 'BROKEN_ROLLBACK=PASSED\n'
