@@ -6,17 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import sys
-import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+
+try:
+    from .ai_gateway import post_json
+except ImportError:  # pragma: no cover - direct script execution
+    from ai_gateway import post_json
 
 MAX_DIFF_CHARS = 120_000
-TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 
 
 def build_prompt(
@@ -79,10 +79,6 @@ List only directly relevant current advisories/security guidance, or "None."
 """
 
 
-def _retry_delay(attempt: int) -> float:
-    return min(8.0, float(2**attempt)) + random.uniform(0.0, 0.5)
-
-
 def call_perplexity(
     api_key: str,
     model: str,
@@ -105,40 +101,15 @@ def call_perplexity(
         ],
         "temperature": 0.1,
     }
-
-    last_error: Exception | None = None
-    for attempt in range(max_attempts):
-        request = Request(
-            endpoint,
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                return json.load(response)
-        except HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")[:2000]
-            last_error = RuntimeError(f"Perplexity API HTTP {exc.code}: {details}")
-            if exc.code not in TRANSIENT_HTTP_CODES or attempt + 1 >= max_attempts:
-                raise last_error from exc
-        except URLError as exc:
-            last_error = RuntimeError(f"Perplexity API request failed: {exc.reason}")
-            if attempt + 1 >= max_attempts:
-                raise last_error from exc
-
-        delay = _retry_delay(attempt)
-        print(
-            f"Perplexity transient failure; retrying attempt {attempt + 2}/{max_attempts} "
-            f"after {delay:.1f}s",
-            file=sys.stderr,
-        )
-        time.sleep(delay)
-
-    raise RuntimeError(f"Perplexity API request failed: {last_error}")
+    return post_json(
+        endpoint,
+        body,
+        {"Authorization": f"Bearer {api_key}"},
+        provider="Perplexity",
+        allowed_hosts={"api.perplexity.ai"},
+        timeout=timeout,
+        max_attempts=max_attempts,
+    )
 
 
 def extract_content(response: dict[str, Any]) -> str:
