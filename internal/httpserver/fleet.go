@@ -27,7 +27,7 @@ func (s *Server) listFleetNodes(w http.ResponseWriter, r *http.Request, sess aut
 		}
 	}
 	writeJSON(w, http.StatusOK, envelope{
-		"nodes": nodes,
+		"nodes":   nodes,
 		"summary": envelope{"total": len(nodes), "pending_enrollment": pending},
 	})
 }
