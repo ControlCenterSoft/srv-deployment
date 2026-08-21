@@ -47,7 +47,7 @@
           <input id="new-password" type="password" autocomplete="new-password" placeholder="Новый пароль (минимум 12 символов)" required>
           <button class="primary" type="submit">Сменить пароль</button>
         </form>
-        <p id="password-error" class="error"></p>
+        <p id="password-error" class="error" role="alert"></p>
       </section>
       <section class="card">
         <h2 id="card-title">Состояние платформы</h2>
@@ -65,9 +65,23 @@
           <input id="fleet-group" placeholder="Группа (необязательно)">
           <input id="fleet-environment" placeholder="Окружение (необязательно)">
           <button class="primary" type="submit">Добавить</button>
-          <p id="fleet-error" class="error"></p>
+          <p id="fleet-error" class="error" role="alert"></p>
         </form>
         <div id="rbac-users" hidden></div>
+        <form id="rbac-create-form" class="workflow-form" hidden>
+          <h3>Создать пользователя</h3>
+          <label for="rbac-username">Логин</label>
+          <input id="rbac-username" name="username" autocomplete="off" required>
+          <label for="rbac-password">Временный пароль</label>
+          <input id="rbac-password" name="password" type="password" autocomplete="new-password" minlength="12" required>
+          <label for="rbac-role">Роль</label>
+          <select id="rbac-role" name="role" required>
+            <option value="viewer">viewer</option>
+            <option value="admin">admin</option>
+          </select>
+          <button class="primary" type="submit">Создать</button>
+          <p id="rbac-error" class="error" role="alert"></p>
+        </form>
         <div id="system-details" hidden></div>
         <div id="network-interfaces" hidden></div>
         <div id="operations-list" hidden></div>
