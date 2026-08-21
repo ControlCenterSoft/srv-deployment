@@ -91,9 +91,15 @@ func TestVerifyV2ChecksSignatureAndBothArtifacts(t *testing.T) {
 		t.Fatalf("unexpected release id: %q", verified.ReleaseID())
 	}
 
-	mustWriteTestFile(t, workerPath, []byte("tampered-worker"))
+	// Keep the tampered artifact length identical so this negative test reaches
+	// the SHA-256 verification path instead of failing earlier on size.
+	tamperedWorker := []byte("tampered-worker!!")
+	if len(tamperedWorker) != len(workerBytes) {
+		t.Fatalf("tampered fixture length mismatch: got %d want %d", len(tamperedWorker), len(workerBytes))
+	}
+	mustWriteTestFile(t, workerPath, tamperedWorker)
 	if _, err := VerifyV2(manifestPath, sigPath, keyPath, paths, "linux", "amd64", 1); err == nil || !strings.Contains(err.Error(), "SHA-256 mismatch") {
-		t.Fatalf("tampered worker must fail closed, got: %v", err)
+		t.Fatalf("tampered worker must fail closed on SHA-256 verification, got: %v", err)
 	}
 }
 
