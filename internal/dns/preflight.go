@@ -3,8 +3,15 @@ package dns
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 )
+
+type ResolverPreflightRequest struct {
+	Nameservers               []string `json:"nameservers"`
+	SearchDomains             []string `json:"search_domains"`
+	ExpectedSourceFingerprint string   `json:"expected_source_fingerprint"`
+}
 
 type ResolverPreflightCheck struct {
 	Name   string `json:"name"`
@@ -27,8 +34,15 @@ type ResolverPreflightResult struct {
 	RequiredExecutorSteps []string                 `json:"required_executor_steps"`
 }
 
-func PreflightResolverChange(in ResolverChangeRequest, actual ResolverState) (ResolverPreflightResult, error) {
-	plan, err := PreviewResolverChange(in, actual)
+func PreflightResolverChange(in ResolverPreflightRequest, actual ResolverState) (ResolverPreflightResult, error) {
+	expectedFingerprint := strings.TrimSpace(in.ExpectedSourceFingerprint)
+	if !validResolverFingerprint(expectedFingerprint) {
+		return ResolverPreflightResult{}, fmt.Errorf("valid expected source fingerprint is required")
+	}
+	plan, err := PreviewResolverChange(ResolverChangeRequest{
+		Nameservers:   in.Nameservers,
+		SearchDomains: in.SearchDomains,
+	}, actual)
 	if err != nil {
 		return ResolverPreflightResult{}, err
 	}
@@ -40,6 +54,7 @@ func PreflightResolverChange(in ResolverChangeRequest, actual ResolverState) (Re
 		{Name: "resolver_inventory_available", OK: len(actual.Nameservers) > 0},
 		{Name: "resolver_source_supported", OK: sourceSupported, Detail: actual.SourceKind},
 		{Name: "resolver_source_fingerprint_available", OK: fingerprint != ""},
+		{Name: "resolver_source_unchanged", OK: fingerprint != "" && expectedFingerprint == fingerprint},
 		{Name: "desired_state_validated", OK: true},
 		{Name: "rollback_state_available", OK: rollbackAvailable},
 	}
@@ -87,6 +102,14 @@ func ResolverStateFingerprint(actual ResolverState) string {
 	}, "\n")
 	sum := sha256.Sum256([]byte(canonical))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func validResolverFingerprint(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
 }
 
 func boolString(value bool) string {
