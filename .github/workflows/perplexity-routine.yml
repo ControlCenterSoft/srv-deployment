@@ -6,10 +6,13 @@ on:
   workflow_call:
     inputs:
       code_ref:
-        description: Ref containing the routine engineer implementation
-        required: false
+        description: Immutable ref containing the routine engineer implementation
+        required: true
         type: string
-        default: 1.1.x
+    secrets:
+      PERPLEXITY_API_KEY:
+        description: Perplexity API credential for this advisory workflow only
+        required: true
   workflow_dispatch:
     inputs:
       task:
