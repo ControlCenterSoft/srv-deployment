@@ -14,8 +14,31 @@ function installAuditPage() {
   const page = document.createElement('div');
   page.id = 'audit-page';
   page.hidden = true;
-  page.setAttribute('role', 'status');
-  page.setAttribute('aria-live', 'polite');
+
+  const header = document.createElement('div');
+  const title = document.createElement('h3');
+  title.textContent = 'Последние события';
+  header.appendChild(title);
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.className = 'text-button';
+  refresh.textContent = 'Обновить';
+  refresh.setAttribute('aria-label', 'Обновить журнал аудита');
+  refresh.addEventListener('click', loadAuditPage);
+  header.appendChild(refresh);
+  page.appendChild(header);
+
+  const status = document.createElement('div');
+  status.id = 'audit-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.setAttribute('aria-atomic', 'true');
+  page.appendChild(status);
+
+  const results = document.createElement('div');
+  results.id = 'audit-results';
+  page.appendChild(results);
+
   const systemDetails = document.querySelector('#system-details');
   card.insertBefore(page, systemDetails || null);
 
@@ -69,19 +92,6 @@ function appendAuditLine(container, text, className = '') {
 function renderAuditEvents(container, events) {
   container.textContent = '';
 
-  const header = document.createElement('div');
-  const title = document.createElement('h3');
-  title.textContent = `Последние события (${events.length})`;
-  header.appendChild(title);
-  const refresh = document.createElement('button');
-  refresh.type = 'button';
-  refresh.className = 'text-button';
-  refresh.textContent = 'Обновить';
-  refresh.setAttribute('aria-label', 'Обновить журнал аудита');
-  refresh.addEventListener('click', loadAuditPage);
-  header.appendChild(refresh);
-  container.appendChild(header);
-
   const list = document.createElement('ul');
   list.className = 'compact-list';
   for (const event of events) {
@@ -105,14 +115,20 @@ function renderAuditEvents(container, events) {
 
 async function loadAuditPage() {
   const page = document.querySelector('#audit-page');
-  if (!page || currentUser?.role !== 'admin') return;
+  const status = document.querySelector('#audit-status');
+  const results = document.querySelector('#audit-results');
+  if (!page || !status || !results || currentUser?.role !== 'admin') return;
   page.hidden = false;
-  page.textContent = 'Загрузка журнала аудита…';
+  status.textContent = 'Загрузка журнала аудита…';
   try {
     const data = await api('/api/v1/audit?limit=50');
-    renderAuditEvents(page, Array.isArray(data.events) ? data.events : []);
+    const events = Array.isArray(data.events) ? data.events : [];
+    renderAuditEvents(results, events);
+    status.textContent = events.length
+      ? `Журнал аудита обновлён: ${events.length} событий.`
+      : 'Журнал аудита обновлён: событий нет.';
   } catch (error) {
-    page.textContent = `Не удалось загрузить журнал аудита: ${error.message}`;
+    status.textContent = `Не удалось загрузить журнал аудита: ${error.message}`;
   }
 }
 

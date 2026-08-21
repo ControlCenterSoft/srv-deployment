@@ -23,7 +23,10 @@ func TestAdminWebAuditWorkflowContract(t *testing.T) {
 		`renderAuditEvents`,
 		`event.operation_id`,
 		`event.error_code`,
-		`aria-live`,
+		`status.id = 'audit-status'`,
+		`status.setAttribute('role', 'status')`,
+		`status.setAttribute('aria-live', 'polite')`,
+		`results.id = 'audit-results'`,
 		`Обновить журнал аудита`,
 	} {
 		if !strings.Contains(audit, required) {
@@ -41,6 +44,31 @@ func TestAdminWebAuditWorkflowContract(t *testing.T) {
 	}
 	if len(audit) > 8*1024 {
 		t.Fatalf("audit workflow exceeds the 8 KiB frontend budget: %d bytes", len(audit))
+	}
+}
+
+func TestAdminWebAuditRefreshAccessibilityContract(t *testing.T) {
+	audit := readWebAsset(t, "web/audit.js")
+	for _, required := range []string{
+		`refresh.addEventListener('click', loadAuditPage)`,
+		`const status = document.querySelector('#audit-status')`,
+		`const results = document.querySelector('#audit-results')`,
+		`renderAuditEvents(results, events)`,
+		`status.textContent = 'Загрузка журнала аудита…'`,
+	} {
+		if !strings.Contains(audit, required) {
+			t.Fatalf("audit refresh accessibility contract is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`page.setAttribute('role', 'status')`,
+		`page.setAttribute('aria-live', 'polite')`,
+		`page.textContent = 'Загрузка журнала аудита…'`,
+		`renderAuditEvents(page,`,
+	} {
+		if strings.Contains(audit, forbidden) {
+			t.Fatalf("audit refresh must keep stable controls and a dedicated live region; found %q", forbidden)
+		}
 	}
 }
 
