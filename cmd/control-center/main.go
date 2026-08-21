@@ -38,6 +38,9 @@ func main() {
 		case "verify-release":
 			verifyRelease(os.Args[2:])
 			return
+		case "verify-release-v2":
+			verifyReleaseV2(os.Args[2:])
+			return
 		case "compare-version":
 			compareVersion(os.Args[2:])
 			return
@@ -124,13 +127,49 @@ func verifyRelease(args []string) {
 		fmt.Fprintln(os.Stderr, "release verification failed:", err)
 		os.Exit(1)
 	}
-	switch *field {
+	printReleaseField(m.ReleaseID(), m.Version, m.Commit, *field)
+}
+
+func verifyReleaseV2(args []string) {
+	fs := flag.NewFlagSet("verify-release-v2", flag.ExitOnError)
+	manifest := fs.String("manifest", "", "manifest v2 path")
+	signature := fs.String("signature", "", "signature path")
+	publicKey := fs.String("public-key", "", "trusted Ed25519 public key")
+	artifact := fs.String("artifact", "", "control-center candidate binary")
+	worker := fs.String("worker", "", "privileged worker candidate binary")
+	field := fs.String("field", "release-id", "release-id|version|commit")
+	_ = fs.Parse(args)
+	if *manifest == "" || *signature == "" || *publicKey == "" || *artifact == "" || *worker == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	m, err := release.VerifyV2(
+		*manifest,
+		*signature,
+		*publicKey,
+		map[string]string{
+			"control-center":                   *artifact,
+			"control-center-privileged-worker": *worker,
+		},
+		runtime.GOOS,
+		runtime.GOARCH,
+		state.SchemaVersion,
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "release v2 verification failed:", err)
+		os.Exit(1)
+	}
+	printReleaseField(m.ReleaseID(), m.Version, m.Commit, *field)
+}
+
+func printReleaseField(releaseID, version, commit, field string) {
+	switch field {
 	case "release-id":
-		fmt.Println(m.ReleaseID())
+		fmt.Println(releaseID)
 	case "version":
-		fmt.Println(m.Version)
+		fmt.Println(version)
 	case "commit":
-		fmt.Println(m.Commit)
+		fmt.Println(commit)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown verify-release field")
 		os.Exit(2)
