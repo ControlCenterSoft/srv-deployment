@@ -130,6 +130,8 @@ jobs:
         run: bash -n install/*.sh scripts/*.sh
       - name: Privileged worker packaging contract
         run: bash scripts/privileged-worker-packaging-contract.sh
+      - name: Dual-runtime updater v2 contract
+        run: bash scripts/update-v2-contract.sh
 
   ai-checks:
     name: AI integration checks
