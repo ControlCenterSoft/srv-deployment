@@ -20,11 +20,33 @@ import (
 	"github.com/ControlCenterSoft/srv-deployment/internal/release"
 )
 
+type packageEntry struct {
+	name string
+	mode int64
+	data []byte
+}
+
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "package" {
-		fmt.Fprintln(os.Stderr, "usage: release-tool package --binary PATH --version VERSION --commit SHA --arch amd64|arm64 --private-key PATH --output PATH")
-		os.Exit(2)
+	if len(os.Args) < 2 {
+		usage()
 	}
+	switch os.Args[1] {
+	case "package":
+		runPackageV1(os.Args[2:])
+	case "package-v2":
+		runPackageV2(os.Args[2:])
+	default:
+		usage()
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: release-tool package --binary PATH --version VERSION --commit SHA --arch amd64|arm64 --private-key PATH --output PATH")
+	fmt.Fprintln(os.Stderr, "       release-tool package-v2 --binary PATH --worker PATH --version VERSION --commit SHA --arch amd64|arm64 --private-key PATH --output PATH")
+	os.Exit(2)
+}
+
+func runPackageV1(args []string) {
 	fs := flag.NewFlagSet("package", flag.ExitOnError)
 	binary := fs.String("binary", "", "release binary")
 	version := fs.String("version", "", "semantic version")
@@ -34,24 +56,91 @@ func main() {
 	privateKey := fs.String("private-key", "", "Ed25519 private key PEM")
 	output := fs.String("output", "", "output tar.gz")
 	builtAt := fs.String("built-at", time.Now().UTC().Format(time.RFC3339), "build timestamp")
-	_ = fs.Parse(os.Args[2:])
+	_ = fs.Parse(args)
 	if *binary == "" || *version == "" || *commit == "" || *arch == "" || *privateKey == "" || *output == "" {
 		fs.Usage()
 		os.Exit(2)
 	}
-	artifact, err := os.ReadFile(*binary)
+	artifact, metadata, err := readArtifact("control-center", *binary)
 	must(err)
-	sum := sha256.Sum256(artifact)
 	m := release.Manifest{
 		Schema: release.ManifestSchema, Product: "Control Center", Version: *version, Channel: *channel,
 		Commit: *commit, BuiltAt: *builtAt, OS: "linux", Arch: *arch, StateSchemaMin: 1, StateSchemaMax: 1,
-		Artifact: release.Artifact{Name: "control-center", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(artifact))},
+		Artifact: metadata,
 	}
 	must(m.Validate())
-	manifest, err := json.MarshalIndent(m, "", "  ")
+	manifest := marshalManifest(m)
+	priv := loadPrivateKey(*privateKey)
+	sig := ed25519.Sign(priv, manifest)
+	modTime := parseBuiltAt(*builtAt)
+	must(writePackage(*output, []packageEntry{
+		{name: "manifest.json", mode: 0o444, data: manifest},
+		{name: "manifest.sig", mode: 0o444, data: sig},
+		{name: "control-center", mode: 0o555, data: artifact},
+	}, modTime))
+	fmt.Println(*output)
+}
+
+func runPackageV2(args []string) {
+	fs := flag.NewFlagSet("package-v2", flag.ExitOnError)
+	binary := fs.String("binary", "", "control-center release binary")
+	worker := fs.String("worker", "", "control-center-privileged-worker release binary")
+	version := fs.String("version", "", "semantic version")
+	channel := fs.String("channel", "beta", "beta or stable")
+	commit := fs.String("commit", "", "source commit SHA")
+	arch := fs.String("arch", "", "amd64 or arm64")
+	privateKey := fs.String("private-key", "", "Ed25519 private key PEM")
+	output := fs.String("output", "", "output tar.gz")
+	builtAt := fs.String("built-at", time.Now().UTC().Format(time.RFC3339), "build timestamp")
+	_ = fs.Parse(args)
+	if *binary == "" || *worker == "" || *version == "" || *commit == "" || *arch == "" || *privateKey == "" || *output == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	primaryBytes, primaryMeta, err := readArtifact("control-center", *binary)
 	must(err)
-	manifest = append(manifest, '\n')
-	keyPEM, err := os.ReadFile(*privateKey)
+	workerBytes, workerMeta, err := readArtifact("control-center-privileged-worker", *worker)
+	must(err)
+	m := release.ManifestV2{
+		Schema: release.ManifestSchemaV2, Product: "Control Center", Version: *version, Channel: *channel,
+		Commit: *commit, BuiltAt: *builtAt, OS: "linux", Arch: *arch, StateSchemaMin: 1, StateSchemaMax: 1,
+		Artifacts: []release.Artifact{primaryMeta, workerMeta},
+	}
+	must(m.Validate())
+	manifest := marshalManifest(m)
+	priv := loadPrivateKey(*privateKey)
+	sig := ed25519.Sign(priv, manifest)
+	modTime := parseBuiltAt(*builtAt)
+	must(writePackage(*output, []packageEntry{
+		{name: "manifest.json", mode: 0o444, data: manifest},
+		{name: "manifest.sig", mode: 0o444, data: sig},
+		{name: "control-center", mode: 0o555, data: primaryBytes},
+		{name: "control-center-privileged-worker", mode: 0o555, data: workerBytes},
+	}, modTime))
+	fmt.Println(*output)
+}
+
+func readArtifact(name, path string) ([]byte, release.Artifact, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, release.Artifact{}, err
+	}
+	if len(data) == 0 {
+		return nil, release.Artifact{}, fmt.Errorf("artifact %s is empty", name)
+	}
+	sum := sha256.Sum256(data)
+	return data, release.Artifact{Name: name, SHA256: hex.EncodeToString(sum[:]), Size: int64(len(data))}, nil
+}
+
+func marshalManifest(v any) []byte {
+	manifest, err := json.MarshalIndent(v, "", "  ")
+	must(err)
+	return append(manifest, '\n')
+}
+
+func loadPrivateKey(path string) ed25519.PrivateKey {
+	keyPEM, err := os.ReadFile(path)
 	must(err)
 	block, rest := pem.Decode(keyPEM)
 	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
@@ -63,12 +152,16 @@ func main() {
 	if !ok {
 		fatal("private key is not Ed25519")
 	}
-	sig := ed25519.Sign(priv, manifest)
-	must(writePackage(*output, manifest, sig, artifact))
-	fmt.Println(*output)
+	return priv
 }
 
-func writePackage(path string, manifest, sig, artifact []byte) error {
+func parseBuiltAt(value string) time.Time {
+	t, err := time.Parse(time.RFC3339, value)
+	must(err)
+	return t.UTC()
+}
+
+func writePackage(path string, entries []packageEntry, modTime time.Time) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -78,15 +171,11 @@ func writePackage(path string, manifest, sig, artifact []byte) error {
 	}
 	defer f.Close()
 	gz := gzip.NewWriter(f)
+	gz.Header.ModTime = time.Unix(0, 0).UTC()
+	gz.Header.OS = 255
 	tw := tar.NewWriter(gz)
-	now := time.Now().UTC()
-	entries := []struct {
-		name string
-		mode int64
-		data []byte
-	}{{"manifest.json", 0o444, manifest}, {"manifest.sig", 0o444, sig}, {"control-center", 0o555, artifact}}
 	for _, e := range entries {
-		if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: e.mode, Size: int64(len(e.data)), ModTime: now}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: e.mode, Size: int64(len(e.data)), ModTime: modTime}); err != nil {
 			return err
 		}
 		if _, err := io.Copy(tw, bytes.NewReader(e.data)); err != nil {
