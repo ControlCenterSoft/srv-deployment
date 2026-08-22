@@ -11,7 +11,11 @@ import (
 	"github.com/ControlCenterSoft/srv-deployment/internal/state"
 )
 
-const defaultIncidentLimit = 50
+const (
+	defaultIncidentLimit          = 50
+	operationIncidentsCollectionID = "_incidents"
+	operationIncidentsPath         = "/api/v1/operations/" + operationIncidentsCollectionID
+)
 
 func (s *Server) operationIncidents(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
 	limit, ok := parseIncidentLimit(r)
