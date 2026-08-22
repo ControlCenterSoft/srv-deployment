@@ -18,6 +18,7 @@ AI_PATHS = {
     "tests/test_perplexity_research.py",
     "tests/test_ci_scope.py",
 }
+POLICY_PATH_PREFIXES = (".github/workflows/",)
 
 
 def classify(paths: Iterable[str]) -> dict[str, bool]:
@@ -27,7 +28,10 @@ def classify(paths: Iterable[str]) -> dict[str, bool]:
         p.endswith(".sh") and (p.startswith("scripts/") or p.startswith("install/"))
         for p in normalized
     )
-    ai = any(p in AI_PATHS for p in normalized)
+    ai = any(
+        p in AI_PATHS or p.startswith(POLICY_PATH_PREFIXES)
+        for p in normalized
+    )
     runtime = any(
         p.startswith(("cmd/", "internal/", "packaging/", "install/"))
         or p in {"go.mod", "go.sum"}
