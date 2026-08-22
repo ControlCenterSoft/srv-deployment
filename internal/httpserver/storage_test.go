@@ -62,10 +62,10 @@ func TestStorageDeviceInventoryRequiresAuthenticationAndIsReadOnly(t *testing.T)
 			t.Fatalf("invalid bounded warning: %+v", warning)
 		}
 	}
-	if !body.Management.InventorySupported || body.Management.Scope != "top_level_block_devices" {
+	if !body.Management.InventorySupported || body.Management.Scope != "top_level_block_devices" || !body.Management.PartitionsSupported {
 		t.Fatalf("unexpected inventory management metadata: %+v", body.Management)
 	}
-	if body.Management.PartitionsSupported || body.Management.FilesystemsSupported || body.Management.MountsSupported || body.Management.PreviewSupported || body.Management.PreflightSupported || body.Management.ApplySupported {
+	if body.Management.FilesystemsSupported || body.Management.MountsSupported || body.Management.PreviewSupported || body.Management.PreflightSupported || body.Management.ApplySupported {
 		t.Fatalf("storage mutation/scope unexpectedly advertised: %+v", body.Management)
 	}
 	if body.Management.Reason != "storage_mutation_not_implemented" {
