@@ -147,3 +147,63 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   .card, .auth-card, .warning, .facts div, .setup-panel, .agent-setup, input, select, .status { border-color: #657286; }
   .nav-item.active { box-shadow: inset 4px 0 0 var(--cc-focus); }
 }
+
+/* Calm Infrastructure density primitives: reusable spacing, stable state rows and
+   compact operational lists without changing any workflow or data semantics. */
+:root {
+  --cc-space-1: 4px;
+  --cc-space-2: 8px;
+  --cc-space-3: 12px;
+  --cc-space-4: 16px;
+  --cc-space-5: 24px;
+  --cc-control-min-height: 42px;
+  --cc-row-min-height: 44px;
+}
+
+.facts { gap: var(--cc-space-3); }
+.facts div { padding: var(--cc-space-4); }
+.workflow-form { gap: var(--cc-space-3) var(--cc-space-4); }
+.workflow-form label { font-size: 14px; font-weight: 650; line-height: 1.35; }
+.workflow-form input, .workflow-form select, .workflow-form .primary { min-height: var(--cc-control-min-height); }
+.workflow-form .error { margin: 0; }
+
+.rbac-list, .compact-list {
+  list-style: none;
+  margin: var(--cc-space-4) 0 0;
+  padding: 0;
+  border-top: 1px solid var(--cc-border);
+}
+.rbac-list li, .compact-list li {
+  min-width: 0;
+  min-height: var(--cc-row-min-height);
+  padding: var(--cc-space-3) 0;
+  border-bottom: 1px solid var(--cc-border);
+  overflow-wrap: anywhere;
+}
+.compact-list { display: grid; gap: 0; }
+.compact-list li > div + div { margin-top: var(--cc-space-1); }
+
+#audit-page { min-width: 0; }
+#audit-page > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cc-space-4);
+}
+#audit-page > div:first-child h3 { margin: 0; }
+#audit-status {
+  min-height: 1.5em;
+  margin: var(--cc-space-2) 0 0;
+  color: var(--cc-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+#audit-results { min-width: 0; }
+
+@media (max-width: 720px) {
+  header { align-items: flex-start; flex-direction: column; gap: var(--cc-space-3); }
+  .status { white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
+  #audit-page > div:first-child { align-items: flex-start; }
+  .compact-list li, .rbac-list li { min-height: 0; }
+}
