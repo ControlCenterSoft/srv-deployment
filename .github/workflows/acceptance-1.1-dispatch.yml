@@ -47,65 +47,50 @@ jobs:
       group: control-center-1.1-protected-command-bridge
       cancel-in-progress: false
     steps:
-      - name: Refuse workflow reruns
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test "${GITHUB_RUN_ATTEMPT}" = "1"
-
-      - name: Parse and strictly validate trusted request
+      - name: Validate exact authorized request
         id: request
         shell: bash
         env:
           EVENT_PATH: ${{ github.event_path }}
         run: |
           set -Eeuo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
           python3 - <<'PY'
           import datetime as dt
-          import json
-          import os
-          import re
+          import json, os, re
 
           event = json.load(open(os.environ['EVENT_PATH'], encoding='utf-8'))
           issue = event['issue']
           body = issue.get('body') or ''
-          if len(body.encode('utf-8')) > 1024:
+          if len(body.encode()) > 1024:
               raise SystemExit('request body too large')
-
-          payload = json.loads(body)
-          expected_keys = {'candidate_sha', 'candidate_version', 'dedupe_not_before'}
-          if set(payload) != expected_keys:
-              raise SystemExit(f'request keys must be exactly {sorted(expected_keys)}')
-
-          sha = payload['candidate_sha']
-          version = payload['candidate_version']
-          cutoff = payload['dedupe_not_before']
+          p = json.loads(body)
+          if set(p) != {'candidate_sha', 'candidate_version', 'dedupe_not_before'}:
+              raise SystemExit('unexpected request keys')
+          sha, version, cutoff = p['candidate_sha'], p['candidate_version'], p['dedupe_not_before']
+          dispatcher_sha = os.environ['GITHUB_SHA']
           if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
               raise SystemExit('invalid candidate_sha')
+          if not re.fullmatch(r'[0-9a-f]{40}', dispatcher_sha):
+              raise SystemExit('invalid dispatcher sha')
           if not isinstance(version, str) or not re.fullmatch(r'1\.1\.\d+-rc\.\d+', version):
               raise SystemExit('invalid candidate_version')
           if not isinstance(cutoff, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', cutoff):
               raise SystemExit('invalid dedupe_not_before')
-
           created = dt.datetime.fromisoformat(issue['created_at'].replace('Z', '+00:00'))
-          cutoff_dt = dt.datetime.fromisoformat(cutoff.replace('Z', '+00:00'))
-          if cutoff_dt > created:
-              raise SystemExit('dedupe_not_before cannot be after issue creation')
-          if created - cutoff_dt > dt.timedelta(hours=6):
-              raise SystemExit('dedupe window exceeds six hours')
-
-          expected_title = f'[CC-PROTECTED-ACCEPTANCE] {version} {sha}'
-          if issue.get('title') != expected_title:
-              raise SystemExit('issue title does not exactly match validated request')
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+          start = dt.datetime.fromisoformat(cutoff.replace('Z', '+00:00'))
+          if start > created or created - start > dt.timedelta(hours=6):
+              raise SystemExit('invalid authorization window')
+          if issue.get('title') != f'[CC-PROTECTED-ACCEPTANCE] {version} {sha}':
+              raise SystemExit('title mismatch')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'candidate_sha={sha}\n')
               out.write(f'candidate_version={version}\n')
               out.write(f'dedupe_not_before={cutoff}\n')
+              out.write(f'dispatcher_sha={dispatcher_sha}\n')
           PY
 
-      - name: Refuse duplicate dispatcher runs in authorization window
-        id: dedupe
+      - name: Fail closed if any dispatch already exists in authorization window
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,107 +103,39 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "https://api.github.com/repos/${REPO}/actions/workflows/acceptance-1.1-dispatch.yml/runs?event=workflow_dispatch&branch=main&per_page=100" \
-            -o /tmp/dispatcher-runs.json
+            -o /tmp/runs.json
           python3 - <<'PY'
-          import json
-          import os
-
-          data = json.load(open('/tmp/dispatcher-runs.json', encoding='utf-8'))
+          import json, os
           cutoff = os.environ['CUTOFF']
-          runs = [r for r in data.get('workflow_runs', []) if (r.get('created_at') or '') >= cutoff]
-          runs.sort(key=lambda r: r.get('created_at') or '')
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
-              out.write(f'count={len(runs)}\n')
-              if not runs:
-                  out.write('action=dispatch\n')
-              elif len(runs) == 1:
-                  out.write('action=existing\n')
-                  out.write(f"existing_run_id={runs[0]['id']}\n")
-                  out.write(f"existing_run_url={runs[0]['html_url']}\n")
-              else:
-                  out.write('action=conflict\n')
+          runs = [r for r in json.load(open('/tmp/runs.json')).get('workflow_runs', [])
+                  if (r.get('created_at') or '') >= cutoff]
+          if runs:
+              raise SystemExit(f'{len(runs)} dispatcher run(s) already exist in authorization window; refusing duplicate')
           PY
 
-      - name: Report duplicate conflict
-        if: steps.dedupe.outputs.action == 'conflict'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          COUNT: ${{ steps.dedupe.outputs.count }}
-        run: |
-          set -Eeuo pipefail
-          export COMMENT_BODY="BLOCKED_DUPLICATE_CONFLICT\n${COUNT} workflow_dispatch runs already exist inside the authorization window. No new dispatch was created."
-          payload=$(python3 - <<'PY'
-          import json, os
-          print(json.dumps({'body': os.environ['COMMENT_BODY']}))
-          PY
-          )
-          curl --fail-with-body --silent --show-error \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
-            --data "$payload" >/dev/null
-          exit 42
-
-      - name: Report existing dispatcher run
-        if: steps.dedupe.outputs.action == 'existing'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
-          CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
-          RUN_ID: ${{ steps.dedupe.outputs.existing_run_id }}
-          RUN_URL: ${{ steps.dedupe.outputs.existing_run_url }}
-        run: |
-          set -Eeuo pipefail
-          export COMMENT_BODY="EXISTING_DISPATCH_IN_WINDOW\nrequested_candidate_sha=${CANDIDATE_SHA}\nrequested_candidate_version=${CANDIDATE_VERSION}\nworkflow_run_id=${RUN_ID}\nrun_url=${RUN_URL}\nNo second dispatch was created."
-          payload=$(python3 - <<'PY'
-          import json, os
-          print(json.dumps({'body': os.environ['COMMENT_BODY']}))
-          PY
-          )
-          curl --fail-with-body --silent --show-error \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
-            --data "$payload" >/dev/null
-
-      - name: Verify canonical candidate
-        if: steps.dedupe.outputs.action == 'dispatch'
+      - name: Recheck canonical candidate and dispatcher immediately before dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
           curl --fail-with-body --silent --show-error \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "https://api.github.com/repos/${REPO}/branches/1.1.x" \
-            -o /tmp/canonical.json
-          python3 - <<'PY'
-          import json
-          import os
+            "https://api.github.com/repos/${REPO}/branches/1.1.x" -o /tmp/canonical.json
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/branches/main" -o /tmp/main.json
+          test "$(python3 -c "import json; print(json.load(open('/tmp/canonical.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
+          test "$(python3 -c "import json; print(json.load(open('/tmp/main.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
 
-          candidate = os.environ['CANDIDATE_SHA']
-          canonical = json.load(open('/tmp/canonical.json', encoding='utf-8'))['commit']['sha']
-          if canonical != candidate:
-              raise SystemExit(f'canonical 1.1.x moved: expected {candidate}, got {canonical}')
-          PY
-
-      - name: Dispatch exact protected acceptance workflow
-        if: steps.dedupe.outputs.action == 'dispatch'
+      - name: Dispatch exact protected acceptance
         id: dispatch
         shell: bash
         env:
@@ -226,39 +143,69 @@ jobs:
           REPO: ${{ github.repository }}
           CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
           CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
-          payload=$(python3 - <<'PY'
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/branches/main" -o /tmp/main-pre-dispatch.json
+          test "$(python3 -c "import json; print(json.load(open('/tmp/main-pre-dispatch.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
+          payload="$(python3 - <<'PY'
           import json, os
           print(json.dumps({
-              'ref': 'main',
-              'inputs': {
-                  'candidate_sha': os.environ['CANDIDATE_SHA'],
-                  'candidate_version': os.environ['CANDIDATE_VERSION'],
-              },
+            'ref': 'main',
+            'inputs': {
+              'candidate_sha': os.environ['CANDIDATE_SHA'],
+              'candidate_version': os.environ['CANDIDATE_VERSION'],
+            },
           }))
           PY
-          )
+          )"
           curl --fail-with-body --silent --show-error \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "https://api.github.com/repos/${REPO}/actions/workflows/acceptance-1.1-dispatch.yml/dispatches" \
-            --data "$payload" \
-            -o /tmp/dispatch-response.json
+            --data "${payload}" -o /tmp/dispatch.json
+          run_id="$(python3 -c "import json; print(json.load(open('/tmp/dispatch.json'))['workflow_run_id'])")"
+          run_url="$(python3 -c "import json; print(json.load(open('/tmp/dispatch.json'))['html_url'])")"
+          for _ in $(seq 1 10); do
+            if curl --fail-with-body --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "https://api.github.com/repos/${REPO}/actions/runs/${run_id}" -o /tmp/dispatched-run.json; then
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/dispatched-run.json
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/dispatched-workflow.json
           python3 - <<'PY'
-          import json
-          import os
-
-          data = json.load(open('/tmp/dispatch-response.json', encoding='utf-8'))
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
-              out.write(f"run_id={data['workflow_run_id']}\n")
-              out.write(f"run_url={data['html_url']}\n")
+          import json, os
+          run = json.load(open('/tmp/dispatched-run.json'))
+          workflow = json.load(open('/tmp/dispatched-workflow.json'))
+          dispatcher_sha = os.environ['DISPATCHER_SHA']
+          if run.get('workflow_id') != workflow.get('id') or run.get('event') != 'workflow_dispatch':
+              raise SystemExit('dispatched workflow identity mismatch')
+          if run.get('head_branch') != 'main' or run.get('run_attempt') != 1:
+              raise SystemExit('dispatched run ref/attempt mismatch')
+          if run.get('head_sha') != dispatcher_sha:
+              raise SystemExit('dispatched workflow source drift')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"run_id={run['id']}\n")
+              out.write(f"run_url={run['html_url']}\n")
+              out.write(f"dispatcher_sha={dispatcher_sha}\n")
           PY
 
-      - name: Report created dispatcher run
-        if: steps.dedupe.outputs.action == 'dispatch' && steps.dispatch.outcome == 'success'
+      - name: Record immutable dispatch evidence and close request
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -268,37 +215,232 @@ jobs:
           CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
           RUN_ID: ${{ steps.dispatch.outputs.run_id }}
           RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          DISPATCHER_SHA: ${{ steps.dispatch.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
-          export COMMENT_BODY="DISPATCHED\ncandidate_sha=${CANDIDATE_SHA}\ncandidate_version=${CANDIDATE_VERSION}\nworkflow_run_id=${RUN_ID}\nrun_url=${RUN_URL}"
-          payload=$(python3 - <<'PY'
-          import json, os
-          print(json.dumps({'body': os.environ['COMMENT_BODY']}))
-          PY
-          )
-          curl --fail-with-body --silent --show-error \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
+          export COMMENT_BODY="DISPATCHED\ncandidate_sha=${CANDIDATE_SHA}\ncandidate_version=${CANDIDATE_VERSION}\nworkflow_run_id=${RUN_ID}\ndispatcher_sha=${DISPATCHER_SHA}\nrun_url=${RUN_URL}"
+          payload="$(python3 -c 'import json,os; print(json.dumps({"body":os.environ["COMMENT_BODY"]}))')"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
-            --data "$payload" >/dev/null
+            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}/comments" --data "${payload}" >/dev/null
+          curl --fail-with-body --silent --show-error -X PATCH \
+            -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}" --data '{"state":"closed"}' >/dev/null
 
-      - name: Close fulfilled request issue
-        if: >-
-          steps.dedupe.outputs.action == 'existing' ||
-          (steps.dedupe.outputs.action == 'dispatch' && steps.dispatch.outcome == 'success')
+  trusted-autonomous-staging-approval:
+    if: >-
+      github.event_name == 'issues' &&
+      github.actor == github.repository_owner &&
+      github.event.issue.user.login == github.repository_owner &&
+      startsWith(github.event.issue.title, '[CC-AUTONOMOUS-STAGING-APPROVAL] ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    concurrency:
+      group: control-center-autonomous-staging-approval
+      cancel-in-progress: false
+    steps:
+      - name: Validate exact staging command and reviewer identity
+        id: request
+        shell: bash
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+          REVIEWER_TOKEN: ${{ secrets.CONTROL_CENTER_RELEASE_REVIEWER_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${REVIEWER_TOKEN}"
+          python3 - <<'PY'
+          import json, os, re
+          issue = json.load(open(os.environ['EVENT_PATH']))['issue']
+          body = issue.get('body') or ''
+          if len(body.encode()) > 2048:
+              raise SystemExit('request body too large')
+          p = json.loads(body)
+          expected = {'dispatch_issue_number','workflow_run_id','candidate_sha','candidate_version','dispatcher_sha'}
+          if set(p) != expected:
+              raise SystemExit('unexpected request keys')
+          di, run_id, sha, version, dispatcher_sha = p['dispatch_issue_number'], p['workflow_run_id'], p['candidate_sha'], p['candidate_version'], p['dispatcher_sha']
+          if not isinstance(di, int) or di <= 0 or not isinstance(run_id, int) or run_id <= 0:
+              raise SystemExit('invalid ids')
+          if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('invalid candidate_sha')
+          if not isinstance(dispatcher_sha, str) or not re.fullmatch(r'[0-9a-f]{40}', dispatcher_sha):
+              raise SystemExit('invalid dispatcher_sha')
+          if not isinstance(version, str) or not re.fullmatch(r'1\.1\.\d+-rc\.\d+', version):
+              raise SystemExit('invalid candidate_version')
+          if issue.get('title') != f'[CC-AUTONOMOUS-STAGING-APPROVAL] run {run_id} {version} {sha}':
+              raise SystemExit('title mismatch')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'dispatch_issue_number={di}\nworkflow_run_id={run_id}\ncandidate_sha={sha}\ncandidate_version={version}\ndispatcher_sha={dispatcher_sha}\n')
+          PY
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${REVIEWER_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/user" -o /tmp/reviewer.json
+          test "$(python3 -c "import json; print(json.load(open('/tmp/reviewer.json'))['login'])")" = "controlcenter-release-reviewer"
+
+      - name: Bind run to trusted dispatcher evidence and exact canonical candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DISPATCH_ISSUE: ${{ steps.request.outputs.dispatch_issue_number }}
+          RUN_ID: ${{ steps.request.outputs.workflow_run_id }}
+          CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
+          CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
+        run: |
+          set -Eeuo pipefail
+          api="https://api.github.com/repos/${REPO}"
+          auth=(-H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" -H "X-GitHub-Api-Version: 2026-03-10")
+          curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/issues/${DISPATCH_ISSUE}" -o /tmp/issue.json
+          curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/issues/${DISPATCH_ISSUE}/comments?per_page=100" -o /tmp/comments.json
+          curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow.json
+          curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run.json
+          curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical.json
+          curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/main" -o /tmp/main.json
+          python3 - <<'PY'
+          import json, os
+          sha, version, run_id = os.environ['CANDIDATE_SHA'], os.environ['CANDIDATE_VERSION'], int(os.environ['RUN_ID'])
+          dispatcher_sha = os.environ['DISPATCHER_SHA']
+          issue = json.load(open('/tmp/issue.json'))
+          if issue.get('user',{}).get('login') != 'ControlCenterSoft':
+              raise SystemExit('dispatch issue author mismatch')
+          if issue.get('title') != f'[CC-PROTECTED-ACCEPTANCE] {version} {sha}':
+              raise SystemExit('dispatch issue title mismatch')
+          body = json.loads(issue.get('body') or '{}')
+          if body.get('candidate_sha') != sha or body.get('candidate_version') != version:
+              raise SystemExit('dispatch issue candidate mismatch')
+          required = {'DISPATCHED',f'candidate_sha={sha}',f'candidate_version={version}',f'workflow_run_id={run_id}',f'dispatcher_sha={dispatcher_sha}'}
+          evidence = [c for c in json.load(open('/tmp/comments.json'))
+                      if c.get('user',{}).get('login') == 'github-actions[bot]'
+                      and required.issubset(set((c.get('body') or '').splitlines()))]
+          if len(evidence) != 1:
+              raise SystemExit('trusted dispatcher evidence missing or ambiguous')
+          workflow, run = json.load(open('/tmp/workflow.json')), json.load(open('/tmp/run.json'))
+          if run.get('workflow_id') != workflow.get('id') or run.get('event') != 'workflow_dispatch':
+              raise SystemExit('workflow identity mismatch')
+          if run.get('head_branch') != 'main' or run.get('run_attempt') != 1:
+              raise SystemExit('run ref/attempt mismatch')
+          if run.get('head_sha') != dispatcher_sha:
+              raise SystemExit('workflow source sha mismatch')
+          if json.load(open('/tmp/canonical.json'))['commit']['sha'] != sha:
+              raise SystemExit('canonical 1.1.x moved before staging approval')
+          if json.load(open('/tmp/main.json'))['commit']['sha'] != dispatcher_sha:
+              raise SystemExit('main moved away from authorized dispatcher before staging approval')
+          PY
+
+      - name: Approve exact staging deployments while canonical identity remains frozen
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWER_TOKEN: ${{ secrets.CONTROL_CENTER_RELEASE_REVIEWER_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.request.outputs.workflow_run_id }}
+          CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
+          CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
+        run: |
+          set -Eeuo pipefail
+          api="https://api.github.com/repos/${REPO}"
+          auth=(-H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" -H "X-GitHub-Api-Version: 2026-03-10")
+          validate_run_identity() {
+            local workflow_json="$1" run_json="$2"
+            python3 - "$workflow_json" "$run_json" <<'PY'
+          import json, os, sys
+          workflow = json.load(open(sys.argv[1]))
+          run = json.load(open(sys.argv[2]))
+          if run.get('workflow_id') != workflow.get('id') or run.get('event') != 'workflow_dispatch':
+              raise SystemExit('workflow identity drift during staging approval')
+          if run.get('head_branch') != 'main' or run.get('run_attempt') != 1:
+              raise SystemExit('run ref/attempt drift during staging approval')
+          if run.get('head_sha') != os.environ['DISPATCHER_SHA']:
+              raise SystemExit('workflow source drift during staging approval')
+          PY
+          }
+          final=""
+          for _ in $(seq 1 190); do
+            curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical-loop.json
+            test "$(python3 -c "import json; print(json.load(open('/tmp/canonical-loop.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
+            curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/main" -o /tmp/main-loop.json
+            test "$(python3 -c "import json; print(json.load(open('/tmp/main-loop.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
+
+            curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow-loop.json
+            curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run-loop.json
+            validate_run_identity /tmp/workflow-loop.json /tmp/run-loop.json
+            status="$(python3 -c "import json; print(json.load(open('/tmp/run-loop.json')).get('status') or '')")"
+            if [ "${status}" = completed ]; then
+              final="$(python3 -c "import json; print(json.load(open('/tmp/run-loop.json')).get('conclusion') or '')")"
+              break
+            fi
+
+            curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}/pending_deployments" -o /tmp/pending.json
+            env_ids="$(python3 - <<'PY'
+          import json
+          p = json.load(open('/tmp/pending.json'))
+          if any((x.get('environment') or {}).get('name') != 'staging' for x in p):
+              raise SystemExit('non-staging pending deployment detected')
+          print(','.join(str(x['environment']['id']) for x in p))
+          PY
+          )"
+            if [ -n "${env_ids}" ]; then
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical-preapprove.json
+              test "$(python3 -c "import json; print(json.load(open('/tmp/canonical-preapprove.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/main" -o /tmp/main-preapprove.json
+              test "$(python3 -c "import json; print(json.load(open('/tmp/main-preapprove.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow-preapprove.json
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run-preapprove.json
+              validate_run_identity /tmp/workflow-preapprove.json /tmp/run-preapprove.json
+              preapprove_status="$(python3 -c "import json; print(json.load(open('/tmp/run-preapprove.json')).get('status') or '')")"
+              if [ "${preapprove_status}" = completed ]; then
+                final="$(python3 -c "import json; print(json.load(open('/tmp/run-preapprove.json')).get('conclusion') or '')")"
+                break
+              fi
+              payload="$(ENV_IDS="${env_ids}" python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'environment_ids':[int(x) for x in os.environ['ENV_IDS'].split(',') if x],
+            'state':'approved',
+            'comment':f"Exact-candidate automation: {os.environ['CANDIDATE_VERSION']} {os.environ['CANDIDATE_SHA']}",
+          }))
+          PY
+          )"
+              curl --fail-with-body --silent --show-error -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${REVIEWER_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "${api}/actions/runs/${RUN_ID}/pending_deployments" --data "${payload}" >/dev/null
+            fi
+            sleep 15
+          done
+          test "${final}" = success
+
+      - name: Record completion and close staging command
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_ID: ${{ steps.request.outputs.workflow_run_id }}
+          CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
+          CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
-          curl --fail-with-body --silent --show-error \
-            -X PATCH \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
+          export COMMENT_BODY="AUTONOMOUS_STAGING_APPROVAL_COMPLETE\nworkflow_run_id=${RUN_ID}\ncandidate_sha=${CANDIDATE_SHA}\ncandidate_version=${CANDIDATE_VERSION}\ndispatcher_sha=${DISPATCHER_SHA}\nprotected_acceptance=success"
+          payload="$(python3 -c 'import json,os; print(json.dumps({"body":os.environ["COMMENT_BODY"]}))')"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}" \
-            --data '{"state":"closed"}' >/dev/null
+            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}/comments" --data "${payload}" >/dev/null
+          curl --fail-with-body --silent --show-error -X PATCH \
+            -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}" --data '{"state":"closed"}' >/dev/null
