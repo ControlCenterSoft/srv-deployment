@@ -1,0 +1,28 @@
+name: Control Center 1.1.x Protected Acceptance Dispatcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact canonical 1.1.x GATE-FROZEN commit SHA
+        required: true
+        type: string
+      candidate_version:
+        description: Release-candidate semantic version
+        required: true
+        default: 1.1.0-rc.1
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-center-1.1-protected-dispatch-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+jobs:
+  protected-acceptance:
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1-protected.yml@b7a7dbf930b1baad28bfa8aee67ce845692b2ebe
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+      candidate_version: ${{ inputs.candidate_version }}
