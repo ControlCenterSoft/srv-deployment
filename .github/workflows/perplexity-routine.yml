@@ -1,12 +1,10 @@
 name: Perplexity Routine Engineer
 
 on:
-  issues:
-    types: [opened, edited, reopened]
   workflow_call:
     inputs:
       code_ref:
-        description: Immutable ref containing the routine engineer implementation
+        description: Immutable SHA containing the routine engineer implementation
         required: true
         type: string
     secrets:
@@ -57,6 +55,18 @@ jobs:
       PERPLEXITY_MODEL: ${{ vars.PERPLEXITY_MODEL || 'sonar-pro' }}
 
     steps:
+      - name: Validate immutable implementation ref
+        if: ${{ inputs.code_ref != '' }}
+        env:
+          CODE_REF: ${{ inputs.code_ref }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ ! "$CODE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'code_ref must be an immutable 40-character lowercase commit SHA' >&2
+            exit 42
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.code_ref || github.sha }}
