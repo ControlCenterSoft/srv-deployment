@@ -75,15 +75,25 @@ jobs:
           grep -Fq 'pull_request_target:' .github/workflows/release-gate.yml
           grep -Fq 'ref: main' .github/workflows/release-gate.yml
           grep -Fq 'persist-credentials: false' .github/workflows/release-gate.yml
-          grep -Fq 'contents: read' .github/workflows/release-gate.yml
+          grep -Fq 'contents: write' .github/workflows/release-gate.yml
           grep -Fq 'pull-requests: read' .github/workflows/release-gate.yml
-          grep -Fq -- '--no-merge' .github/workflows/release-gate.yml
-          if grep -Eq 'contents:[[:space:]]*write|pull-requests:[[:space:]]*write' .github/workflows/release-gate.yml; then
-            echo 'ERROR: trusted release gate must remain a read-only validator' >&2
+          grep -Fq 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1' .github/workflows/release-gate.yml
+          grep -Fq 'app-id: 4682191' .github/workflows/release-gate.yml
+          grep -Fq 'RELEASE_GATE_APP_PRIVATE_KEY' .github/workflows/release-gate.yml
+          grep -Fq 'permission-pull-requests: write' .github/workflows/release-gate.yml
+          grep -Fq 'permission-contents: read' .github/workflows/release-gate.yml
+          grep -Fq 'RELEASE_GATE_REVIEW_TOKEN:' .github/workflows/release-gate.yml
+          grep -Fq 'MERGE_TOKEN:' .github/workflows/release-gate.yml
+          grep -Fq 'head.repo.full_name == github.repository' .github/workflows/release-gate.yml
+          grep -Fq 'user.login == github.repository_owner' .github/workflows/release-gate.yml
+          if grep -Fq 'pull_request_review:' .github/workflows/release-gate.yml; then
+            echo 'ERROR: App approval must not recursively retrigger the trusted gate' >&2
             exit 1
           fi
-          grep -Fq 'GEMINI_API_KEY:' .github/workflows/release-gate.yml
-          grep -Fq 'secrets.GEMINI_API_KEY' .github/workflows/release-gate.yml
+          if grep -Fq -- '--no-merge' .github/workflows/release-gate.yml; then
+            echo 'ERROR: steady-state release gate must complete the protected merge after App approval' >&2
+            exit 1
+          fi
           if grep -Eq 'ref:[[:space:]]*\$\{\{[[:space:]]*(github\.head_ref|github\.event\.pull_request\.head)' .github/workflows/release-gate.yml; then
             echo 'ERROR: trusted release gate must never checkout PR-controlled refs' >&2
             exit 1
@@ -97,6 +107,16 @@ jobs:
               exit 1
             }
           done
+          grep -Fq 'RELEASE_GATE_REVIEWER = "control-center-release-gate[bot]"' scripts/release_gate.py
+          grep -Fq 'submit_app_approval(review_api' scripts/release_gate.py
+          grep -Fq 'result = merge_api.request(' scripts/release_gate.py
+          grep -Fq 'App approval is not anchored to the exact PR head' scripts/release_gate.py
+          grep -Fq 'protected base moved after evidence was captured' scripts/release_gate.py
+          grep -Fq 'PR head is behind the current protected base' scripts/release_gate.py
+          if grep -Fq 'controlcenter-release-reviewer' scripts/release_gate.py; then
+            echo 'ERROR: steady-state machine gate must not depend on the human reviewer identity' >&2
+            exit 1
+          fi
           grep -Fq 'application/vnd.github.v3.diff' scripts/release_gate.py
           grep -Fq 'independent Gemini review' scripts/release_gate.py
           grep -Fq 'CHANGES_REQUIRED' scripts/release_gate_ai.py
