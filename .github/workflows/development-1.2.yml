@@ -53,8 +53,13 @@ jobs:
           set -Eeuo pipefail
           HEAD_SHA="${GITHUB_SHA}"
           if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            BASE_TIP="${{ github.event.pull_request.base.sha }}"
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            BASE_SHA="$(git merge-base "${BASE_TIP}" "${HEAD_SHA}")"
+            [[ -n "${BASE_SHA}" ]] || {
+              echo 'Unable to resolve pull-request merge base' >&2
+              exit 42
+            }
           elif [[ "${GITHUB_EVENT_NAME}" == push && ! "${{ github.event.before }}" =~ ^0+$ ]]; then
             BASE_SHA="${{ github.event.before }}"
           else
