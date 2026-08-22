@@ -274,8 +274,8 @@ func (s *Store) SetBlocked(username string, blocked bool) (User, error) {
 		}
 		if activeAdmins <= 1 {
 			return User{}, errors.New("cannot block the last active admin")
+			}
 		}
-	}
 	u.Blocked = blocked
 	s.doc.Users[username] = u
 	s.doc.Revision++
@@ -340,5 +340,20 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	if err := syncDirectory(dir); err != nil {
+		return err
+	}
+	return nil
+}
+
+func syncDirectory(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
