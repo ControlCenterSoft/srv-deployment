@@ -6,13 +6,11 @@ on:
       - main
       - '1.1.x'
     types: [opened, reopened, synchronize, ready_for_review]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 permissions:
   actions: read
   checks: read
-  contents: read
+  contents: write
   pull-requests: read
 
 concurrency:
@@ -20,18 +18,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-only:
+  approve-and-merge:
     if: >-
       ${{ github.event.pull_request.draft == false &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login == github.repository_owner &&
           (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == '1.1.x') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      # pull_request_target/pull_request_review are intentional: the validator is
-      # always loaded from protected main. Never checkout, import, source, or
-      # execute pull-request-controlled files in this job. This workflow cannot
-      # merge; Integrator retains the only merge authority after applicable
-      # exact-SHA QA/Security/Quality gates are complete.
+      # pull_request_target is intentional: all executable gate code is loaded
+      # exclusively from protected main. Never checkout, import, source, or
+      # execute pull-request-controlled files in this job.
       - name: Checkout trusted gate implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,10 +37,23 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate exact head, current base and independent review without merge
+      # The dedicated App is the independent reviewer principal. Its installation
+      # has broader permissions, but this token is narrowed to review-only needs.
+      - name: Mint narrow independent reviewer token
+        id: release-gate-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: 4682191
+          private-key: ${{ secrets.RELEASE_GATE_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
+          permission-contents: read
+
+      - name: Validate exact head/base, independently approve, then merge
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          MERGE_TOKEN: ${{ github.token }}
+          RELEASE_GATE_REVIEW_TOKEN: ${{ steps.release-gate-app.outputs.token }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.7-flash' }}
           REPOSITORY: ${{ github.repository }}
@@ -52,5 +63,4 @@ jobs:
           python3 scripts/release_gate.py \
             --repo "$REPOSITORY" \
             --pr "$PR_NUMBER" \
-            --wait-seconds 900 \
-            --no-merge
+            --wait-seconds 1800
