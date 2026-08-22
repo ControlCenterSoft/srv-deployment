@@ -1,0 +1,85 @@
+name: Stage Ops Agent 1.1.10 on rc7 test server
+
+on:
+  pull_request:
+    branches: ['1.1.x']
+    paths:
+      - '.github/workflows/stage-ops-agent-1.1.10-rc7.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-ops-agent-1.1.10-rc7
+  cancel-in-progress: false
+
+jobs:
+  stage-agent:
+    if: github.head_ref == 'ops/stage-agent-1.1.10-rc7-20260822'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      CONTROL_CENTER_STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+      CONTROL_CENTER_STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+      CONTROL_CENTER_STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
+      CONTROL_CENTER_STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+      CONTROL_CENTER_STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+      CONTROL_CENTER_STAGING_SIGNING_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SIGNING_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Validate exact technical-runner boundary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          test "$changed" = '.github/workflows/stage-ops-agent-1.1.10-rc7.yml'
+          test "$(git hash-object scripts/stage-ops-agent-signed.sh)" = '82e12eeaed1df8d35fbec382a36f6870a8ceb019'
+          test "$(git hash-object tests/fixtures/ccops_agent_v3_d4337bdd.py)" = '412ec9e08432e34d82c64813af079a4177a6ac1e'
+          bash -n scripts/stage-ops-agent-signed.sh
+          python3 -m py_compile tests/fixtures/ccops_agent_v3_d4337bdd.py
+          for name in \
+            CONTROL_CENTER_STAGING_HOST \
+            CONTROL_CENTER_STAGING_USER \
+            CONTROL_CENTER_STAGING_SSH_KEY \
+            CONTROL_CENTER_STAGING_KNOWN_HOSTS \
+            CONTROL_CENTER_STAGING_SIGNING_KEY; do
+            test -n "${!name}"
+          done
+
+      - name: Configure pinned SSH and signing material
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/control-center-ops-stage"
+          printf '%s\n' "$CONTROL_CENTER_STAGING_SSH_KEY" > "$RUNNER_TEMP/control-center-ops-stage/id_staging"
+          printf '%s\n' "$CONTROL_CENTER_STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/control-center-ops-stage/known_hosts"
+          printf '%s\n' "$CONTROL_CENTER_STAGING_SIGNING_KEY" > "$RUNNER_TEMP/control-center-ops-stage/signing-private.pem"
+          chmod 0600 \
+            "$RUNNER_TEMP/control-center-ops-stage/id_staging" \
+            "$RUNNER_TEMP/control-center-ops-stage/known_hosts" \
+            "$RUNNER_TEMP/control-center-ops-stage/signing-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/control-center-ops-stage/signing-private.pem" -noout >/dev/null
+
+      - name: Stage exact gated Ops Agent through restricted updater
+        env:
+          CONTROL_CENTER_STAGING_SSH_KEY_FILE: ${{ runner.temp }}/control-center-ops-stage/id_staging
+          CONTROL_CENTER_STAGING_KNOWN_HOSTS_FILE: ${{ runner.temp }}/control-center-ops-stage/known_hosts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash scripts/stage-ops-agent-signed.sh \
+            --agent-file tests/fixtures/ccops_agent_v3_d4337bdd.py \
+            --source-commit d4337bdd5f3111431ee06858fcd0d3338655751c \
+            --source-blob 412ec9e08432e34d82c64813af079a4177a6ac1e \
+            --agent-version 1.1.10 \
+            --expected-product-version 1.1.0-rc.7 \
+            --expected-product-commit ca0d610aca75d3838c5d10eb841182529a95fc4d \
+            --signing-key "$RUNNER_TEMP/control-center-ops-stage/signing-private.pem"
