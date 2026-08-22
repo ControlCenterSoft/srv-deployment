@@ -1,0 +1,29 @@
+name: QA PR183 fleet persistence exact-head acceptance
+
+on:
+  pull_request:
+    branches: ['qa/fleet-disconnect-partial-persist-a103320']
+    paths:
+      - 'internal/state/fleet_disconnect_partial_persistence_test.go'
+      - '.github/workflows/qa-pr183-fleet-persistence.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Focused disconnect persistence failure injection
+        run: go test ./internal/state -run 'TestDisconnectFleetNodeRetry(PersistsRevocationAfterWriteFailure|RepairsStateWriteFailure)$' -count=1 -v
+      - name: State package regression
+        run: go test ./internal/state -count=1
