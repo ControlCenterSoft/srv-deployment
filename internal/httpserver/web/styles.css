@@ -58,3 +58,92 @@ input, select { width: 100%; border: 1px solid #3a4350; background: #11141a; col
   .workflow-form { grid-template-columns: minmax(120px, .65fr) minmax(0, 1.35fr); }
 }
 @media (max-width: 720px) { .shell { grid-template-columns: 1fr; } .sidebar { border-right: 0; border-bottom: 1px solid #2a2f38; } nav { grid-template-columns: repeat(2, 1fr); } .content { padding: 24px 18px; } .facts, .warning form, .workflow-form { grid-template-columns: 1fr; } .workflow-form .primary { grid-column: 1; } .rbac-list li { align-items: flex-start; flex-direction: column; gap: 4px; } }
+
+/* Calm Infrastructure semantic design-system layer. Keep this additive while
+   feature workflows are active; consolidation can happen after the UI stabilizes. */
+:root {
+  --cc-canvas: #0f1115;
+  --cc-sidebar: #151820;
+  --cc-surface: #171b22;
+  --cc-surface-inset: #11141a;
+  --cc-surface-hover: #252b35;
+  --cc-border: #2a303a;
+  --cc-border-strong: #3a4350;
+  --cc-text: #f4f6f8;
+  --cc-text-secondary: #cbd3dd;
+  --cc-text-muted: #8f9aaa;
+  --cc-focus: #7dd3fc;
+  --cc-danger: #ffb4ab;
+  --cc-primary: #eef2f7;
+  --cc-on-primary: #11141a;
+  --cc-radius-control: 10px;
+  --cc-radius-panel: 16px;
+  --cc-shadow-panel: 0 14px 36px rgba(0, 0, 0, .16);
+  --cc-motion-fast: 140ms;
+}
+
+body { background: var(--cc-canvas); color: var(--cc-text); }
+.sidebar { background: var(--cc-sidebar); border-color: var(--cc-border); }
+.session-box, #rbac-users, #system-details, #operations-list, .workflow-form { border-color: var(--cc-border); }
+.muted, .note, .eyebrow, dt { color: var(--cc-text-muted); }
+header h1 { line-height: 1.08; letter-spacing: -.025em; }
+.card > h2 { font-size: 22px; line-height: 1.2; letter-spacing: -.02em; }
+.card > p { max-width: 72ch; }
+.card, .auth-card, .warning {
+  background: var(--cc-surface);
+  border-color: var(--cc-border);
+  border-radius: var(--cc-radius-panel);
+  box-shadow: var(--cc-shadow-panel);
+}
+.facts div, .setup-panel, .agent-setup { background: var(--cc-surface-inset); border: 1px solid var(--cc-border); }
+.status {
+  background: rgba(125, 211, 252, .07);
+  border-color: var(--cc-border-strong);
+  color: var(--cc-text-secondary);
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.nav-item, .primary, .text-button, input, select {
+  transition: color var(--cc-motion-fast) ease, background-color var(--cc-motion-fast) ease, border-color var(--cc-motion-fast) ease, box-shadow var(--cc-motion-fast) ease;
+}
+.nav-item { color: var(--cc-text-secondary); border-radius: var(--cc-radius-control); }
+.nav-item:hover, .nav-item.active {
+  color: var(--cc-text);
+  background: var(--cc-surface-hover);
+}
+.nav-item.active { box-shadow: inset 3px 0 0 var(--cc-focus); }
+input, select {
+  background: var(--cc-surface-inset);
+  border-color: var(--cc-border-strong);
+  color: var(--cc-text);
+  border-radius: var(--cc-radius-control);
+}
+input:hover, select:hover { border-color: #566274; }
+.primary {
+  background: var(--cc-primary);
+  color: var(--cc-on-primary);
+  border-radius: var(--cc-radius-control);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .12) inset;
+}
+.primary:hover:not(:disabled) { box-shadow: 0 0 0 3px rgba(125, 211, 252, .12), 0 1px 0 rgba(255, 255, 255, .12) inset; }
+.text-button { color: var(--cc-text-secondary); }
+.text-button:hover { color: var(--cc-text); }
+.error { color: var(--cc-danger); }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid var(--cc-focus);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .card, .auth-card, .warning, .facts div, .setup-panel, .agent-setup, input, select, .status { border-color: #657286; }
+  .nav-item.active { box-shadow: inset 4px 0 0 var(--cc-focus); }
+}
