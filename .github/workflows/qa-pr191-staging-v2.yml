@@ -1,0 +1,28 @@
+name: QA PR191 staging-v2 exact-head acceptance
+
+on:
+  pull_request:
+    branches: ['fix/ops-agent-staging-socket-preflight']
+    paths:
+      - 'scripts/stage-ops-agent-signed-v2.sh'
+      - 'tests/test_ops_agent_staging_v2_preflight.py'
+      - '.github/workflows/qa-pr191-staging-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Shell syntax
+        run: bash -n scripts/stage-ops-agent-signed.sh scripts/stage-ops-agent-signed-v2.sh
+      - name: PR191 focused acceptance
+        run: python3 -m unittest tests.test_ops_agent_staging_v2_preflight -v
+      - name: Existing staging regression suite
+        run: python3 -m unittest tests.test_ops_agent_staging_updater -v
