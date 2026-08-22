@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import sys
 import unittest
 
 
@@ -7,6 +8,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "release_gate.py"
 spec = importlib.util.spec_from_file_location("release_gate", MODULE_PATH)
 release_gate = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = release_gate
 assert spec.loader is not None
 spec.loader.exec_module(release_gate)
 
@@ -55,9 +57,17 @@ class ReleaseGatePolicyTests(unittest.TestCase):
         )
         self.assertFalse(decision.allowed)
 
-    def test_auth_state_and_privileged_boundaries_are_protected(self):
+    def test_privileged_runtime_and_release_boundaries_are_protected(self):
         for path in (
+            "cmd/control-center/main.go",
+            "cmd/control-center-privileged-worker/main.go",
+            "cmd/release-tool/main.go",
+            "packaging/systemd/control-center.service",
+            "release/manifest.json",
             "internal/auth/service.go",
+            "internal/httpserver/server.go",
+            "internal/network/service.go",
+            "internal/operations/service.go",
             "internal/state/store.go",
             "internal/privileged/worker.go",
             "internal/release/package.go",
@@ -65,8 +75,16 @@ class ReleaseGatePolicyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNotNone(release_gate.protected_reason(path))
 
-    def test_canonical_release_metadata_is_protected(self):
-        for path in ("deployment.json", "go.mod", "go.sum", "SECURITY.md", ".gitmodules"):
+    def test_canonical_release_and_governance_metadata_is_protected(self):
+        for path in (
+            "deployment.json",
+            "go.mod",
+            "go.sum",
+            "SECURITY.md",
+            "CLAUDE.md",
+            "VALIDATION.md",
+            ".gitmodules",
+        ):
             with self.subTest(path=path):
                 self.assertIsNotNone(release_gate.protected_reason(path))
 
