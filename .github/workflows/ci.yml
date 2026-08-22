@@ -42,7 +42,7 @@ jobs:
           mapfile -t changed < <(git diff --name-only "$ACCEPTED_COMMIT"..HEAD)
           for path in "${changed[@]}"; do
             case "$path" in
-              .github/workflows/ci.yml|.github/workflows/acceptance-1.1-dispatch.yml|deployment.json|evidence/1.0.0-production-closure.md)
+              .github/workflows/ci.yml|.github/workflows/acceptance-1.1-dispatch.yml|.github/workflows/perplexity-routine-dispatcher.yml|deployment.json|evidence/1.0.0-production-closure.md)
                 ;;
               *)
                 echo "ERROR: post-release main changes accepted runtime/tooling path: $path" >&2
@@ -59,6 +59,30 @@ jobs:
           grep -Fq 'workflow_dispatch:' .github/workflows/acceptance-1.1-dispatch.yml
           if grep -Eq 'secrets:[[:space:]]*inherit|CONTROL_CENTER_STAGING_' .github/workflows/acceptance-1.1-dispatch.yml; then
             echo 'ERROR: default-branch dispatcher must not receive or reference staging credentials' >&2
+            exit 1
+          fi
+      - name: Trusted Perplexity routine dispatcher contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          DISPATCHER=.github/workflows/perplexity-routine-dispatcher.yml
+          IMPLEMENTATION_SHA=2203fd0d5d2c30aa0d16e061262e4711685e3608
+          test -f "$DISPATCHER"
+          grep -Fq 'issues:' "$DISPATCHER"
+          grep -Fq 'types: [opened, edited, reopened]' "$DISPATCHER"
+          grep -Fq "uses: ControlCenterSoft/srv-deployment/.github/workflows/perplexity-routine.yml@${IMPLEMENTATION_SHA}" "$DISPATCHER"
+          grep -Fq "code_ref: ${IMPLEMENTATION_SHA}" "$DISPATCHER"
+          grep -Fq "startsWith(github.event.issue.title, '[Perplexity Routine]')" "$DISPATCHER"
+          grep -Fq "contains(github.event.issue.body || '', '<!-- cc-perplexity-routine:v1 -->')" "$DISPATCHER"
+          grep -Fq "github.event.issue.author_association == 'OWNER'" "$DISPATCHER"
+          grep -Fq "github.event.issue.author_association == 'MEMBER'" "$DISPATCHER"
+          grep -Fq "github.event.issue.author_association == 'COLLABORATOR'" "$DISPATCHER"
+          grep -Fq 'contents: read' "$DISPATCHER"
+          grep -Fq 'issues: write' "$DISPATCHER"
+          test "$(grep -Fc 'PERPLEXITY_API_KEY:' "$DISPATCHER")" -eq 1
+          grep -Fq 'secrets.PERPLEXITY_API_KEY' "$DISPATCHER"
+          if grep -Eq 'secrets:[[:space:]]*inherit|contents:[[:space:]]*write|pull-requests:[[:space:]]*write|actions:[[:space:]]*write|id-token:[[:space:]]*write|CONTROL_CENTER_STAGING_|ANTHROPIC_' "$DISPATCHER"; then
+            echo 'ERROR: Perplexity dispatcher exceeds its reviewed trust boundary' >&2
             exit 1
           fi
       - name: Current source regression
