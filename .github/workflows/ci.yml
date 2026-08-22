@@ -42,7 +42,7 @@ jobs:
           mapfile -t changed < <(git diff --name-only "$ACCEPTED_COMMIT"..HEAD)
           for path in "${changed[@]}"; do
             case "$path" in
-              .github/workflows/ci.yml|.github/workflows/acceptance-1.1-dispatch.yml|deployment.json|evidence/1.0.0-production-closure.md)
+              .github/workflows/ci.yml|.github/workflows/acceptance-1.1-dispatch.yml|.github/workflows/release-gate.yml|scripts/release_gate.py|tests/test_release_gate_policy.py|deployment.json|evidence/1.0.0-production-closure.md)
                 ;;
               *)
                 echo "ERROR: post-release main changes accepted runtime/tooling path: $path" >&2
@@ -61,11 +61,34 @@ jobs:
             echo 'ERROR: default-branch dispatcher must not receive or reference staging credentials' >&2
             exit 1
           fi
+      - name: Trusted release gate contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -f .github/workflows/release-gate.yml
+          test -f scripts/release_gate.py
+          grep -Fq 'pull_request_target:' .github/workflows/release-gate.yml
+          grep -Fq 'ref: main' .github/workflows/release-gate.yml
+          grep -Fq 'persist-credentials: false' .github/workflows/release-gate.yml
+          grep -Fq 'contents: write' .github/workflows/release-gate.yml
+          grep -Fq 'pull-requests: write' .github/workflows/release-gate.yml
+          if grep -Eq 'ref:[[:space:]]*\$\{\{[[:space:]]*(github\.head_ref|github\.event\.pull_request\.head)' .github/workflows/release-gate.yml; then
+            echo 'ERROR: trusted release gate must never checkout PR-controlled refs' >&2
+            exit 1
+          fi
+          for protected in '.github/' 'scripts/' 'internal/auth/' 'internal/privileged/' 'internal/release/' 'internal/state/'; do
+            grep -Fq "\"$protected\"" scripts/release_gate.py || {
+              echo "ERROR: release gate lost protected prefix $protected" >&2
+              exit 1
+            }
+          done
       - name: Current source regression
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
           go test ./...
+          python3 -m py_compile scripts/release_gate.py
+          python3 -m unittest tests.test_release_gate_policy -v
           bash -n install/install.sh install/uninstall.sh install/update.sh scripts/*.sh
           ./scripts/secret-scan.sh
       - name: Rebuild exact accepted 1.0.0 source
