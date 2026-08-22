@@ -51,6 +51,20 @@ func TestAdminWebOperationDetailStatesAndAccessibility(t *testing.T) {
 	}
 }
 
+func TestAdminWebOperationDetailSupersededRequestRestoresButton(t *testing.T) {
+	app := readWebAsset(t, "web/app.js")
+
+	if !strings.Contains(app, `if (button.isConnected) button.disabled = false;`) {
+		t.Fatal("operation detail request must restore its originating connected button when the request settles")
+	}
+	if strings.Contains(app, `generation === operationDetailGeneration && button.isConnected`) {
+		t.Fatal("superseded operation detail requests must not leave their originating buttons disabled")
+	}
+	if strings.Count(app, `if (generation !== operationDetailGeneration) return`) < 2 {
+		t.Fatal("stale operation detail success/error rendering must remain suppressed")
+	}
+}
+
 func TestAdminWebOperationDetailAuditAuthorityContract(t *testing.T) {
 	app := readWebAsset(t, "web/app.js")
 

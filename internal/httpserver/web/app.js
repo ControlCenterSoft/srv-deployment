@@ -428,7 +428,7 @@ async function loadOperationDetail(operationID, container, button) {
     loading.removeAttribute("aria-live");
     loading.textContent = `Не удалось загрузить детали операции ${operationID}: ${error.message}`;
   } finally {
-    if (generation === operationDetailGeneration && button.isConnected) button.disabled = false;
+    if (button.isConnected) button.disabled = false;
   }
 }
 
