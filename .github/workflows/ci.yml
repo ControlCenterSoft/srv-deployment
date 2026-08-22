@@ -75,8 +75,13 @@ jobs:
           grep -Fq 'pull_request_target:' .github/workflows/release-gate.yml
           grep -Fq 'ref: main' .github/workflows/release-gate.yml
           grep -Fq 'persist-credentials: false' .github/workflows/release-gate.yml
-          grep -Fq 'contents: write' .github/workflows/release-gate.yml
-          grep -Fq 'pull-requests: write' .github/workflows/release-gate.yml
+          grep -Fq 'contents: read' .github/workflows/release-gate.yml
+          grep -Fq 'pull-requests: read' .github/workflows/release-gate.yml
+          grep -Fq -- '--no-merge' .github/workflows/release-gate.yml
+          if grep -Eq 'contents:[[:space:]]*write|pull-requests:[[:space:]]*write' .github/workflows/release-gate.yml; then
+            echo 'ERROR: trusted release gate must remain a read-only validator' >&2
+            exit 1
+          fi
           grep -Fq 'GEMINI_API_KEY:' .github/workflows/release-gate.yml
           grep -Fq 'secrets.GEMINI_API_KEY' .github/workflows/release-gate.yml
           if grep -Eq 'ref:[[:space:]]*\$\{\{[[:space:]]*(github\.head_ref|github\.event\.pull_request\.head)' .github/workflows/release-gate.yml; then

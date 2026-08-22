@@ -226,7 +226,15 @@ class ReleaseGatePolicyTests(unittest.TestCase):
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         self.assertIn("pull_request_review:", workflow)
         self.assertIn("types: [submitted, dismissed]", workflow)
-        self.assertIn("controlcenter-release-reviewer", workflow)
+        self.assertEqual("controlcenter-release-reviewer", release_gate.INDEPENDENT_REVIEWER)
+
+    def test_trusted_workflow_is_read_only_validator(self):
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn("contents: read", workflow)
+        self.assertIn("pull-requests: read", workflow)
+        self.assertIn("--no-merge", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertNotIn("pull-requests: write", workflow)
 
     def test_independent_ai_blocks_high_and_blocker(self):
         for severity in ("HIGH", "BLOCKER"):
