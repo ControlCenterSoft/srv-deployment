@@ -1,0 +1,27 @@
+name: QA PR164 AI transport exact-head acceptance
+
+on:
+  pull_request:
+    branches: ['security/1.1-perplexity-routine-harden-transport-20260821']
+    paths:
+      - 'tests/test_ai_gateway_transport_matrix_qa.py'
+      - '.github/workflows/qa-pr164-ai-transport.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Python syntax
+        run: python3 -m py_compile scripts/ai_gateway.py scripts/perplexity_research.py scripts/perplexity_routine.py
+      - name: Provider transport negative paths
+        run: python3 -m unittest tests.test_ai_gateway_redirect_fix_qa tests.test_ai_gateway_transport_matrix_qa -v
+      - name: Perplexity adapter regression
+        run: python3 -m unittest tests.test_perplexity_research tests.test_perplexity_routine -v
