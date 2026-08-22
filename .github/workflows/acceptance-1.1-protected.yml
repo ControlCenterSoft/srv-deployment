@@ -1,0 +1,190 @@
+name: Control Center 1.1.x Protected Full Acceptance
+
+on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact GATE-FROZEN candidate commit SHA
+        required: true
+        type: string
+      candidate_version:
+        description: Release-candidate semantic version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-center-1.1-protected-acceptance-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+  GO_VERSION: '1.23.2'
+  CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  CANONICAL_REF: refs/remotes/origin/1.1.x
+
+jobs:
+  deterministic-acceptance:
+    name: Deterministic acceptance without staging credentials
+    uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1.yml@2b6cd5b4925e704e25dac9ac47c6b22e12df615f
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+      candidate_version: ${{ inputs.candidate_version }}
+
+  staging-package:
+    name: Prepare signed staging candidate
+    needs: [deterministic-acceptance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: staging
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Recheck exact canonical GATE-FROZEN identity before staging secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE_VERSION" =~ ^1\.1\.0-rc\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git fetch --no-tags origin 1.1.x:"$CANONICAL_REF"
+          test "$(git rev-parse "$CANONICAL_REF")" = "$CANDIDATE_SHA"
+      - name: Require protected staging environment credentials
+        env:
+          STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+          STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+          STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+          STAGING_SIGNING_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in STAGING_HOST STAGING_USER STAGING_SSH_KEY STAGING_KNOWN_HOSTS STAGING_SIGNING_KEY; do
+            [[ -n "${!name}" ]] || { echo "missing protected staging credential: $name" >&2; exit 1; }
+          done
+      - name: Build signed dual-runtime staging package
+        env:
+          STAGING_SIGNING_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUILT_AT="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          printf '%s\n' "$STAGING_SIGNING_KEY" > "$RUNNER_TEMP/staging-private.pem"
+          chmod 0600 "$RUNNER_TEMP/staging-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/staging-private.pem" -pubout -out dist/staging-public.pem
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${CANDIDATE_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${CANDIDATE_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o dist/control-center-linux-amd64 ./cmd/control-center
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false -ldflags "-s -w" \
+            -o dist/control-center-privileged-worker-linux-amd64 ./cmd/control-center-privileged-worker
+          go run ./cmd/release-tool package-v2 \
+            --binary dist/control-center-linux-amd64 \
+            --worker dist/control-center-privileged-worker-linux-amd64 \
+            --version "$CANDIDATE_VERSION" \
+            --channel beta \
+            --commit "$CANDIDATE_SHA" \
+            --arch amd64 \
+            --private-key "$RUNNER_TEMP/staging-private.pem" \
+            --output dist/control-center-staging.tar.gz \
+            --built-at "$BUILT_AT"
+          expected_entries=$'bootstrap-manifest.json\nbootstrap-manifest.sig\nmanifest.json\nmanifest.sig\ncontrol-center\ncontrol-center-privileged-worker'
+          test "$(tar -tzf dist/control-center-staging.tar.gz)" = "$expected_entries"
+          sha256sum dist/control-center-staging.tar.gz > dist/control-center-staging.tar.gz.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: control-center-protected-staging-${{ env.CANDIDATE_VERSION }}-${{ env.CANDIDATE_SHA }}
+          path: |
+            dist/control-center-staging.tar.gz
+            dist/control-center-staging.tar.gz.sha256
+            dist/staging-public.pem
+          if-no-files-found: error
+          retention-days: 7
+
+  remote-staging:
+    name: Real test-server staging
+    needs: [staging-package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: staging
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: control-center-protected-staging-${{ env.CANDIDATE_VERSION }}-${{ env.CANDIDATE_SHA }}
+          path: staging
+      - name: Recheck exact canonical GATE-FROZEN identity before SSH secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git fetch --no-tags origin 1.1.x:"$CANONICAL_REF"
+          test "$(git rev-parse "$CANONICAL_REF")" = "$CANDIDATE_SHA"
+      - name: Verify staged package digest before SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd staging
+          sha256sum -c control-center-staging.tar.gz.sha256
+      - name: Configure pinned SSH transport
+        env:
+          STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/control-center-staging-ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$RUNNER_TEMP/control-center-staging-ssh/id_control_center_staging"
+          chmod 0600 "$RUNNER_TEMP/control-center-staging-ssh/id_control_center_staging"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/control-center-staging-ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/control-center-staging-ssh/known_hosts"
+      - name: Deploy exact signed candidate
+        env:
+          CONTROL_CENTER_STAGING_HOST: ${{ secrets.CONTROL_CENTER_STAGING_HOST }}
+          CONTROL_CENTER_STAGING_USER: ${{ secrets.CONTROL_CENTER_STAGING_USER }}
+          CONTROL_CENTER_STAGING_PORT: ${{ secrets.CONTROL_CENTER_STAGING_PORT }}
+          CONTROL_CENTER_STAGING_SSH_KEY_FILE: ${{ runner.temp }}/control-center-staging-ssh/id_control_center_staging
+          CONTROL_CENTER_STAGING_KNOWN_HOSTS_FILE: ${{ runner.temp }}/control-center-staging-ssh/known_hosts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ./scripts/staging-deploy.sh \
+            --package staging/control-center-staging.tar.gz \
+            --public-key staging/staging-public.pem \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --candidate-sha "$CANDIDATE_SHA"
+
+  protected-acceptance-summary:
+    name: Protected acceptance summary
+    if: ${{ always() }}
+    needs: [deterministic-acceptance, staging-package, remote-staging]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require complete protected acceptance
+        shell: bash
+        env:
+          DETERMINISTIC: ${{ needs.deterministic-acceptance.result }}
+          PACKAGE: ${{ needs.staging-package.result }}
+          STAGING: ${{ needs.remote-staging.result }}
+        run: |
+          set -Eeuo pipefail
+          printf 'deterministic=%s\npackage=%s\nstaging=%s\n' "$DETERMINISTIC" "$PACKAGE" "$STAGING"
+          test "$DETERMINISTIC" = success
+          test "$PACKAGE" = success
+          test "$STAGING" = success
