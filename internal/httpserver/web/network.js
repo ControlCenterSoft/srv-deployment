@@ -33,8 +33,8 @@ function installNetworkPage() {
       <h3 id="dns-resolver-title">DNS resolver</h3>
       <p id="dns-resolver-status" class="muted" role="status" aria-live="polite">Загрузка состояния DNS resolver…</p>
       <div id="dns-resolver-inventory"></div>
+      <h4>Безопасный предпросмотр DNS</h4>
       <form id="dns-resolver-form" class="workflow-form" hidden>
-        <h4>Безопасный предпросмотр DNS</h4>
         <label for="dns-nameservers">DNS-серверы</label>
         <input id="dns-nameservers" name="nameservers" autocomplete="off" placeholder="1.1.1.1, 8.8.8.8" required aria-describedby="dns-resolver-help">
         <label for="dns-search-domains">Домены поиска</label>
