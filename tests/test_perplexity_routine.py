@@ -1,6 +1,12 @@
+import pathlib
+import re
 import unittest
 
 from scripts import perplexity_routine
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "perplexity-routine.yml"
 
 
 class PerplexityRoutineTests(unittest.TestCase):
@@ -45,6 +51,15 @@ class PerplexityRoutineTests(unittest.TestCase):
         self.assertIn("advisory", rendered.lower())
         self.assertIn("Security", rendered)
         self.assertIn("Integrator", rendered)
+
+    def test_workflow_keeps_issue_activation_in_default_branch_dispatcher(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("workflow_call:", text)
+        self.assertIn("workflow_dispatch:", text)
+        self.assertNotRegex(text, re.compile(r"(?m)^\s{2}issues:\s*$"))
+        self.assertIn("Validate immutable implementation ref", text)
+        self.assertIn("^[0-9a-f]{40}$", text)
+        self.assertIn("persist-credentials: false", text)
 
 
 if __name__ == "__main__":
