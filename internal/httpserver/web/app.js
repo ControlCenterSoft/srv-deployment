@@ -1,5 +1,6 @@
 let csrfToken = "";
 let currentUser = null;
+let operationDetailGeneration = 0;
 
 const pages = {
   overview: ["Обзор", "Состояние платформы", "Runtime, health/readiness, audit и трассируемые операции."],
@@ -313,8 +314,175 @@ document.querySelector("#rbac-create-form").addEventListener("submit", async (ev
   } catch (error) { errorBox.textContent = error.message; }
 });
 
+function formatOperationTime(value) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+}
+
+function renderOperationAudit(container, detail) {
+  const heading = document.createElement("h4");
+  heading.textContent = "Связанный audit";
+  container.appendChild(heading);
+
+  if (detail.audit?.authorized === false) {
+    const message = document.createElement("p");
+    message.className = "muted";
+    message.textContent = "Коррелированный audit недоступен для текущей роли.";
+    container.appendChild(message);
+    return;
+  }
+
+  if (detail.audit?.available === false) {
+    const message = document.createElement("p");
+    message.className = "error";
+    message.role = "status";
+    message.setAttribute("aria-live", "polite");
+    message.textContent = `Core сообщил, что audit correlation временно недоступна${detail.audit?.error_code ? ` (${detail.audit.error_code})` : ""}.`;
+    container.appendChild(message);
+    return;
+  }
+
+  const events = detail.audit?.events || [];
+  if (!events.length) {
+    const message = document.createElement("p");
+    message.className = "muted";
+    message.textContent = "Связанных audit-событий нет.";
+    container.appendChild(message);
+    return;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "compact-list audit-list";
+  for (const event of events) {
+    const item = document.createElement("li");
+    const actor = [event.actor, event.role].filter(Boolean).join(" / ") || "—";
+    const target = event.target ? ` · ${event.target}` : "";
+    const error = event.error_code ? ` · ${event.error_code}` : "";
+    item.textContent = `${formatOperationTime(event.time)} · ${event.action || "—"} · ${event.result || "—"} · ${actor}${target}${error}`;
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+}
+
+function renderOperationDetail(container, detail) {
+  container.querySelector("[data-operation-detail]")?.remove();
+  const panel = document.createElement("section");
+  panel.className = "setup-panel";
+  panel.dataset.operationDetail = "true";
+  panel.setAttribute("aria-labelledby", "operation-detail-title");
+
+  const operation = detail.operation || {};
+  const heading = document.createElement("h4");
+  heading.id = "operation-detail-title";
+  heading.textContent = "Детали операции";
+  panel.appendChild(heading);
+  appendTextLine(panel, "ID", operation.id || "—");
+  appendTextLine(panel, "Тип", operation.kind || "—");
+  appendTextLine(panel, "Статус", operation.status || "—");
+  appendTextLine(panel, "Actor / role", [operation.actor, operation.role].filter(Boolean).join(" / ") || "—");
+  appendTextLine(panel, "Target", operation.target || "—");
+  appendTextLine(panel, "Начало", formatOperationTime(operation.started_at));
+  appendTextLine(panel, "Завершение", formatOperationTime(operation.finished_at));
+  appendTextLine(panel, "Error code", operation.error_code || "—");
+
+  if (detail.health?.status === "degraded") {
+    const warning = document.createElement("p");
+    warning.className = "error";
+    warning.role = "status";
+    warning.setAttribute("aria-live", "polite");
+    warning.textContent = "Core сообщает degraded health для связанной audit-проекции; сама запись операции остаётся authoritative.";
+    panel.appendChild(warning);
+  }
+
+  const authority = document.createElement("p");
+  authority.className = "muted";
+  authority.textContent = "Данные операции и audit correlation загружаются напрямую из Core; Web не реконструирует историю и не меняет семантику операции.";
+  panel.appendChild(authority);
+  renderOperationAudit(panel, detail);
+  container.appendChild(panel);
+}
+
+async function loadOperationDetail(operationID, container, button) {
+  operationDetailGeneration += 1;
+  const generation = operationDetailGeneration;
+  container.querySelector("[data-operation-detail]")?.remove();
+
+  const loading = document.createElement("section");
+  loading.className = "setup-panel";
+  loading.dataset.operationDetail = "true";
+  loading.role = "status";
+  loading.setAttribute("aria-live", "polite");
+  loading.textContent = `Загрузка деталей операции ${operationID}…`;
+  container.appendChild(loading);
+  button.disabled = true;
+
+  try {
+    const detail = await api(`/api/v1/operations/${encodeURIComponent(operationID)}`);
+    if (generation !== operationDetailGeneration) return;
+    renderOperationDetail(container, detail);
+  } catch (error) {
+    if (generation !== operationDetailGeneration) return;
+    loading.className = "error";
+    loading.role = "alert";
+    loading.removeAttribute("aria-live");
+    loading.textContent = `Не удалось загрузить детали операции ${operationID}: ${error.message}`;
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
+async function loadRecentOperations(container) {
+  container.textContent = "";
+  container.hidden = false;
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Последние операции";
+  container.appendChild(heading);
+
+  const status = document.createElement("p");
+  status.className = "muted";
+  status.role = "status";
+  status.setAttribute("aria-live", "polite");
+  status.textContent = "Загрузка последних операций…";
+  container.appendChild(status);
+
+  try {
+    const data = await api("/api/v1/operations?limit=10");
+    const records = Array.isArray(data.operations) ? data.operations : [];
+    status.textContent = records.length ? `Показано операций: ${records.length}.` : "Операций пока нет.";
+
+    const list = document.createElement("ul");
+    list.className = "compact-list";
+    for (const op of records) {
+      const item = document.createElement("li");
+      const info = document.createElement("span");
+      info.textContent = `${op.kind || "—"} · ${op.status || "—"} · ${op.actor || "—"}`;
+      item.appendChild(info);
+
+      if (op.id) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "text-button inline-action";
+        button.textContent = "Детали";
+        button.setAttribute("aria-label", `Открыть детали операции ${op.id}`);
+        button.addEventListener("click", () => loadOperationDetail(op.id, container, button));
+        item.appendChild(button);
+      }
+      list.appendChild(item);
+    }
+    container.appendChild(list);
+  } catch (error) {
+    status.className = "error";
+    status.role = "alert";
+    status.removeAttribute("aria-live");
+    status.textContent = `Не удалось загрузить операции: ${error.message}`;
+  }
+}
+
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", async () => {
+    operationDetailGeneration += 1;
     document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active")); button.classList.add("active");
     const [title, cardTitle, text] = pages[button.dataset.page];
     document.querySelector("#page-title").textContent = title; document.querySelector("#card-title").textContent = cardTitle; document.querySelector("#card-text").textContent = text;
@@ -346,13 +514,8 @@ document.querySelectorAll(".nav-item").forEach((button) => {
         networkInterfaces.appendChild(list); networkInterfaces.hidden = false;
 
         if (currentUser?.role === "admin") {
-          const data = await api("/api/v1/operations?limit=10");
-          const title = document.createElement("h3"); title.textContent = "Последние операции"; operations.appendChild(title);
-          const opList = document.createElement("ul"); opList.className = "compact-list";
-          for (const op of data.operations) {
-            const li = document.createElement("li"); li.textContent = `${op.kind} · ${op.status} · ${op.actor}`; opList.appendChild(li);
-          }
-          operations.appendChild(opList); operations.hidden = false; exportLink.hidden = false;
+          await loadRecentOperations(operations);
+          exportLink.hidden = false;
         }
       } catch (error) { systemDetails.textContent = error.message; systemDetails.hidden = false; }
     }
