@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultIncidentLimit          = 50
+	defaultIncidentLimit           = 50
 	operationIncidentsCollectionID = "_incidents"
 	operationIncidentsPath         = "/api/v1/operations/" + operationIncidentsCollectionID
 )
