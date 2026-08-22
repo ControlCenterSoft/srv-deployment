@@ -14,6 +14,7 @@ const fleetOnlineWindow = 2 * time.Minute
 const fleetStaleWindow = 15 * time.Minute
 
 func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
+	s.registerAuthSessionRoutes(mux)
 	mux.HandleFunc("GET /api/v1/fleet/nodes", s.requireAuth(s.listFleetNodes))
 	mux.HandleFunc("POST /api/v1/fleet/nodes", s.requireAuth(s.createFleetNode))
 	mux.HandleFunc("POST /api/v1/fleet/nodes/{id}/enrollment", s.requireAuth(s.prepareFleetEnrollment))
