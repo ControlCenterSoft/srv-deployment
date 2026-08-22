@@ -1,4 +1,5 @@
 let currentDNSPreview = null;
+let dnsPreviewGeneration = 0;
 
 function installNetworkPage() {
   const nav = document.querySelector('.sidebar nav');
@@ -178,6 +179,7 @@ function renderDNSResolverInventory(container, data) {
 }
 
 function resetDNSPreview() {
+  dnsPreviewGeneration += 1;
   currentDNSPreview = null;
   const preview = document.querySelector('#dns-preview-result');
   const preflight = document.querySelector('#dns-preflight-result');
@@ -349,6 +351,7 @@ async function previewDNSResolverChange(event) {
   const searchDomains = splitResolverValues(document.querySelector('#dns-search-domains').value);
 
   resetDNSPreview();
+  const previewGeneration = dnsPreviewGeneration;
   if (!nameservers.length) {
     errorBox.textContent = 'Введите минимум один DNS-сервер.';
     return;
@@ -361,6 +364,7 @@ async function previewDNSResolverChange(event) {
       method: 'POST',
       body: JSON.stringify({nameservers, search_domains: searchDomains}),
     });
+    if (previewGeneration !== dnsPreviewGeneration) return;
     currentDNSPreview = data;
     renderDNSPreview(result, data);
     preflightButton.hidden = currentUser?.role !== 'admin'
@@ -368,6 +372,7 @@ async function previewDNSResolverChange(event) {
       || !data.source_fingerprint
       || !data.desired;
   } catch (error) {
+    if (previewGeneration !== dnsPreviewGeneration) return;
     result.hidden = true;
     result.textContent = '';
     preflightResult.hidden = true;
@@ -387,6 +392,8 @@ async function preflightDNSResolverChange() {
     return;
   }
 
+  const preflightGeneration = dnsPreviewGeneration;
+  const preview = currentDNSPreview;
   button.disabled = true;
   result.hidden = false;
   result.textContent = 'Выполняется authoritative preflight…';
@@ -394,13 +401,15 @@ async function preflightDNSResolverChange() {
     const data = await api('/api/v1/dns/resolver/preflight', {
       method: 'POST',
       body: JSON.stringify({
-        nameservers: currentDNSPreview.desired.nameservers,
-        search_domains: currentDNSPreview.desired.search_domains,
-        expected_source_fingerprint: currentDNSPreview.source_fingerprint,
+        nameservers: preview.desired.nameservers,
+        search_domains: preview.desired.search_domains,
+        expected_source_fingerprint: preview.source_fingerprint,
       }),
     });
+    if (preflightGeneration !== dnsPreviewGeneration) return;
     renderDNSPreflight(result, data);
   } catch (error) {
+    if (preflightGeneration !== dnsPreviewGeneration) return;
     result.hidden = true;
     result.textContent = '';
     errorBox.textContent = error.message;
