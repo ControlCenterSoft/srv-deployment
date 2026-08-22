@@ -17,9 +17,10 @@ func TestAdminWebDNSResolverWorkflowContract(t *testing.T) {
 		`renderDNSPreview`,
 		`renderDNSPreflight`,
 		`currentDNSPreview = data`,
-		`nameservers: currentDNSPreview.desired.nameservers`,
-		`search_domains: currentDNSPreview.desired.search_domains`,
-		`expected_source_fingerprint: currentDNSPreview.source_fingerprint`,
+		`const preview = currentDNSPreview`,
+		`nameservers: preview.desired.nameservers`,
+		`search_domains: preview.desired.search_domains`,
+		`expected_source_fingerprint: preview.source_fingerprint`,
 	} {
 		if !strings.Contains(network, required) {
 			t.Fatalf("DNS resolver Admin Web workflow is missing %q", required)
@@ -42,6 +43,9 @@ func TestAdminWebDNSResolverValidationAndStalePreviewContract(t *testing.T) {
 		`Сначала выполните свежий DNS preview.`,
 		`document.querySelector(selector).addEventListener('input', resetDNSPreview)`,
 		`currentDNSPreview = null`,
+		`dnsPreviewGeneration += 1`,
+		`if (previewGeneration !== dnsPreviewGeneration) return`,
+		`if (preflightGeneration !== dnsPreviewGeneration) return`,
 		`button.disabled = true`,
 		`button.disabled = false`,
 	} {
@@ -69,6 +73,12 @@ func TestAdminWebDNSResolverAccessibilityAndFailureStates(t *testing.T) {
 		if !strings.Contains(network, required) {
 			t.Fatalf("DNS resolver accessibility/loading/error/empty state contract is missing %q", required)
 		}
+	}
+
+	heading := strings.Index(network, `<h4>Безопасный предпросмотр DNS</h4>`)
+	form := strings.Index(network, `<form id="dns-resolver-form" class="workflow-form" hidden>`)
+	if heading == -1 || form == -1 || heading > form {
+		t.Fatal("DNS resolver subheading must sit before the two-column workflow form so desktop/tablet label-control pairs remain aligned")
 	}
 }
 
