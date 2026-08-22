@@ -35,22 +35,30 @@ REQUIRED_WORKFLOWS = {
     "1.1.x": "Control Center 1.1.x Fast CI",
 }
 
-# These paths define CI/security/deployment trust boundaries. They must never be
-# auto-approved by the gate that protects them. Changes here require the
-# independent break-glass/reviewer path already enforced by repository rules.
+# These paths define CI/security/deployment/runtime trust boundaries. They must
+# never be auto-approved by the gate that protects them. Changes here require
+# the independent break-glass/reviewer path already enforced by repository rules.
 PROTECTED_PREFIXES = (
     ".github/",
+    "cmd/",
     "install/",
+    "packaging/",
+    "release/",
     "scripts/",
     "evidence/",
     "internal/auth/",
+    "internal/httpserver/",
+    "internal/network/",
+    "internal/operations/",
     "internal/privileged/",
     "internal/release/",
     "internal/state/",
 )
 PROTECTED_EXACT = {
     ".gitmodules",
+    "CLAUDE.md",
     "SECURITY.md",
+    "VALIDATION.md",
     "deployment.json",
     "go.mod",
     "go.sum",
