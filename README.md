@@ -8,12 +8,12 @@ Control Center — локальная серверная платформа уп
 - **Канонический production release:** `deployment.json` → `1.0.0`, `production-ready`, acceptance `passed`.
 - **Активная линия разработки:** `1.1.x`.
 - **Последний product/runtime-code merge в `1.1.x`:** PR `#176`, merge `e9f5420a8148c68d3b7ddeb96083acfa727993bc`, signed least-privilege diagnostics-agent staging chain. Последующие docs-only commits могут менять branch ref без изменения product/runtime identity.
-- **Последний exact server candidate с полным real test-server acceptance:** `1.1.0-rc.6`, source `302eb6da97324d719849e7ae752fc10bdc557d9a`.
-- **Тестовый сервер:** фактически остаётся на `1.1.0-rc.6`; установленный Ops Agent/Broker — `1.1.8`. Independently gated diagnostics agent `1.1.10` (`control-center-server-diagnostics#14`, exact `d4337bdd5f3111431ee06858fcd0d3338655751c`) ещё не считается установленным до signed staging и post-update runtime verification.
+- **Последний exact server candidate с полным real test-server acceptance:** `1.1.0-rc.7`, source `ca0d610aca75d3838c5d10eb841182529a95fc4d`.
+- **Тестовый сервер:** подтверждённо обновлён `1.1.0-rc.6` → `1.1.0-rc.7` через signed package-v2 + restricted updater/rollback path; установленный Ops Agent/Broker — `1.1.8`. Independently gated diagnostics agent `1.1.10` (`control-center-server-diagnostics#14`, exact `d4337bdd5f3111431ee06858fcd0d3338655751c`) ещё не считается установленным до signed staging и post-update runtime verification.
 
-PR `#176` интегрирован только после зелёных exact-head deterministic CI, Contract & Regression QA PASS и Security Review PASS. Он не выполнял product release, production promotion или test-server mutation. Его задача — дать узкий recovery-aware путь установки только заранее одобренного diagnostics-agent artifact без general sudo и без изменения SO_PEERCRED broker boundary.
+PR `#176` интегрирован только после зелёных exact-head deterministic CI, Contract & Regression QA PASS и Security Review PASS. Он не выполнял product release или production promotion. Его задача — дать узкий recovery-aware путь установки только заранее одобренного diagnostics-agent artifact без general sudo и без изменения SO_PEERCRED broker boundary.
 
-До нового полного exact-SHA acceptance `main` и канонический production release остаются на `1.0.0`.
+Exact `1.1.0-rc.7` относится к Core B PR `#161`; перед его merge в актуальную integration line требуется синхронизация с текущим `1.1.x`, после которой новый SHA должен заново пройти полный применимый CI/QA/Security/staging gate. Канонический production release остаётся `1.0.0`.
 
 Подробный оперативный статус: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md).
 План линии 1.1.x: [`docs/releases/1.1.x-development-plan.md`](docs/releases/1.1.x-development-plan.md).
