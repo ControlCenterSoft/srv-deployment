@@ -7,7 +7,7 @@ Control Center — локальная серверная платформа уп
 - **Принятый production baseline:** `1.0.0`.
 - **Канонический production release:** `deployment.json` → `1.0.0`, `production-ready`, acceptance `passed`.
 - **Активная линия разработки:** `1.1.x`.
-- **Текущий `1.1.x` HEAD:** `e9f5420a8148c68d3b7ddeb96083acfa727993bc` после gated merge PR `#176` с signed least-privilege diagnostics-agent staging chain.
+- **Последний product/runtime-code merge в `1.1.x`:** PR `#176`, merge `e9f5420a8148c68d3b7ddeb96083acfa727993bc`, signed least-privilege diagnostics-agent staging chain. Последующие docs-only commits могут менять branch ref без изменения product/runtime identity.
 - **Последний exact server candidate с полным real test-server acceptance:** `1.1.0-rc.6`, source `302eb6da97324d719849e7ae752fc10bdc557d9a`.
 - **Тестовый сервер:** фактически остаётся на `1.1.0-rc.6`; установленный Ops Agent/Broker — `1.1.8`. Independently gated diagnostics agent `1.1.10` (`control-center-server-diagnostics#14`, exact `d4337bdd5f3111431ee06858fcd0d3338655751c`) ещё не считается установленным до signed staging и post-update runtime verification.
 
