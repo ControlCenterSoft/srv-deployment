@@ -47,7 +47,7 @@ func TestOperationDetailContractRBACAndAudit(t *testing.T) {
 		t.Fatalf("unexpected detail health metadata: %+v", body.Health)
 	}
 
-	invalid := requestJSON(t, app.handler, http.MethodGet, "/api/v1/operations/bad%20id", "", adminCookie, "")
+	invalid := requestJSON(t, app.handler, http.MethodGet, "/api/v1/operations/!bad", "", adminCookie, "")
 	if invalid.Code != http.StatusBadRequest || responseErrorCode(t, invalid) != "invalid_operation_id" {
 		t.Fatalf("invalid id status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
