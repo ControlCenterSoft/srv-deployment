@@ -40,6 +40,14 @@ func TestRevokeOtherSessionsIsSelfScopedCSRFAuditedOperation(t *testing.T) {
 		t.Fatalf("foreign origin revoked old session: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 
+	selectorInjection := requestJSON(t, app.handler, http.MethodPost, "/api/v1/auth/sessions/revoke-others", `{"username":"someone-else"}`, currentCookie, currentCSRF)
+	if selectorInjection.Code != http.StatusBadRequest {
+		t.Fatalf("selector injection status=%d body=%s", selectorInjection.Code, selectorInjection.Body.String())
+	}
+	if rr := requestJSON(t, app.handler, http.MethodGet, "/api/v1/auth/session", "", oldCookie, ""); rr.Code != http.StatusOK {
+		t.Fatalf("selector injection revoked old session: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
 	success := requestJSON(t, app.handler, http.MethodPost, "/api/v1/auth/sessions/revoke-others", `{}`, currentCookie, currentCSRF)
 	if success.Code != http.StatusOK {
 		t.Fatalf("success status=%d body=%s", success.Code, success.Body.String())
@@ -67,7 +75,7 @@ func TestRevokeOtherSessionsIsSelfScopedCSRFAuditedOperation(t *testing.T) {
 		t.Fatalf("operation evidence missing: status=%d body=%s", operations.Code, operations.Body.String())
 	}
 	audit := requestJSON(t, app.handler, http.MethodGet, "/api/v1/audit", "", currentCookie, "")
-	if audit.Code != http.StatusOK || !strings.Contains(audit.Body.String(), `"action":"`+revokeOtherSessionsAction+`"`) || !strings.Contains(audit.Body.String(), `"result":"success"`) {
+	if audit.Code != http.StatusOK || !strings.Contains(audit.Body.String(), `"action":"`+revokeOtherSessionsAction+`"`) || !strings.Contains(audit.Body.String(), `"result":"success"`) || !strings.Contains(audit.Body.String(), `"error_code":"invalid_request"`) {
 		t.Fatalf("audit evidence missing: status=%d body=%s", audit.Code, audit.Body.String())
 	}
 }
