@@ -79,3 +79,41 @@ func TestRevokeOtherSessionsIsSelfScopedCSRFAuditedOperation(t *testing.T) {
 		t.Fatalf("audit evidence missing: status=%d body=%s", audit.Code, audit.Body.String())
 	}
 }
+
+func TestRevokeOtherSessionsAllowsViewerSelfServiceWithoutCrossUserImpact(t *testing.T) {
+	app := newTestApp(t)
+	adminCookie, adminCSRF := login(t, app, "admin", app.adminPassword)
+	const viewerPassword = "Viewer-session-test-Password-2026!"
+
+	created := requestJSON(t, app.handler, http.MethodPost, "/api/v1/rbac/users", `{"username":"viewer-session","password":"`+viewerPassword+`","role":"viewer"}`, adminCookie, adminCSRF)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create viewer status=%d body=%s", created.Code, created.Body.String())
+	}
+
+	viewerOld, _ := login(t, app, "viewer-session", viewerPassword)
+	viewerCurrent, viewerCSRF := login(t, app, "viewer-session", viewerPassword)
+
+	revoked := requestJSON(t, app.handler, http.MethodPost, "/api/v1/auth/sessions/revoke-others", `{}`, viewerCurrent, viewerCSRF)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("viewer revoke status=%d body=%s", revoked.Code, revoked.Body.String())
+	}
+	var result struct {
+		RevokedCount int `json:"revoked_count"`
+	}
+	if err := json.Unmarshal(revoked.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.RevokedCount != 1 {
+		t.Fatalf("viewer revoked_count=%d, want 1", result.RevokedCount)
+	}
+
+	if rr := requestJSON(t, app.handler, http.MethodGet, "/api/v1/auth/session", "", viewerCurrent, ""); rr.Code != http.StatusOK {
+		t.Fatalf("viewer current session status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := requestJSON(t, app.handler, http.MethodGet, "/api/v1/auth/session", "", viewerOld, ""); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("viewer old session status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := requestJSON(t, app.handler, http.MethodGet, "/api/v1/auth/session", "", adminCookie, ""); rr.Code != http.StatusOK {
+		t.Fatalf("admin session changed by viewer self-service: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
