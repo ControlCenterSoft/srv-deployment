@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Fail-closed automated PR release gate.
 
-Runs only from a trusted pull_request_target workflow checked out from protected
-main. It never checks out or executes pull-request code. It validates immutable
-GitHub metadata, exact-head CI, a strict independent Gemini review, then submits
-an approval and merges only the reviewed exact head SHA.
+Runs only from a trusted pull_request_target/pull_request_review workflow checked
+out from protected main. It never checks out or executes pull-request code. It
+validates immutable GitHub metadata, exact-head CI, an independent Gemini review,
+a fixed independent reviewer approval anchored to the exact head, and the exact
+current protected base before merging. The Actions identity never approves its
+own pull request.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from typing import Any, Iterable
 
 API_ROOT = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
 GITHUB_ACTIONS_APP_ID = 15368
+INDEPENDENT_REVIEWER = "controlcenter-release-reviewer"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 MAX_REVIEW_DIFF_BYTES = 180_000
 
@@ -35,9 +38,8 @@ REQUIRED_WORKFLOWS = {
     "1.1.x": "Control Center 1.1.x Fast CI",
 }
 
-# These paths define CI/security/deployment/runtime trust boundaries. They must
-# never be auto-approved by the gate that protects them. Changes here require
-# the independent break-glass/reviewer path already enforced by repository rules.
+# CI/security/deployment/runtime trust boundaries are never eligible for this
+# automatic merge gate. They remain on the independent/manual governance path.
 PROTECTED_PREFIXES = (
     ".github/",
     "cmd/",
@@ -109,7 +111,7 @@ def policy_decision(repo: str, pr: dict[str, Any], filenames: Iterable[str]) -> 
 
     head_repo = (head.get("repo") or {}).get("full_name")
     if head_repo != repo:
-        reasons.append("cross-repository pull requests are never auto-approved")
+        reasons.append("cross-repository pull requests are never auto-merged")
 
     author = ((pr.get("user") or {}).get("login"))
     if author != owner:
@@ -127,6 +129,41 @@ def policy_decision(repo: str, pr: dict[str, Any], filenames: Iterable[str]) -> 
         if reason:
             reasons.append(reason)
 
+    return Decision(not reasons, tuple(reasons))
+
+
+def independent_approval_decision(reviews: Iterable[dict[str, Any]], head_sha: str) -> Decision:
+    latest: tuple[int, dict[str, Any]] | None = None
+    for review in reviews:
+        login = str(((review.get("user") or {}).get("login")) or "")
+        if login.lower() != INDEPENDENT_REVIEWER.lower():
+            continue
+        rid = int(review.get("id") or 0)
+        if latest is None or rid >= latest[0]:
+            latest = (rid, review)
+
+    if latest is None:
+        return Decision(False, (f"missing review from fixed independent reviewer {INDEPENDENT_REVIEWER}",))
+
+    review = latest[1]
+    state = str(review.get("state") or "").upper()
+    commit_id = str(review.get("commit_id") or "")
+    reasons: list[str] = []
+    if state != "APPROVED":
+        reasons.append(f"latest independent review is not APPROVED: {state or 'UNKNOWN'}")
+    if commit_id != head_sha:
+        reasons.append("independent approval is not anchored to the exact PR head")
+    return Decision(not reasons, tuple(reasons))
+
+
+def base_compare_decision(expected_base_sha: str, current_base_sha: str, payload: dict[str, Any]) -> Decision:
+    reasons: list[str] = []
+    if current_base_sha != expected_base_sha:
+        reasons.append("protected base moved after security evidence was captured")
+    if int(payload.get("behind_by") or 0) != 0:
+        reasons.append("PR head is behind the current protected base")
+    if str(payload.get("status") or "") not in {"ahead", "identical"}:
+        reasons.append(f"PR head is not a clean descendant of current base: {payload.get('status')!r}")
     return Decision(not reasons, tuple(reasons))
 
 
@@ -157,25 +194,18 @@ class GitHubAPI:
                 raw = resp.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise GateError(f"GitHub API {method} {path} failed: HTTP {exc.code}: {detail}") from exc
+            # Do not replay response bodies from write-capable control-plane calls.
+            raise GateError(f"GitHub API {method} {path} failed: HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
-            raise GateError(f"GitHub API {method} {path} failed: {exc}") from exc
+            raise GateError(f"GitHub API {method} {path} failed") from exc
 
-    def request_text(
-        self,
-        path: str,
-        *,
-        accept: str,
-        max_bytes: int,
-    ) -> str:
+    def request_text(self, path: str, *, accept: str, max_bytes: int) -> str:
         url = path if path.startswith("https://") else f"{API_ROOT}{path}"
         req = urllib.request.Request(url, headers=self._headers(accept), method="GET")
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 raw = resp.read(max_bytes + 1)
         except urllib.error.HTTPError as exc:
-            # Never copy GitHub/provider bodies into logs from this path.
             raise GateError(f"GitHub API diff request failed: HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
             raise GateError("GitHub API diff request failed") from exc
@@ -215,6 +245,15 @@ def latest_review_states(api: GitHubAPI, repo: str, pr_number: int) -> dict[str,
 def requested_changes_reviewers(api: GitHubAPI, repo: str, pr_number: int) -> list[str]:
     states = latest_review_states(api, repo, pr_number)
     return sorted(user for user, state in states.items() if state == "CHANGES_REQUESTED")
+
+
+def require_independent_approval(api: GitHubAPI, repo: str, pr_number: int, head_sha: str) -> None:
+    decision = independent_approval_decision(
+        api.paged(f"/repos/{repo}/pulls/{pr_number}/reviews"), head_sha
+    )
+    if not decision.allowed:
+        raise GateError("; ".join(decision.reasons))
+    print(f"INDEPENDENT_APPROVAL_PASS reviewer={INDEPENDENT_REVIEWER} sha={head_sha}")
 
 
 def exact_check_passed(api: GitHubAPI, repo: str, sha: str, expected_name: str) -> bool:
@@ -263,13 +302,58 @@ def wait_for_exact_ci(api: GitHubAPI, repo: str, sha: str, base: str, wait_secon
         time.sleep(20)
 
 
-def require_same_head(api: GitHubAPI, repo: str, pr_number: int, expected_sha: str, stage: str) -> dict[str, Any]:
+def require_same_head(
+    api: GitHubAPI,
+    repo: str,
+    pr_number: int,
+    expected_sha: str,
+    stage: str,
+    *,
+    expected_base: str | None = None,
+) -> dict[str, Any]:
     current = api.request(f"/repos/{repo}/pulls/{pr_number}")
     if current.get("state") != "open" or current.get("draft"):
         raise GateError(f"pull request state changed {stage}")
     if ((current.get("head") or {}).get("sha")) != expected_sha:
         raise GateError(f"pull request head moved {stage}")
+    if expected_base is not None and ((current.get("base") or {}).get("ref")) != expected_base:
+        raise GateError(f"pull request base changed {stage}")
     return current
+
+
+def current_base_sha(api: GitHubAPI, repo: str, base: str) -> str:
+    quoted = urllib.parse.quote(base, safe="")
+    payload = api.request(f"/repos/{repo}/git/ref/heads/{quoted}")
+    sha = str(((payload.get("object") or {}).get("sha")) or "") if isinstance(payload, dict) else ""
+    if not SHA40.fullmatch(sha):
+        raise GateError(f"could not resolve exact protected base SHA for {base}")
+    return sha
+
+
+def require_current_base(
+    api: GitHubAPI,
+    repo: str,
+    pr_number: int,
+    head_sha: str,
+    base: str,
+    expected_base_sha: str | None,
+    stage: str,
+) -> str:
+    require_same_head(api, repo, pr_number, head_sha, stage, expected_base=base)
+    observed_base_sha = current_base_sha(api, repo, base)
+    if expected_base_sha is None:
+        expected_base_sha = observed_base_sha
+    compare = api.request(f"/repos/{repo}/compare/{observed_base_sha}...{head_sha}")
+    if not isinstance(compare, dict):
+        raise GateError("GitHub compare result was not an object")
+    decision = base_compare_decision(expected_base_sha, observed_base_sha, compare)
+    if not decision.allowed:
+        raise GateError("; ".join(decision.reasons))
+    print(
+        f"BASE_BINDING_PASS stage={stage!r} base={base} base_sha={observed_base_sha} "
+        f"head_sha={head_sha}"
+    )
+    return observed_base_sha
 
 
 def run_independent_ai_review(api: GitHubAPI, repo: str, pr_number: int, sha: str) -> dict[str, Any]:
@@ -307,7 +391,7 @@ def run_independent_ai_review(api: GitHubAPI, repo: str, pr_number: int, sha: st
     )
     if not automatic_gate_allows(review):
         raise GateError(
-            "independent Gemini review blocked automatic approval: "
+            "independent Gemini review blocked automatic merge: "
             f"verdict={review.get('verdict')} high_or_blocker={len(blockers)}"
         )
     return review
@@ -323,7 +407,7 @@ def run(repo: str, pr_number: int, wait_seconds: int, *, merge: bool) -> None:
     if not decision.allowed:
         for reason in decision.reasons:
             print(f"POLICY_BLOCK: {reason}")
-        raise GateError("pull request is outside automatic approval policy")
+        raise GateError("pull request is outside automatic merge policy")
 
     opaque = [
         item.get("filename", "")
@@ -339,46 +423,52 @@ def run(repo: str, pr_number: int, wait_seconds: int, *, merge: bool) -> None:
 
     base = pr["base"]["ref"]
     head_sha = pr["head"]["sha"]
+    base_sha = require_current_base(
+        api, repo, pr_number, head_sha, base, None, "before exact-head CI"
+    )
     wait_for_exact_ci(api, repo, head_sha, base, wait_seconds)
 
-    # Bind the provider-reviewed diff to the exact CI-tested head. A synchronize
-    # race before or after provider review fails closed.
-    require_same_head(api, repo, pr_number, head_sha, "before independent review")
+    require_current_base(
+        api, repo, pr_number, head_sha, base, base_sha, "before independent AI review"
+    )
     run_independent_ai_review(api, repo, pr_number, head_sha)
-    require_same_head(api, repo, pr_number, head_sha, "before approval")
+    require_current_base(
+        api, repo, pr_number, head_sha, base, base_sha, "after independent AI review"
+    )
 
     blockers = requested_changes_reviewers(api, repo, pr_number)
     if blockers:
-        raise GateError(f"requested-changes review appeared before approval: {blockers}")
+        raise GateError(f"requested-changes review appeared before independent approval: {blockers}")
+    require_independent_approval(api, repo, pr_number, head_sha)
 
-    print(f"POLICY_PASS pr={pr_number} sha={head_sha} base={base}")
-    api.request(
-        f"/repos/{repo}/pulls/{pr_number}/reviews",
-        method="POST",
-        body={
-            "event": "APPROVE",
-            "body": (
-                "Automated trusted release-gate approval. "
-                f"Exact head `{head_sha}` passed protected-path policy, exact-head CI, "
-                "and independent Gemini review with no HIGH/BLOCKER or CHANGES_REQUIRED verdict."
-            ),
-        },
+    print(
+        f"POLICY_PASS pr={pr_number} head_sha={head_sha} base={base} "
+        f"base_sha={base_sha} reviewer={INDEPENDENT_REVIEWER}"
     )
-    print(f"AUTOMATED_APPROVAL_SUBMITTED pr={pr_number} sha={head_sha}")
-
     if not merge:
         return
 
-    time.sleep(2)
-    require_same_head(api, repo, pr_number, head_sha, "before merge")
+    # Last fail-closed check before the only mutation. A base update invalidates
+    # all earlier evidence; the API merge remains additionally bound to head SHA.
+    require_current_base(
+        api, repo, pr_number, head_sha, base, base_sha, "immediately before merge"
+    )
+    require_independent_approval(api, repo, pr_number, head_sha)
+    blockers = requested_changes_reviewers(api, repo, pr_number)
+    if blockers:
+        raise GateError(f"requested-changes review appeared immediately before merge: {blockers}")
+
     result = api.request(
         f"/repos/{repo}/pulls/{pr_number}/merge",
         method="PUT",
         body={"sha": head_sha, "merge_method": "merge"},
     )
     if not result or result.get("merged") is not True:
-        raise GateError(f"GitHub refused protected merge: {result!r}")
-    print(f"AUTOMATED_MERGE_COMPLETED pr={pr_number} sha={head_sha} merge_sha={result.get('sha')}")
+        raise GateError("GitHub refused protected merge")
+    print(
+        f"AUTOMATED_MERGE_COMPLETED pr={pr_number} head_sha={head_sha} "
+        f"base_sha={base_sha} merge_sha={result.get('sha')}"
+    )
 
 
 def main() -> int:
