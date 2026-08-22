@@ -105,3 +105,57 @@ func TestNetworkAddressPreflightRequiresAuthCSRFAndFreshPreview(t *testing.T) {
 		t.Fatalf("preflight contract=%+v", preflightResponse.Preflight)
 	}
 }
+
+func TestNetworkAddressPreviewAndPreflightViewerDenialsAreAudited(t *testing.T) {
+	app := newTestApp(t)
+	adminCookie, adminCSRF := login(t, app, "admin", app.adminPassword)
+	createViewer := requestJSON(t, app.handler, http.MethodPost, "/api/v1/rbac/users", `{"username":"networkpreflightviewer","password":"networkpreflightviewer-password-123","role":"viewer"}`, adminCookie, adminCSRF)
+	if createViewer.Code != http.StatusCreated {
+		t.Fatalf("create viewer status=%d body=%s", createViewer.Code, createViewer.Body.String())
+	}
+	viewerCookie, viewerCSRF := login(t, app, "networkpreflightviewer", "networkpreflightviewer-password-123")
+
+	previewPayload := `{"interface":"eth0","cidr":"192.0.2.20/24"}`
+	previewDenied := requestJSON(t, app.handler, http.MethodPost, "/api/v1/network/address-change/preview", previewPayload, viewerCookie, viewerCSRF)
+	if previewDenied.Code != http.StatusForbidden {
+		t.Fatalf("viewer preview status=%d body=%s", previewDenied.Code, previewDenied.Body.String())
+	}
+
+	preflightPayload := `{"interface":"eth0","cidr":"192.0.2.20/24","expected_source_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+	preflightDenied := requestJSON(t, app.handler, http.MethodPost, "/api/v1/network/address-change/preflight", preflightPayload, viewerCookie, viewerCSRF)
+	if preflightDenied.Code != http.StatusForbidden {
+		t.Fatalf("viewer preflight status=%d body=%s", preflightDenied.Code, preflightDenied.Body.String())
+	}
+
+	audit := requestJSON(t, app.handler, http.MethodGet, "/api/v1/audit?limit=100", "", adminCookie, "")
+	if audit.Code != http.StatusOK {
+		t.Fatalf("audit status=%d body=%s", audit.Code, audit.Body.String())
+	}
+	var body struct {
+		Events []struct {
+			Actor     string `json:"actor"`
+			Action    string `json:"action"`
+			Result    string `json:"result"`
+			ErrorCode string `json:"error_code"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(audit.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	previewAudited := false
+	preflightAudited := false
+	for _, event := range body.Events {
+		if event.Actor != "networkpreflightviewer" || event.Result != "denied" || event.ErrorCode != "permission_denied" {
+			continue
+		}
+		switch event.Action {
+		case "network.address.preview":
+			previewAudited = true
+		case "network.address.preflight":
+			preflightAudited = true
+		}
+	}
+	if !previewAudited || !preflightAudited {
+		t.Fatalf("viewer denials were not fully audited: preview=%t preflight=%t events=%+v", previewAudited, preflightAudited, body.Events)
+	}
+}
