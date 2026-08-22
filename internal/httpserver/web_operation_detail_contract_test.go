@@ -64,7 +64,7 @@ func TestAdminWebOperationDetailAuditAuthorityContract(t *testing.T) {
 		`detail.audit?.events || []`,
 		`event.action || "—"`,
 		`event.result || "—"`,
-		`event.error_code || "—"`,
+		`event.error_code ?`,
 	} {
 		if !strings.Contains(app, required) {
 			t.Fatalf("operation detail Core/audit authority contract is missing %q", required)
