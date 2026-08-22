@@ -67,7 +67,9 @@ jobs:
           set -Eeuo pipefail
           DISPATCHER=.github/workflows/perplexity-routine-dispatcher.yml
           IMPLEMENTATION_SHA=2203fd0d5d2c30aa0d16e061262e4711685e3608
+          DISPATCHER_SHA256=7e595dfc2fffbd5fccbfeda2dbc013deedb2d57d0c6ee2d04f0db154a2c75703
           test -f "$DISPATCHER"
+          printf '%s  %s\n' "$DISPATCHER_SHA256" "$DISPATCHER" | sha256sum -c -
           grep -Fq 'issues:' "$DISPATCHER"
           grep -Fq 'types: [opened, edited, reopened]' "$DISPATCHER"
           grep -Fq "uses: ControlCenterSoft/srv-deployment/.github/workflows/perplexity-routine.yml@${IMPLEMENTATION_SHA}" "$DISPATCHER"
