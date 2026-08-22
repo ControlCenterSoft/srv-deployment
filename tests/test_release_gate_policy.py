@@ -37,6 +37,16 @@ def pr_fixture(**overrides):
     return base
 
 
+class FakeReviewAPI:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def request(self, path, *, method="GET", body=None):
+        self.calls.append((path, method, body))
+        return self.response
+
+
 class ReleaseGatePolicyTests(unittest.TestCase):
     def test_low_risk_owner_pr_is_eligible_for_machine_review(self):
         decision = release_gate.policy_decision(
@@ -46,30 +56,15 @@ class ReleaseGatePolicyTests(unittest.TestCase):
         )
         self.assertTrue(decision.allowed, decision.reasons)
 
-    def test_workflow_change_is_never_auto_approved(self):
-        decision = release_gate.policy_decision(
-            "ControlCenterSoft/srv-deployment",
-            pr_fixture(),
-            [".github/workflows/ci.yml"],
-        )
-        self.assertFalse(decision.allowed)
-        self.assertTrue(any("protected path prefix .github/" in r for r in decision.reasons))
-
-    def test_staging_script_change_is_never_auto_approved(self):
-        decision = release_gate.policy_decision(
-            "ControlCenterSoft/srv-deployment",
-            pr_fixture(),
-            ["scripts/staging-deploy.sh"],
-        )
-        self.assertFalse(decision.allowed)
-
-    def test_privileged_runtime_and_release_boundaries_are_protected(self):
+    def test_trust_boundary_paths_are_never_auto_approved(self):
         for path in (
+            ".github/workflows/ci.yml",
             "cmd/control-center/main.go",
-            "cmd/control-center-privileged-worker/main.go",
-            "cmd/release-tool/main.go",
+            "install/install.sh",
             "packaging/systemd/control-center.service",
             "release/manifest.json",
+            "scripts/staging-deploy.sh",
+            "evidence/release.md",
             "internal/auth/service.go",
             "internal/httpserver/server.go",
             "internal/network/service.go",
@@ -96,38 +91,40 @@ class ReleaseGatePolicyTests(unittest.TestCase):
 
     def test_foreign_or_cross_repo_pr_is_rejected(self):
         foreign = pr_fixture(user={"login": "someone-else"})
-        decision = release_gate.policy_decision(
-            "ControlCenterSoft/srv-deployment", foreign, ["internal/dns/resolver.go"]
+        self.assertFalse(
+            release_gate.policy_decision(
+                "ControlCenterSoft/srv-deployment", foreign, ["internal/dns/resolver.go"]
+            ).allowed
         )
-        self.assertFalse(decision.allowed)
-
         fork = pr_fixture(
             head={"sha": "2" * 40, "repo": {"full_name": "someone/fork"}}
         )
-        decision = release_gate.policy_decision(
-            "ControlCenterSoft/srv-deployment", fork, ["internal/dns/resolver.go"]
-        )
-        self.assertFalse(decision.allowed)
-
-    def test_draft_and_unknown_base_are_rejected(self):
-        draft = pr_fixture(draft=True)
         self.assertFalse(
             release_gate.policy_decision(
-                "ControlCenterSoft/srv-deployment", draft, ["internal/dns/resolver.go"]
-            ).allowed
-        )
-        unknown = pr_fixture(base={"ref": "feature/x"})
-        self.assertFalse(
-            release_gate.policy_decision(
-                "ControlCenterSoft/srv-deployment", unknown, ["internal/dns/resolver.go"]
+                "ControlCenterSoft/srv-deployment", fork, ["internal/dns/resolver.go"]
             ).allowed
         )
 
-    def test_size_caps_fail_closed(self):
-        huge = pr_fixture(changed_files=release_gate.MAX_CHANGED_FILES + 1)
+    def test_draft_unknown_base_and_size_caps_fail_closed(self):
         self.assertFalse(
             release_gate.policy_decision(
-                "ControlCenterSoft/srv-deployment", huge, ["internal/dns/resolver.go"]
+                "ControlCenterSoft/srv-deployment",
+                pr_fixture(draft=True),
+                ["internal/dns/resolver.go"],
+            ).allowed
+        )
+        self.assertFalse(
+            release_gate.policy_decision(
+                "ControlCenterSoft/srv-deployment",
+                pr_fixture(base={"ref": "feature/x"}),
+                ["internal/dns/resolver.go"],
+            ).allowed
+        )
+        self.assertFalse(
+            release_gate.policy_decision(
+                "ControlCenterSoft/srv-deployment",
+                pr_fixture(changed_files=release_gate.MAX_CHANGED_FILES + 1),
+                ["internal/dns/resolver.go"],
             ).allowed
         )
 
@@ -139,63 +136,53 @@ class ReleaseGatePolicyTests(unittest.TestCase):
             "Control Center 1.1.x Fast CI", release_gate.REQUIRED_WORKFLOWS["1.1.x"]
         )
 
-    def test_only_fixed_reviewer_exact_head_approval_is_accepted(self):
+    def test_only_fixed_app_exact_head_approval_is_accepted(self):
         head = "a" * 40
         reviews = [
             {
                 "id": 10,
                 "state": "APPROVED",
                 "commit_id": head,
-                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
+                "user": {"login": release_gate.RELEASE_GATE_REVIEWER},
             }
         ]
-        decision = release_gate.independent_approval_decision(reviews, head)
+        decision = release_gate.app_approval_decision(reviews, head)
         self.assertTrue(decision.allowed, decision.reasons)
 
-    def test_stale_independent_approval_is_rejected(self):
+    def test_stale_or_nonapproved_app_review_is_rejected(self):
         head = "a" * 40
-        reviews = [
+        stale = [
             {
                 "id": 10,
                 "state": "APPROVED",
                 "commit_id": "b" * 40,
-                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
+                "user": {"login": release_gate.RELEASE_GATE_REVIEWER},
             }
         ]
-        decision = release_gate.independent_approval_decision(reviews, head)
-        self.assertFalse(decision.allowed)
-        self.assertTrue(any("exact PR head" in reason for reason in decision.reasons))
-
-    def test_latest_non_approved_independent_review_blocks(self):
-        head = "a" * 40
-        reviews = [
-            {
-                "id": 10,
-                "state": "APPROVED",
-                "commit_id": head,
-                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
-            },
+        self.assertFalse(release_gate.app_approval_decision(stale, head).allowed)
+        commented = [
             {
                 "id": 11,
                 "state": "COMMENTED",
                 "commit_id": head,
-                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
-            },
-        ]
-        self.assertFalse(release_gate.independent_approval_decision(reviews, head).allowed)
-
-    def test_other_reviewer_cannot_satisfy_fixed_reviewer_boundary(self):
-        head = "a" * 40
-        reviews = [
-            {
-                "id": 10,
-                "state": "APPROVED",
-                "commit_id": head,
-                "user": {"login": "github-actions[bot]"},
+                "user": {"login": release_gate.RELEASE_GATE_REVIEWER},
             }
         ]
-        decision = release_gate.independent_approval_decision(reviews, head)
-        self.assertFalse(decision.allowed)
+        self.assertFalse(release_gate.app_approval_decision(commented, head).allowed)
+
+    def test_human_or_actions_review_cannot_satisfy_app_boundary(self):
+        head = "a" * 40
+        for login in ("controlcenter-release-reviewer", "github-actions[bot]", "ControlCenterSoft"):
+            with self.subTest(login=login):
+                reviews = [
+                    {
+                        "id": 10,
+                        "state": "APPROVED",
+                        "commit_id": head,
+                        "user": {"login": login},
+                    }
+                ]
+                self.assertFalse(release_gate.app_approval_decision(reviews, head).allowed)
 
     def test_base_binding_rejects_moved_or_behind_base(self):
         base = "b" * 40
@@ -215,28 +202,64 @@ class ReleaseGatePolicyTests(unittest.TestCase):
             ).allowed
         )
 
-    def test_actions_identity_never_submits_approval(self):
-        source = MODULE_PATH.read_text(encoding="utf-8")
-        self.assertNotIn('"event": "APPROVE"', source)
-        self.assertNotIn("AUTOMATED_APPROVAL_SUBMITTED", source)
-        self.assertIn("require_independent_approval", source)
-        self.assertIn("require_current_base", source)
+    def test_app_approval_submission_is_exact_head_bound(self):
+        head = "a" * 40
+        base = "b" * 40
+        api = FakeReviewAPI({"state": "APPROVED", "commit_id": head})
+        release_gate.submit_app_approval(api, "ControlCenterSoft/srv-deployment", 123, head, base)
+        self.assertEqual(1, len(api.calls))
+        path, method, body = api.calls[0]
+        self.assertEqual("/repos/ControlCenterSoft/srv-deployment/pulls/123/reviews", path)
+        self.assertEqual("POST", method)
+        self.assertEqual("APPROVE", body["event"])
+        self.assertIn(head, body["body"])
+        self.assertIn(base, body["body"])
 
-    def test_review_event_retriggers_gate_without_self_approval(self):
-        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-        self.assertIn("pull_request_review:", workflow)
-        self.assertIn("types: [submitted, dismissed]", workflow)
-        self.assertEqual("controlcenter-release-reviewer", release_gate.INDEPENDENT_REVIEWER)
+    def test_app_approval_submission_rejects_wrong_commit_response(self):
+        api = FakeReviewAPI({"state": "APPROVED", "commit_id": "b" * 40})
+        with self.assertRaises(release_gate.GateError):
+            release_gate.submit_app_approval(
+                api,
+                "ControlCenterSoft/srv-deployment",
+                123,
+                "a" * 40,
+                "c" * 40,
+            )
 
-    def test_trusted_workflow_is_read_only_validator(self):
+    def test_trusted_workflow_uses_pinned_narrow_app_token_and_separate_merger(self):
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-        self.assertIn("contents: read", workflow)
+        self.assertIn("pull_request_target:", workflow)
+        self.assertNotIn("pull_request_review:", workflow)
+        self.assertIn("ref: main", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn(
+            "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+            workflow,
+        )
+        self.assertIn("app-id: 4682191", workflow)
+        self.assertIn("RELEASE_GATE_APP_PRIVATE_KEY", workflow)
+        self.assertIn("permission-pull-requests: write", workflow)
+        self.assertIn("permission-contents: read", workflow)
+        self.assertIn("RELEASE_GATE_REVIEW_TOKEN:", workflow)
+        self.assertIn("MERGE_TOKEN:", workflow)
+        self.assertIn("contents: write", workflow)
         self.assertIn("pull-requests: read", workflow)
-        self.assertIn("--no-merge", workflow)
-        self.assertNotIn("contents: write", workflow)
-        self.assertNotIn("pull-requests: write", workflow)
+        self.assertNotIn("--no-merge", workflow)
+        self.assertIn("head.repo.full_name == github.repository", workflow)
+        self.assertIn("user.login == github.repository_owner", workflow)
 
-    def test_independent_ai_blocks_high_and_blocker(self):
+    def test_script_separates_app_review_client_from_merge_client(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertEqual("control-center-release-gate[bot]", release_gate.RELEASE_GATE_REVIEWER)
+        self.assertIn('os.environ.get("RELEASE_GATE_REVIEW_TOKEN"', source)
+        self.assertIn('role="app-review"', source)
+        self.assertIn('role="merge"', source)
+        self.assertIn("submit_app_approval(review_api", source)
+        self.assertIn("result = merge_api.request(", source)
+        self.assertIn('"event": "APPROVE"', source)
+        self.assertNotIn("INDEPENDENT_REVIEWER", source)
+
+    def test_independent_ai_blocks_high_blocker_or_changes_required(self):
         for severity in ("HIGH", "BLOCKER"):
             with self.subTest(severity=severity):
                 review = {
@@ -245,14 +268,15 @@ class ReleaseGatePolicyTests(unittest.TestCase):
                     "findings": [{"severity": severity}],
                 }
                 self.assertFalse(release_gate_ai.automatic_gate_allows(review))
-
-    def test_independent_ai_blocks_changes_required_even_without_high(self):
-        review = {
-            "summary": "review",
-            "verdict": "CHANGES_REQUIRED",
-            "findings": [{"severity": "MEDIUM"}],
-        }
-        self.assertFalse(release_gate_ai.automatic_gate_allows(review))
+        self.assertFalse(
+            release_gate_ai.automatic_gate_allows(
+                {
+                    "summary": "review",
+                    "verdict": "CHANGES_REQUIRED",
+                    "findings": [{"severity": "MEDIUM"}],
+                }
+            )
+        )
 
     def test_independent_ai_allows_pass_with_bounded_notes(self):
         review = {
