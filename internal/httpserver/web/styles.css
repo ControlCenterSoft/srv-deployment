@@ -201,9 +201,32 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 }
 #audit-results { min-width: 0; }
 
+/* Operation-detail actions are a primary keyboard/touch workflow. Keep the
+   label and action visually separated and preserve a measurable 44px target. */
+#operations-list > .compact-list > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cc-space-3);
+}
+#operations-list > .compact-list > li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#operations-list .inline-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--cc-row-min-height);
+}
+
 @media (max-width: 720px) {
   header { align-items: flex-start; flex-direction: column; gap: var(--cc-space-3); }
   .status { white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
   #audit-page > div:first-child { align-items: flex-start; }
   .compact-list li, .rbac-list li { min-height: 0; }
+  #operations-list > .compact-list > li {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--cc-space-2);
+  }
 }
