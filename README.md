@@ -7,11 +7,13 @@ Control Center — локальная серверная платформа уп
 - **Принятый production baseline:** `1.0.0`.
 - **Канонический production release:** `deployment.json` → `1.0.0`, `production-ready`, acceptance `passed`.
 - **Активная линия разработки:** `1.1.x`.
-- **Последний exact candidate с полным acceptance:** `1.1.0-rc.3`, source `cdcc9d4d6499a26e8ffb8b520525740afc8d2589`.
-- **Текущий `1.1.x` HEAD:** `b72fed6abd32b0607ff8a9751a6e864eb84d1a0a`; поверх candidate source добавлен bootstrap pin Ops Agent 1.1.8.
-- **Тестовый сервер:** фактически сообщает `1.1.0-rc.3`, но final real-staging gate остаётся красным: установленный на сервере предыдущий updater-v2 отвергает same-version target до запуска candidate updater. Актуальный blocker отслеживается в issue `#116`.
+- **Последний product/runtime-code merge в `1.1.x`:** PR `#176`, merge `e9f5420a8148c68d3b7ddeb96083acfa727993bc`, signed least-privilege diagnostics-agent staging chain. Последующие docs-only commits могут менять branch ref без изменения product/runtime identity.
+- **Последний exact server candidate с полным real test-server acceptance:** `1.1.0-rc.7`, source `ca0d610aca75d3838c5d10eb841182529a95fc4d`.
+- **Тестовый сервер:** подтверждённо обновлён `1.1.0-rc.6` → `1.1.0-rc.7` через signed package-v2 + restricted updater/rollback path; установленный Ops Agent/Broker — `1.1.8`. Independently gated diagnostics agent `1.1.10` (`control-center-server-diagnostics#14`, exact `d4337bdd5f3111431ee06858fcd0d3338655751c`) ещё не считается установленным до signed staging и post-update runtime verification.
 
-До прохождения полного real-server acceptance `main` и канонический production release остаются на `1.0.0`.
+PR `#176` интегрирован только после зелёных exact-head deterministic CI, Contract & Regression QA PASS и Security Review PASS. Он не выполнял product release или production promotion. Его задача — дать узкий recovery-aware путь установки только заранее одобренного diagnostics-agent artifact без general sudo и без изменения SO_PEERCRED broker boundary.
+
+Exact `1.1.0-rc.7` относится к Core B PR `#161`; перед его merge в актуальную integration line требуется синхронизация с текущим `1.1.x`, после которой новый SHA должен заново пройти полный применимый CI/QA/Security/staging gate. Канонический production release остаётся `1.0.0`.
 
 Подробный оперативный статус: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md).
 План линии 1.1.x: [`docs/releases/1.1.x-development-plan.md`](docs/releases/1.1.x-development-plan.md).
@@ -55,6 +57,19 @@ sudo control-center-update --package /path/to/control-center-release.tar.gz
 
 Downgrade запрещён по умолчанию. Controlled rollback не отменяет проверки подписи, digest, platform и совместимости state schema.
 
+### Diagnostics-agent staging boundary
+
+Линия `1.1.x` содержит отдельный test-server-only путь для обновления diagnostics agent. Он намеренно не расширяет основной privileged worker или SO_PEERCRED broker:
+
+- one-time root bootstrap устанавливает только `/usr/local/sbin/control-center-ops-agent-staging-update` и command-scoped sudo rule;
+- signed package должен соответствовать pinned repository/path/commit/blob provenance и exact test-server product identity;
+- полный root mutation path сериализуется; downgrade и same-version/different-artifact replacement блокируются;
+- exact-artifact retry остаётся idempotent;
+- failure path восстанавливает предыдущий agent, registration и timer state;
+- general passwordless sudo, arbitrary shell и product updater access не выдаются.
+
+Этот путь не является production deployment mechanism и не заменяет server-product Full Acceptance.
+
 ### Installer / repair / uninstall
 
 ```bash
@@ -74,7 +89,7 @@ Bootstrap local `admin` создаётся только при пустом user
 
 Разработка ведётся короткими feature-ветками от актуальной `1.1.x`. Fast CI проверяет policy/secret scan, Go, shell/install, relevant contract/regression tests и быстрый runtime build. Полный candidate gate включает deterministic validation, reproducible amd64/arm64, exact rebuild stable `1.0.0`, disposable install/update/rollback, signed staging package и real test-server staging.
 
-Production promotion 1.1.x запрещён без успешного full acceptance и подтверждённого real-server evidence.
+Production promotion 1.1.x запрещён без успешного full acceptance и подтверждённого real-server evidence на неизменившемся exact candidate SHA.
 
 ### Release governance
 
@@ -93,7 +108,10 @@ Refactor, CI/CD, dependencies, документация, тесты, infrastruct
 - ADR-0005 — privileged worker;
 - ADR-0006 — update integrity;
 - ADR-0007 — operations / audit / diagnostics;
-- ADR-0008 — parallel development pipeline.
+- ADR-0008 — parallel development pipeline;
+- ADR-0009 — release user-value policy;
+- ADR-0010 — parallel delivery operating model;
+- ADR-0011 — diagnostics-agent staging trust boundary.
 
 ## Локальная разработка
 
@@ -107,4 +125,4 @@ Secure default bind остаётся локальным; временная HTTP
 
 ## Проверки
 
-Базовые deterministic checks включают secret/policy scan, unit/contract tests, installer/update acceptance и release-specific full acceptance workflows. Текущий authoritative gate — GitHub CI на exact candidate SHA; документация не может повышать release status без соответствующего evidence.
+Базовые deterministic checks включают secret/policy scan, unit/contract tests, installer/update acceptance и release-specific full acceptance workflows. Authoritative gate — GitHub CI/QA/Security/Quality/staging evidence на exact candidate SHA; документация не может повышать release status без соответствующего evidence.

@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Iterable
 
 AI_PATHS = {
+    "scripts/ai_gateway.py",
     "scripts/gemini_review.py",
     "scripts/perplexity_research.py",
     "scripts/ci_scope.py",
+    "tests/test_ai_gateway.py",
     "tests/test_gemini_review.py",
     "tests/test_perplexity_research.py",
     "tests/test_ci_scope.py",
