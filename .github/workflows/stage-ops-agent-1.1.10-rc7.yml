@@ -68,6 +68,63 @@ jobs:
             "$RUNNER_TEMP/control-center-ops-stage/signing-private.pem"
           openssl pkey -in "$RUNNER_TEMP/control-center-ops-stage/signing-private.pem" -noout >/dev/null
 
+      - name: Validate signed package construction locally
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash scripts/stage-ops-agent-signed.sh \
+            --agent-file tests/fixtures/ccops_agent_v3_d4337bdd.py \
+            --source-commit d4337bdd5f3111431ee06858fcd0d3338655751c \
+            --source-blob 412ec9e08432e34d82c64813af079a4177a6ac1e \
+            --agent-version 1.1.10 \
+            --expected-product-version 1.1.0-rc.7 \
+            --expected-product-commit ca0d610aca75d3838c5d10eb841182529a95fc4d \
+            --signing-key "$RUNNER_TEMP/control-center-ops-stage/signing-private.pem" \
+            --build-only "$RUNNER_TEMP/control-center-ops-stage/preflight-package.tar.gz"
+          test -s "$RUNNER_TEMP/control-center-ops-stage/preflight-package.tar.gz"
+
+      - name: Bounded read-only remote staging preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          port="${CONTROL_CENTER_STAGING_PORT:-22}"
+          remote="$CONTROL_CENTER_STAGING_USER@$CONTROL_CENTER_STAGING_HOST"
+          ssh_opts=(
+            -i "$RUNNER_TEMP/control-center-ops-stage/id_staging"
+            -p "$port"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$RUNNER_TEMP/control-center-ops-stage/known_hosts"
+            -o ConnectTimeout=10
+          )
+          ssh "${ssh_opts[@]}" "$remote" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          printf 'SSH_TRANSPORT=PASSED\n'
+          systemctl is-active --quiet control-center-ops-broker.service
+          printf 'OPS_BROKER=ACTIVE\n'
+          systemctl is-active --quiet control-center-ops-agent.timer
+          printf 'OPS_TIMER=ACTIVE\n'
+          test -S /run/control-center-ops/broker.sock
+          socket_state="$(stat -Lc '%U:%G:%a' /run/control-center-ops/broker.sock)"
+          test "$socket_state" = 'root:ccdiag:660'
+          printf 'BROKER_SOCKET=%s\n' "$socket_state"
+          nnp="$(systemctl show control-center-ops-agent.service -p NoNewPrivileges --value)"
+          test "$nnp" = yes
+          printf 'NO_NEW_PRIVILEGES=%s\n' "$nnp"
+          curl -fsS --max-time 5 http://127.0.0.1:8876/api/v1/health >/dev/null
+          printf 'HEALTH=PASSED\n'
+          readiness="$(curl -fsS --max-time 5 http://127.0.0.1:8876/api/v1/readiness)"
+          grep -Fq '"ready":true' <<<"$readiness"
+          printf 'READINESS=PASSED\n'
+          version="$(curl -fsS --max-time 5 http://127.0.0.1:8876/api/v1/version)"
+          grep -Fq '"version":"1.1.0-rc.7"' <<<"$version"
+          grep -Fq '"commit":"ca0d610aca75d3838c5d10eb841182529a95fc4d"' <<<"$version"
+          printf 'PRODUCT_IDENTITY=1.1.0-rc.7/ca0d610aca75d3838c5d10eb841182529a95fc4d\n'
+          sudo -n /usr/local/sbin/control-center-ops-agent-staging-update --self-test >/dev/null
+          printf 'RESTRICTED_UPDATER_SELF_TEST=PASSED\n'
+          REMOTE
+
       - name: Stage exact gated Ops Agent through restricted updater
         env:
           CONTROL_CENTER_STAGING_SSH_KEY_FILE: ${{ runner.temp }}/control-center-ops-stage/id_staging
