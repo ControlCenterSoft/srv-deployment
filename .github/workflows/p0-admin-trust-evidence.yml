@@ -1,0 +1,99 @@
+name: P0 admin trust evidence
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/p0-admin-trust-evidence.yml
+
+permissions:
+  contents: read
+  actions: read
+  deployments: read
+
+jobs:
+  verify:
+    name: verify-admin-trust
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify staging Environment protection metadata
+        env:
+          GH_API_URL: ${{ github.api_url }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "${GH_API_URL}/repos/${GH_REPOSITORY}/environments/staging" \
+            > /tmp/staging-environment.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('/tmp/staging-environment.json').read_text())
+          if data.get('name') != 'staging':
+              raise SystemExit('staging Environment is missing')
+
+          rules = data.get('protection_rules') or []
+          reviewer_rules = [r for r in rules if r.get('type') == 'required_reviewers']
+          if not reviewer_rules:
+              raise SystemExit('staging Environment has no required_reviewers protection rule')
+
+          rule = reviewer_rules[0]
+          reviewers = rule.get('reviewers') or []
+          if not reviewers:
+              raise SystemExit('staging Environment required_reviewers rule has no reviewers')
+          if rule.get('prevent_self_review') is not True:
+              raise SystemExit('staging Environment does not prevent self-review')
+
+          admin_bypass = data.get('can_admins_bypass')
+          if admin_bypass is True:
+              raise SystemExit('staging Environment allows administrator bypass')
+
+          print('staging Environment: present')
+          print('required reviewer protection: active')
+          print('prevent self review: active')
+          print('administrator bypass: disabled or not exposed by this API/plan')
+          PY
+
+      - name: Verify staging credentials are absent outside Environment scope
+        env:
+          REPO_HOST_PRESENT: ${{ secrets.CONTROL_CENTER_STAGING_HOST != '' }}
+          REPO_USER_PRESENT: ${{ secrets.CONTROL_CENTER_STAGING_USER != '' }}
+          REPO_PORT_PRESENT: ${{ secrets.CONTROL_CENTER_STAGING_PORT != '' }}
+          REPO_SSH_KEY_PRESENT: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY != '' }}
+          REPO_KNOWN_HOSTS_PRESENT: ${{ secrets.CONTROL_CENTER_STAGING_KNOWN_HOSTS != '' }}
+          REPO_SIGNING_KEY_PRESENT: ${{ secrets.CONTROL_CENTER_STAGING_SIGNING_KEY != '' }}
+        run: |
+          set -euo pipefail
+          bad=0
+          for key in \
+            REPO_HOST_PRESENT \
+            REPO_USER_PRESENT \
+            REPO_PORT_PRESENT \
+            REPO_SSH_KEY_PRESENT \
+            REPO_KNOWN_HOSTS_PRESENT \
+            REPO_SIGNING_KEY_PRESENT
+          do
+            if [ "${!key}" != 'false' ]; then
+              echo "::error::A staging credential with repository/organization scope is still visible to a non-environment job (${key})."
+              bad=1
+            fi
+          done
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          echo 'repository/organization staging credential copies: not visible to non-environment job'
+
+      - name: Record bounded evidence
+        run: |
+          {
+            echo '### P0 admin trust evidence'
+            echo '- staging Environment protection metadata: verified by public repository API'
+            echo '- required reviewer and prevent-self-review controls: verified'
+            echo '- administrator bypass: not enabled when the API exposes that field'
+            echo '- staging credential copies outside Environment scope: not visible to this non-environment job'
+            echo '- no secret values were read or printed'
+          } >> "$GITHUB_STEP_SUMMARY"
