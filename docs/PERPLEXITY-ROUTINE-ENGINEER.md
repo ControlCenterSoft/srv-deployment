@@ -3,6 +3,13 @@
 Perplexity Routine Engineer is a central, low-risk advisory queue used to remove repetitive
 research work from Control Center development streams without weakening release quality.
 
+## Development lane
+
+Routine AI implementation is integrated through the isolated `1.2.x` development line. The
+frozen `1.1.x` line remains release-only: routine AI work must not merge into it or trigger its
+protected acceptance/staging path. Default-branch dispatchers remain separate control-plane PRs
+and may activate only after their pinned implementation has passed the normal exact-SHA gates.
+
 ## Authority boundary
 
 Perplexity may research current public documentation, compatibility/deprecations, standards,
