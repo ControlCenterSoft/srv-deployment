@@ -16,7 +16,7 @@ func (s *Server) requireOperationRead(next func(http.ResponseWriter, *http.Reque
 	return s.requireAuth(func(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
 		id := r.PathValue("id")
 		action := "operations.detail.read"
-		if id == "incidents" {
+		if id == operationIncidentsCollectionID {
 			action = "operations.incidents.read"
 		}
 		if !hasPermission(u.Role, "operations.read") {
@@ -30,7 +30,7 @@ func (s *Server) requireOperationRead(next func(http.ResponseWriter, *http.Reque
 
 func (s *Server) operationDetail(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
 	id := r.PathValue("id")
-	if id == "incidents" {
+	if id == operationIncidentsCollectionID {
 		s.operationIncidents(w, r, sess, u)
 		return
 	}
