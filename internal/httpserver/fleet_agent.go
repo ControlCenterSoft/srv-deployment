@@ -45,6 +45,7 @@ func fleetAgentSetupEnvelope() envelope {
 
 func (s *Server) registerFleetAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/fleet/capabilities", s.requireAuth(s.fleetCapabilities))
+	mux.HandleFunc("POST /api/v1/fleet/nodes/{id}/disconnect", s.requireAuth(s.disconnectFleetNode))
 	mux.HandleFunc("GET /api/v1/fleet/agent/install.sh", s.serveFleetAgentInstaller)
 	mux.HandleFunc("GET /api/v1/fleet/agent/agent.py", s.serveFleetAgentSource)
 }
@@ -60,6 +61,7 @@ func (s *Server) fleetCapabilities(w http.ResponseWriter, r *http.Request, sess 
 		"permissions": envelope{
 			"read":               []string{string(state.RoleAdmin), string(state.RoleViewer)},
 			"node_create":        []string{string(state.RoleAdmin)},
+			"node_disconnect":    []string{string(state.RoleAdmin)},
 			"enrollment_prepare": []string{string(state.RoleAdmin)},
 			"agent_enroll":       "one_time_enrollment_token",
 			"agent_heartbeat":    "agent_bearer_credential",

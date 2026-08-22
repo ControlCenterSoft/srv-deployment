@@ -18,16 +18,22 @@ AI_PATHS = {
     "tests/test_perplexity_research.py",
     "tests/test_ci_scope.py",
 }
+POLICY_PATH_PREFIXES = (".github/workflows/",)
 
 
 def classify(paths: Iterable[str]) -> dict[str, bool]:
-    normalized = [p.strip().lstrip("./") for p in paths if p.strip()]
+    # Remove only one explicit relative-path prefix. lstrip("./") would also
+    # strip the leading dot from trust-sensitive paths such as .github/.
+    normalized = [p.strip().removeprefix("./") for p in paths if p.strip()]
     go = any(p.endswith(".go") or p in {"go.mod", "go.sum"} for p in normalized)
     shell = any(
         p.endswith(".sh") and (p.startswith("scripts/") or p.startswith("install/"))
         for p in normalized
     )
-    ai = any(p in AI_PATHS for p in normalized)
+    ai = any(
+        p in AI_PATHS or p.startswith(POLICY_PATH_PREFIXES)
+        for p in normalized
+    )
     runtime = any(
         p.startswith(("cmd/", "internal/", "packaging/", "install/"))
         or p in {"go.mod", "go.sum"}

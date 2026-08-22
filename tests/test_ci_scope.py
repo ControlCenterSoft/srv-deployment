@@ -33,8 +33,12 @@ class CIScopeTests(unittest.TestCase):
         self.assertFalse(result["runtime"])
         self.assertFalse(result["go"])
 
-    def test_pipeline_yaml_is_not_runtime(self):
+    def test_pipeline_yaml_routes_python_policy_regressions(self):
         result = classify([".github/workflows/development-1.1.yml"])
+        self.assertTrue(
+            result["ai"],
+            "workflow-only changes must execute the Python regression/policy suite",
+        )
         self.assertFalse(result["runtime"])
         self.assertFalse(result["go"])
         self.assertFalse(result["shell"])
