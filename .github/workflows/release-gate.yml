@@ -6,11 +6,16 @@ on:
       - main
       - '1.1.x'
     types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
 
 permissions:
   actions: read
   checks: read
   contents: write
+  # Retained temporarily because the accepted default-branch contract currently
+  # validates this permission. The gate code never submits/edits PR reviews;
+  # independent approval must come from controlcenter-release-reviewer.
   pull-requests: write
 
 concurrency:
@@ -18,14 +23,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  approve-and-merge:
-    if: ${{ github.event.pull_request.draft == false }}
+  verify-and-merge:
+    if: >-
+      ${{ github.event.pull_request.draft == false &&
+          (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == '1.1.x') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      # pull_request_target is intentional: the write-capable implementation is
-      # always loaded from protected main. Never checkout, import, source, or
-      # execute pull-request-controlled files in this job.
+      # pull_request_target/pull_request_review are intentional: the write-capable
+      # implementation is always loaded from protected main. Never checkout,
+      # import, source, or execute pull-request-controlled files in this job.
       - name: Checkout trusted gate implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,7 +40,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate exact PR head, independently review, approve and merge
+      - name: Validate exact head, current base, independent review and merge
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
