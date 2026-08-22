@@ -54,9 +54,16 @@ func (s *Server) operationIncidents(w http.ResponseWriter, r *http.Request, sess
 }
 
 func parseIncidentLimit(r *http.Request) (int, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
-	if raw == "" {
+	values, present := r.URL.Query()["limit"]
+	if !present {
 		return defaultIncidentLimit, true
+	}
+	if len(values) != 1 {
+		return 0, false
+	}
+	raw := strings.TrimSpace(values[0])
+	if raw == "" {
+		return 0, false
 	}
 	limit, err := strconv.Atoi(raw)
 	if err != nil || limit < 1 || limit > 100 {
