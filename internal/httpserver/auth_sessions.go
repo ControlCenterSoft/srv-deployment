@@ -20,6 +20,14 @@ func (s *Server) revokeOtherSessions(w http.ResponseWriter, r *http.Request, ses
 		writeError(w, http.StatusForbidden, "csrf_rejected", "CSRF or origin validation failed", operationID(r))
 		return
 	}
+	if r.ContentLength != 0 {
+		var in struct{}
+		if err := decodeJSON(r, &in); err != nil {
+			s.auditEvent(r, u.Username, string(u.Role), revokeOtherSessionsAction, u.Username, "denied", "invalid_request")
+			writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON request", operationID(r))
+			return
+		}
+	}
 	if !s.beginOperation(w, r, u, revokeOtherSessionsAction, u.Username) {
 		return
 	}
