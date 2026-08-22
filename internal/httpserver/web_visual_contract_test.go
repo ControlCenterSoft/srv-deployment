@@ -146,3 +146,33 @@ func TestCalmInfrastructureCSSPerformanceBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestCalmInfrastructureDensityAndStateContract(t *testing.T) {
+	css := readWebAsset(t, "web/styles.css")
+	for _, required := range []string{
+		"--cc-space-1: 4px;",
+		"--cc-space-5: 24px;",
+		"--cc-control-min-height: 42px;",
+		"--cc-row-min-height: 44px;",
+		".rbac-list, .compact-list {",
+		"border-top: 1px solid var(--cc-border);",
+		"min-height: var(--cc-row-min-height);",
+		"overflow-wrap: anywhere;",
+		"#audit-status {",
+		"min-height: 1.5em;",
+		"#audit-results { min-width: 0; }",
+		"header { align-items: flex-start; flex-direction: column; gap: var(--cc-space-3); }",
+		".status { white-space: normal; max-width: 100%; overflow-wrap: anywhere; }",
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("Calm Infrastructure density/state contract is missing %q", required)
+		}
+	}
+
+	if strings.Count(css, "--cc-row-min-height:") != 1 {
+		t.Fatal("row density token must have a single authoritative definition")
+	}
+	if strings.Count(css, "--cc-control-min-height:") != 1 {
+		t.Fatal("control density token must have a single authoritative definition")
+	}
+}
