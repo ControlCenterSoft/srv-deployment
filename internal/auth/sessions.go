@@ -86,3 +86,41 @@ func (m *Manager) RevokeUser(username string) {
 		}
 	}
 }
+
+// RevokeOtherSessions removes every still-active session owned by username except
+// the session represented by currentToken. The current token is revalidated while
+// holding the same lock as the revocation pass so a stale or foreign token can
+// never turn this operation into a revoke-all.
+func (m *Manager) RevokeOtherSessions(username, currentToken string) (int, bool) {
+	if currentToken == "" {
+		return 0, false
+	}
+	keep := digest(currentToken)
+	now := time.Now().UTC()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current, ok := m.sessions[keep]
+	if !ok || current.Username != username {
+		return 0, false
+	}
+	if now.After(current.ExpiresAt) {
+		delete(m.sessions, keep)
+		return 0, false
+	}
+
+	revoked := 0
+	for key, session := range m.sessions {
+		if session.Username != username || key == keep {
+			continue
+		}
+		if now.After(session.ExpiresAt) {
+			delete(m.sessions, key)
+			continue
+		}
+		delete(m.sessions, key)
+		revoked++
+	}
+	return revoked, true
+}
