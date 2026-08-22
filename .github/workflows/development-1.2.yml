@@ -1,0 +1,225 @@
+name: Control Center 1.2.x Fast CI
+
+on:
+  push:
+    branches:
+      - '1.2.x'
+      - 'feature/1.2-*'
+      - 'feature/1.2-**'
+      - 'feature/1.1-*'
+      - 'feature/1.1-**'
+      - 'experience/**'
+      - 'visual/**'
+      - 'security/**'
+      - 'ci/**'
+  pull_request:
+    branches: ['1.2.x']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-center-1.2-fast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+  GO_VERSION: '1.23.2'
+  DEVELOPMENT_VERSION: 1.2.0-dev
+  PRODUCTION_BASELINE_COMMIT: 49b7753d0acaa9f0e9e27a29e54a8884fa6147e4
+
+jobs:
+  scope:
+    name: Change scope
+    runs-on: ubuntu-24.04
+    outputs:
+      go: ${{ steps.scope.outputs.go }}
+      shell: ${{ steps.scope.outputs.shell }}
+      ai: ${{ steps.scope.outputs.ai }}
+      runtime: ${{ steps.scope.outputs.runtime }}
+      docs: ${{ steps.scope.outputs.docs }}
+      base_sha: ${{ steps.changed.outputs.base_sha }}
+      head_sha: ${{ steps.changed.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve changed files
+        id: changed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          HEAD_SHA="${GITHUB_SHA}"
+          if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          elif [[ "${GITHUB_EVENT_NAME}" == push && ! "${{ github.event.before }}" =~ ^0+$ ]]; then
+            BASE_SHA="${{ github.event.before }}"
+          else
+            git fetch --no-tags origin 1.2.x:refs/remotes/origin/1.2.x
+            BASE_SHA="$(git merge-base origin/1.2.x "${HEAD_SHA}" 2>/dev/null || git rev-parse "${HEAD_SHA}^")"
+          fi
+          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" > "$RUNNER_TEMP/changed-files.txt"
+          {
+            echo "base_sha=${BASE_SHA}"
+            echo "head_sha=${HEAD_SHA}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '### Changed paths'
+            echo
+            sed 's/^/- `/' "$RUNNER_TEMP/changed-files.txt" | sed 's/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Classify scope
+        id: scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci_scope.py \
+            --github-output "$GITHUB_OUTPUT" \
+            < "$RUNNER_TEMP/changed-files.txt"
+
+  policy:
+    name: Policy / secrets
+    needs: [scope]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Stable baseline is still an ancestor
+        run: git merge-base --is-ancestor 1b364ae88789696bf98537d21544de8a259d086d HEAD
+      - name: Production pointer remains frozen in development
+        run: |
+          set -Eeuo pipefail
+          git diff --exit-code "$PRODUCTION_BASELINE_COMMIT" -- \
+            deployment.json release/1.0.0.env
+      - name: Diff whitespace
+        env:
+          BASE_SHA: ${{ needs.scope.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.scope.outputs.head_sha }}
+        run: git diff --check "$BASE_SHA" "$HEAD_SHA"
+      - name: Secret scan
+        run: ./scripts/secret-scan.sh
+
+  go-checks:
+    name: Go checks
+    if: needs.scope.outputs.go == 'true'
+    needs: [scope]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Toolchain identity
+        run: test "$(go env GOVERSION)" = "go${GO_VERSION}"
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and contract tests
+        run: go test ./...
+
+  shell-checks:
+    name: Shell checks
+    if: needs.scope.outputs.shell == 'true'
+    needs: [scope]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Shell syntax
+        run: bash -n install/*.sh scripts/*.sh
+      - name: Privileged worker packaging contract
+        run: bash scripts/privileged-worker-packaging-contract.sh
+      - name: Dual-runtime updater v2 contract
+        run: bash scripts/update-v2-contract.sh
+
+  ai-checks:
+    name: AI integration checks
+    if: needs.scope.outputs.ai == 'true'
+    needs: [scope]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Python syntax
+        run: python3 -m py_compile scripts/gemini_review.py scripts/perplexity_research.py scripts/ci_scope.py
+      - name: Regression tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+  fast-build:
+    name: Fast build linux/amd64
+    if: needs.scope.outputs.runtime == 'true'
+    needs: [scope]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUILT_AT="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Version=${DEVELOPMENT_VERSION} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.Commit=${GITHUB_SHA} -X github.com/ControlCenterSoft/srv-deployment/internal/buildinfo.BuiltAt=${BUILT_AT}" \
+            -o dist/control-center-linux-amd64 ./cmd/control-center
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false -ldflags "-s -w" \
+            -o dist/control-center-privileged-worker-linux-amd64 ./cmd/control-center-privileged-worker
+          ./dist/control-center-linux-amd64 build-info
+          sha256sum \
+            dist/control-center-linux-amd64 \
+            dist/control-center-privileged-worker-linux-amd64
+
+  fast-gate:
+    name: Fast development gate
+    if: ${{ always() }}
+    needs: [scope, policy, go-checks, shell-checks, ai-checks, fast-build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require mandatory jobs
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          POLICY: ${{ needs.policy.result }}
+          GO: ${{ needs.go-checks.result }}
+          SHELL: ${{ needs.shell-checks.result }}
+          AI: ${{ needs.ai-checks.result }}
+          BUILD: ${{ needs.fast-build.result }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          require_ok() {
+            case "$2" in success|skipped) return 0 ;; esac
+            echo "Required job failed: $1=$2" >&2
+            return 1
+          }
+          require_ok scope "$SCOPE"
+          require_ok policy "$POLICY"
+          require_ok go "$GO"
+          require_ok shell "$SHELL"
+          require_ok ai "$AI"
+          require_ok build "$BUILD"
+
+  # The 1.2.x lane never chains protected 1.1.x acceptance or staging.
+  # Release acceptance remains explicit and isolated on the frozen 1.1.x line.
