@@ -39,6 +39,8 @@ function renderStorageDevices(container, data) {
 
   const devices = Array.isArray(data.devices) ? data.devices : [];
   const summary = document.createElement("p");
+  summary.role = "status";
+  summary.setAttribute("aria-live", "polite");
   summary.textContent = devices.length ? `Обнаружено устройств: ${devices.length}.` : "Блочные устройства не обнаружены.";
   container.appendChild(summary);
 
