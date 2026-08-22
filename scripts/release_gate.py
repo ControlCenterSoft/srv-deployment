@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Fail-closed automated PR release gate.
 
-This script is intended to run only from a trusted pull_request_target workflow
-checked out from protected main. It never checks out or executes pull-request
-code. It inspects immutable GitHub API metadata, waits for the existing required
-CI gate on the exact PR head, submits an approval as github-actions[bot], and
-then merges only that exact head SHA.
+Runs only from a trusted pull_request_target workflow checked out from protected
+main. It never checks out or executes pull-request code. It validates immutable
+GitHub metadata, exact-head CI, a strict independent Gemini review, then submits
+an approval and merges only the reviewed exact head SHA.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from typing import Any, Iterable
 API_ROOT = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
 GITHUB_ACTIONS_APP_ID = 15368
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+MAX_REVIEW_DIFF_BYTES = 180_000
 
 REQUIRED_CHECKS = {
     "main": "integration-guard",
@@ -136,15 +136,18 @@ class GitHubAPI:
             raise GateError("GITHUB_TOKEN is empty")
         self.token = token
 
-    def request(self, path: str, *, method: str = "GET", body: Any | None = None) -> Any:
-        url = path if path.startswith("https://") else f"{API_ROOT}{path}"
-        data = None
-        headers = {
-            "Accept": "application/vnd.github+json",
+    def _headers(self, accept: str = "application/vnd.github+json") -> dict[str, str]:
+        return {
+            "Accept": accept,
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "control-center-trusted-release-gate",
         }
+
+    def request(self, path: str, *, method: str = "GET", body: Any | None = None) -> Any:
+        url = path if path.startswith("https://") else f"{API_ROOT}{path}"
+        data = None
+        headers = self._headers()
         if body is not None:
             data = json.dumps(body, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -158,6 +161,30 @@ class GitHubAPI:
             raise GateError(f"GitHub API {method} {path} failed: HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise GateError(f"GitHub API {method} {path} failed: {exc}") from exc
+
+    def request_text(
+        self,
+        path: str,
+        *,
+        accept: str,
+        max_bytes: int,
+    ) -> str:
+        url = path if path.startswith("https://") else f"{API_ROOT}{path}"
+        req = urllib.request.Request(url, headers=self._headers(accept), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            # Never copy GitHub/provider bodies into logs from this path.
+            raise GateError(f"GitHub API diff request failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise GateError("GitHub API diff request failed") from exc
+        if len(raw) > max_bytes:
+            raise GateError(f"pull-request diff exceeds automatic review limit: >{max_bytes} bytes")
+        try:
+            return raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise GateError("pull-request diff is not valid UTF-8") from exc
 
     def paged(self, path: str) -> list[Any]:
         items: list[Any] = []
@@ -183,6 +210,11 @@ def latest_review_states(api: GitHubAPI, repo: str, pr_number: int) -> dict[str,
         if user and rid >= latest.get(user, (-1, ""))[0]:
             latest[user] = (rid, state)
     return {user: state for user, (_, state) in latest.items()}
+
+
+def requested_changes_reviewers(api: GitHubAPI, repo: str, pr_number: int) -> list[str]:
+    states = latest_review_states(api, repo, pr_number)
+    return sorted(user for user, state in states.items() if state == "CHANGES_REQUESTED")
 
 
 def exact_check_passed(api: GitHubAPI, repo: str, sha: str, expected_name: str) -> bool:
@@ -211,13 +243,7 @@ def exact_workflow_passed(api: GitHubAPI, repo: str, sha: str, expected_name: st
     return latest.get("status") == "completed" and latest.get("conclusion") == "success"
 
 
-def wait_for_exact_ci(
-    api: GitHubAPI,
-    repo: str,
-    sha: str,
-    base: str,
-    wait_seconds: int,
-) -> None:
+def wait_for_exact_ci(api: GitHubAPI, repo: str, sha: str, base: str, wait_seconds: int) -> None:
     expected_check = REQUIRED_CHECKS[base]
     expected_workflow = REQUIRED_WORKFLOWS[base]
     deadline = time.monotonic() + max(0, wait_seconds)
@@ -237,6 +263,56 @@ def wait_for_exact_ci(
         time.sleep(20)
 
 
+def require_same_head(api: GitHubAPI, repo: str, pr_number: int, expected_sha: str, stage: str) -> dict[str, Any]:
+    current = api.request(f"/repos/{repo}/pulls/{pr_number}")
+    if current.get("state") != "open" or current.get("draft"):
+        raise GateError(f"pull request state changed {stage}")
+    if ((current.get("head") or {}).get("sha")) != expected_sha:
+        raise GateError(f"pull request head moved {stage}")
+    return current
+
+
+def run_independent_ai_review(api: GitHubAPI, repo: str, pr_number: int, sha: str) -> dict[str, Any]:
+    # Import only trusted main-branch modules. The workflow never extends sys.path
+    # with, imports, or executes pull-request-controlled files.
+    from release_gate_ai import automatic_gate_allows, blocking_findings, review_diff
+
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    model = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash").strip() or "gemini-3.7-flash"
+    if not api_key:
+        raise GateError("GEMINI_API_KEY is not configured; independent review fails closed")
+
+    diff_text = api.request_text(
+        f"/repos/{repo}/pulls/{pr_number}",
+        accept="application/vnd.github.v3.diff",
+        max_bytes=MAX_REVIEW_DIFF_BYTES,
+    )
+    try:
+        review = review_diff(
+            diff_text,
+            repository=repo,
+            pr_number=pr_number,
+            sha=sha,
+            api_key=api_key,
+            model=model,
+        )
+    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        raise GateError(f"independent Gemini review unavailable/invalid: {type(exc).__name__}") from exc
+
+    blockers = blocking_findings(review)
+    print(
+        "INDEPENDENT_AI_REVIEW "
+        f"verdict={review.get('verdict')} findings={len(review.get('findings', []))} "
+        f"high_or_blocker={len(blockers)} model={model}"
+    )
+    if not automatic_gate_allows(review):
+        raise GateError(
+            "independent Gemini review blocked automatic approval: "
+            f"verdict={review.get('verdict')} high_or_blocker={len(blockers)}"
+        )
+    return review
+
+
 def run(repo: str, pr_number: int, wait_seconds: int, *, merge: bool) -> None:
     api = GitHubAPI(os.environ.get("GITHUB_TOKEN", ""))
     pr = api.request(f"/repos/{repo}/pulls/{pr_number}")
@@ -249,17 +325,15 @@ def run(repo: str, pr_number: int, wait_seconds: int, *, merge: bool) -> None:
             print(f"POLICY_BLOCK: {reason}")
         raise GateError("pull request is outside automatic approval policy")
 
-    # Binary/opaque patches are not automatically trusted even outside protected paths.
     opaque = [
         item.get("filename", "")
         for item in files
         if item.get("status") != "removed" and item.get("patch") is None
     ]
     if opaque:
-        raise GateError(f"opaque/binary file changes require independent review: {opaque}")
+        raise GateError(f"opaque/binary file changes require independent break-glass review: {opaque}")
 
-    review_states = latest_review_states(api, repo, pr_number)
-    blockers = [user for user, state in review_states.items() if state == "CHANGES_REQUESTED"]
+    blockers = requested_changes_reviewers(api, repo, pr_number)
     if blockers:
         raise GateError(f"active requested-changes reviews block automation: {blockers}")
 
@@ -267,13 +341,15 @@ def run(repo: str, pr_number: int, wait_seconds: int, *, merge: bool) -> None:
     head_sha = pr["head"]["sha"]
     wait_for_exact_ci(api, repo, head_sha, base, wait_seconds)
 
-    # Re-fetch immediately before mutation so all previous evidence stays bound to
-    # one exact PR head. Any synchronize event races fail closed.
-    current = api.request(f"/repos/{repo}/pulls/{pr_number}")
-    if current.get("state") != "open" or current.get("draft"):
-        raise GateError("pull request state changed before approval")
-    if ((current.get("head") or {}).get("sha")) != head_sha:
-        raise GateError("pull request head moved before approval")
+    # Bind the provider-reviewed diff to the exact CI-tested head. A synchronize
+    # race before or after provider review fails closed.
+    require_same_head(api, repo, pr_number, head_sha, "before independent review")
+    run_independent_ai_review(api, repo, pr_number, head_sha)
+    require_same_head(api, repo, pr_number, head_sha, "before approval")
+
+    blockers = requested_changes_reviewers(api, repo, pr_number)
+    if blockers:
+        raise GateError(f"requested-changes review appeared before approval: {blockers}")
 
     print(f"POLICY_PASS pr={pr_number} sha={head_sha} base={base}")
     api.request(
@@ -282,8 +358,9 @@ def run(repo: str, pr_number: int, wait_seconds: int, *, merge: bool) -> None:
         body={
             "event": "APPROVE",
             "body": (
-                "Automated trusted release gate approval. "
-                f"Exact head `{head_sha}` passed the protected-path policy and exact-head CI."
+                "Automated trusted release-gate approval. "
+                f"Exact head `{head_sha}` passed protected-path policy, exact-head CI, "
+                "and independent Gemini review with no HIGH/BLOCKER or CHANGES_REQUIRED verdict."
             ),
         },
     )
@@ -292,9 +369,8 @@ def run(repo: str, pr_number: int, wait_seconds: int, *, merge: bool) -> None:
     if not merge:
         return
 
-    # Give GitHub a short window to materialize branch-rule review state, then
-    # merge only the reviewed immutable head. GitHub remains the final enforcer.
     time.sleep(2)
+    require_same_head(api, repo, pr_number, head_sha, "before merge")
     result = api.request(
         f"/repos/{repo}/pulls/{pr_number}/merge",
         method="PUT",
