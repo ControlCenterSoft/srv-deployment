@@ -295,12 +295,26 @@ jobs:
           set -Eeuo pipefail
           api="https://api.github.com/repos/${REPO}"
           auth=(-H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" -H "X-GitHub-Api-Version: 2026-03-10")
+          validate_run_identity() {
+            local workflow_json="$1" run_json="$2"
+            python3 - "$workflow_json" "$run_json" <<'PY'
+          import json, sys
+          workflow = json.load(open(sys.argv[1]))
+          run = json.load(open(sys.argv[2]))
+          if run.get('workflow_id') != workflow.get('id') or run.get('event') != 'workflow_dispatch':
+              raise SystemExit('workflow identity drift during staging approval')
+          if run.get('head_branch') != 'main' or run.get('run_attempt') != 1:
+              raise SystemExit('run ref/attempt drift during staging approval')
+          PY
+          }
           final=""
           for _ in $(seq 1 190); do
             curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical-loop.json
             test "$(python3 -c "import json; print(json.load(open('/tmp/canonical-loop.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
 
+            curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow-loop.json
             curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run-loop.json
+            validate_run_identity /tmp/workflow-loop.json /tmp/run-loop.json
             status="$(python3 -c "import json; print(json.load(open('/tmp/run-loop.json')).get('status') or '')")"
             if [ "${status}" = completed ]; then
               final="$(python3 -c "import json; print(json.load(open('/tmp/run-loop.json')).get('conclusion') or '')")"
@@ -317,6 +331,16 @@ jobs:
           PY
           )"
             if [ -n "${env_ids}" ]; then
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical-preapprove.json
+              test "$(python3 -c "import json; print(json.load(open('/tmp/canonical-preapprove.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow-preapprove.json
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run-preapprove.json
+              validate_run_identity /tmp/workflow-preapprove.json /tmp/run-preapprove.json
+              preapprove_status="$(python3 -c "import json; print(json.load(open('/tmp/run-preapprove.json')).get('status') or '')")"
+              if [ "${preapprove_status}" = completed ]; then
+                final="$(python3 -c "import json; print(json.load(open('/tmp/run-preapprove.json')).get('conclusion') or '')")"
+                break
+              fi
               payload="$(ENV_IDS="${env_ids}" python3 - <<'PY'
           import json, os
           print(json.dumps({
