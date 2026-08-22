@@ -25,12 +25,16 @@ type ResolverPreflightResult struct {
 	NoOp                  bool                     `json:"no_op"`
 	ApplySupported        bool                     `json:"apply_supported"`
 	SourceKind            string                   `json:"source_kind"`
+	SourceMode            string                   `json:"source_mode"`
+	SourceManager         string                   `json:"source_manager"`
+	SourceAmbiguous       bool                     `json:"source_ambiguous"`
 	SourceFingerprint     string                   `json:"source_fingerprint"`
 	Desired               ResolverDesiredState     `json:"desired"`
 	Actual                ResolverDesiredState     `json:"actual"`
 	Rollback              ResolverDesiredState     `json:"rollback"`
 	Checks                []ResolverPreflightCheck `json:"checks"`
 	Blockers              []string                 `json:"blockers"`
+	Warnings              []string                 `json:"warnings"`
 	RequiredExecutorSteps []string                 `json:"required_executor_steps"`
 }
 
@@ -47,7 +51,7 @@ func PreflightResolverChange(in ResolverPreflightRequest, actual ResolverState) 
 		return ResolverPreflightResult{}, err
 	}
 
-	sourceSupported := actual.SourceKind == "resolv_conf" || actual.SourceKind == "systemd_resolved"
+	sourceSupported := actual.SourceKind == "resolv_conf" || actual.SourceKind == resolverSourceManagerSystemd
 	fingerprint := ResolverStateFingerprint(actual)
 	rollbackAvailable := len(plan.Rollback.Nameservers) > 0
 	checks := []ResolverPreflightCheck{
@@ -71,12 +75,16 @@ func PreflightResolverChange(in ResolverPreflightRequest, actual ResolverState) 
 		NoOp:              plan.NoOp,
 		ApplySupported:    false,
 		SourceKind:        actual.SourceKind,
+		SourceMode:        actual.SourceMode,
+		SourceManager:     actual.SourceManager,
+		SourceAmbiguous:   actual.SourceAmbiguous,
 		SourceFingerprint: fingerprint,
 		Desired:           plan.Desired,
 		Actual:            plan.Actual,
 		Rollback:          plan.Rollback,
 		Checks:            checks,
 		Blockers:          blockers,
+		Warnings:          resolverSourceWarnings(actual),
 		RequiredExecutorSteps: []string{
 			"backup_current_resolver_state",
 			"apply_desired_resolver_state",
@@ -94,6 +102,9 @@ func ResolverStateFingerprint(actual ResolverState) string {
 		"schema=1",
 		"source_kind=" + actual.SourceKind,
 		"source=" + actual.Source,
+		"source_mode=" + actual.SourceMode,
+		"source_manager=" + actual.SourceManager,
+		"source_ambiguous=" + boolString(actual.SourceAmbiguous),
 		"etc_target=" + actual.EtcResolvConfTarget,
 		"stub_detected=" + boolString(actual.StubDetected),
 		"nameservers=" + strings.Join(actual.Nameservers, ","),
