@@ -33,7 +33,7 @@ func TestOperationIncidentsReturnsBoundedFailedOperationsWithContractEvidence(t 
 		t.Fatalf("invalid failed operation id success=%q failed=%q", successOperationID, failedOperationID)
 	}
 
-	incidentsResponse := requestJSON(t, app.handler, http.MethodGet, "/api/v1/operations/incidents?limit=10", "", adminCookie, "")
+	incidentsResponse := requestJSON(t, app.handler, http.MethodGet, operationIncidentsPath+"?limit=10", "", adminCookie, "")
 	if incidentsResponse.Code != http.StatusOK {
 		t.Fatalf("incidents status=%d body=%s", incidentsResponse.Code, incidentsResponse.Body.String())
 	}
@@ -82,18 +82,18 @@ func TestOperationIncidentsReturnsBoundedFailedOperationsWithContractEvidence(t 
 		t.Fatalf("successful operation leaked into incident feed: %+v", incident)
 	}
 
-	invalid := requestJSON(t, app.handler, http.MethodGet, "/api/v1/operations/incidents?limit=0", "", adminCookie, "")
+	invalid := requestJSON(t, app.handler, http.MethodGet, operationIncidentsPath+"?limit=0", "", adminCookie, "")
 	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), `"code":"invalid_limit"`) {
 		t.Fatalf("invalid limit status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 
 	viewerCookie, _ := login(t, app, "incidentviewer", password)
-	denied := requestJSON(t, app.handler, http.MethodGet, "/api/v1/operations/incidents", "", viewerCookie, "")
+	denied := requestJSON(t, app.handler, http.MethodGet, operationIncidentsPath, "", viewerCookie, "")
 	if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), `"code":"permission_denied"`) {
 		t.Fatalf("viewer incidents status=%d body=%s", denied.Code, denied.Body.String())
 	}
 
-	anonymous := requestJSON(t, app.handler, http.MethodGet, "/api/v1/operations/incidents", "", nil, "")
+	anonymous := requestJSON(t, app.handler, http.MethodGet, operationIncidentsPath, "", nil, "")
 	if anonymous.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous incidents status=%d body=%s", anonymous.Code, anonymous.Body.String())
 	}
@@ -132,15 +132,15 @@ func TestParseIncidentLimitIsStrictAndBounded(t *testing.T) {
 		want  int
 		valid bool
 	}{
-		{path: "/api/v1/operations/incidents", want: defaultIncidentLimit, valid: true},
-		{path: "/api/v1/operations/incidents?limit=1", want: 1, valid: true},
-		{path: "/api/v1/operations/incidents?limit=100", want: 100, valid: true},
-		{path: "/api/v1/operations/incidents?limit=", valid: false},
-		{path: "/api/v1/operations/incidents?limit=%20", valid: false},
-		{path: "/api/v1/operations/incidents?limit=1&limit=2", valid: false},
-		{path: "/api/v1/operations/incidents?limit=0", valid: false},
-		{path: "/api/v1/operations/incidents?limit=101", valid: false},
-		{path: "/api/v1/operations/incidents?limit=abc", valid: false},
+		{path: operationIncidentsPath, want: defaultIncidentLimit, valid: true},
+		{path: operationIncidentsPath + "?limit=1", want: 1, valid: true},
+		{path: operationIncidentsPath + "?limit=100", want: 100, valid: true},
+		{path: operationIncidentsPath + "?limit=", valid: false},
+		{path: operationIncidentsPath + "?limit=%20", valid: false},
+		{path: operationIncidentsPath + "?limit=1&limit=2", valid: false},
+		{path: operationIncidentsPath + "?limit=0", valid: false},
+		{path: operationIncidentsPath + "?limit=101", valid: false},
+		{path: operationIncidentsPath + "?limit=abc", valid: false},
 	} {
 		req, err := http.NewRequest(http.MethodGet, tc.path, nil)
 		if err != nil {
