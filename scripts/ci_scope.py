@@ -22,7 +22,9 @@ POLICY_PATH_PREFIXES = (".github/workflows/",)
 
 
 def classify(paths: Iterable[str]) -> dict[str, bool]:
-    normalized = [p.strip().lstrip("./") for p in paths if p.strip()]
+    # Remove only one explicit relative-path prefix. lstrip("./") would also
+    # strip the leading dot from trust-sensitive paths such as .github/.
+    normalized = [p.strip().removeprefix("./") for p in paths if p.strip()]
     go = any(p.endswith(".go") or p in {"go.mod", "go.sum"} for p in normalized)
     shell = any(
         p.endswith(".sh") and (p.startswith("scripts/") or p.startswith("install/"))
