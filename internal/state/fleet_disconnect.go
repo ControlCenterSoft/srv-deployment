@@ -30,6 +30,13 @@ func (s *Store) DisconnectFleetNode(id string) (FleetNode, bool, error) {
 		node.AgentVersion != "" || node.Hostname != "" || node.OSName != "" ||
 		node.OSVersion != "" || node.Architecture != ""
 	if !changed {
+		// A previous disconnect attempt may have updated the in-memory document
+		// before persistLocked returned an I/O error. Persist the already-revoked
+		// state on an idempotent retry so a successful retry cannot leave the old
+		// credential durable on disk and allow it to reappear after restart.
+		if err := s.persistLocked(); err != nil {
+			return FleetNode{}, false, err
+		}
 		return node.Public(), false, nil
 	}
 
