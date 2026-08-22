@@ -15,8 +15,12 @@ var operationLookupIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}
 func (s *Server) requireOperationRead(next func(http.ResponseWriter, *http.Request, auth.Session, state.User)) http.HandlerFunc {
 	return s.requireAuth(func(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
 		id := r.PathValue("id")
+		action := "operations.detail.read"
+		if id == "incidents" {
+			action = "operations.incidents.read"
+		}
 		if !hasPermission(u.Role, "operations.read") {
-			s.auditEvent(r, u.Username, string(u.Role), "operations.detail.read", id, "denied", "permission_denied")
+			s.auditEvent(r, u.Username, string(u.Role), action, id, "denied", "permission_denied")
 			writeError(w, http.StatusForbidden, "permission_denied", "Permission denied", operationID(r))
 			return
 		}
@@ -26,6 +30,10 @@ func (s *Server) requireOperationRead(next func(http.ResponseWriter, *http.Reque
 
 func (s *Server) operationDetail(w http.ResponseWriter, r *http.Request, sess auth.Session, u state.User) {
 	id := r.PathValue("id")
+	if id == "incidents" {
+		s.operationIncidents(w, r, sess, u)
+		return
+	}
 	if !operationLookupIDRE.MatchString(id) {
 		s.auditEvent(r, u.Username, string(u.Role), "operations.detail.read", id, "failed", "invalid_operation_id")
 		writeError(w, http.StatusBadRequest, "invalid_operation_id", "Operation ID is invalid", operationID(r))
