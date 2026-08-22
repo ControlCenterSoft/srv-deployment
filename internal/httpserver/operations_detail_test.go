@@ -3,6 +3,7 @@ package httpserver
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/ControlCenterSoft/srv-deployment/internal/observability"
@@ -97,7 +98,15 @@ func TestOperationDetailContractRBACAndAudit(t *testing.T) {
 	}
 }
 
-func responseErrorCode(t *testing.T, rr interface{ BodyBytes() []byte }) string {
+func responseErrorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
 	t.Helper()
-	return ""
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Error.Code
 }
