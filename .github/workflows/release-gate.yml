@@ -1,0 +1,46 @@
+name: Trusted Release Gate
+
+on:
+  pull_request_target:
+    branches:
+      - main
+      - '1.1.x'
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: trusted-release-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  approve-and-merge:
+    if: ${{ github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      # pull_request_target is intentionally used so the gate implementation is
+      # always loaded from protected main. Never change this checkout to PR head.
+      - name: Checkout trusted gate implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate exact PR head and automatically approve/merge
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/release_gate.py \
+            --repo "$REPOSITORY" \
+            --pr "$PR_NUMBER" \
+            --wait-seconds 900
