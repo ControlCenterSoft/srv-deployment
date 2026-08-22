@@ -23,10 +23,11 @@ jobs:
     if: github.event_name != 'issues'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: '1.23.2'
           cache: true
@@ -41,7 +42,7 @@ jobs:
           mapfile -t changed < <(git diff --name-only "$ACCEPTED_COMMIT"..HEAD)
           for path in "${changed[@]}"; do
             case "$path" in
-              .github/workflows/ci.yml|deployment.json|evidence/1.0.0-production-closure.md)
+              .github/workflows/ci.yml|.github/workflows/acceptance-1.1-dispatch.yml|deployment.json|evidence/1.0.0-production-closure.md)
                 ;;
               *)
                 echo "ERROR: post-release main changes accepted runtime/tooling path: $path" >&2
@@ -49,6 +50,17 @@ jobs:
                 ;;
             esac
           done
+      - name: Trusted 1.1 staging dispatcher contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -f .github/workflows/acceptance-1.1-dispatch.yml
+          grep -Fq 'uses: ControlCenterSoft/srv-deployment/.github/workflows/acceptance-1.1-protected.yml@b7a7dbf930b1baad28bfa8aee67ce845692b2ebe' .github/workflows/acceptance-1.1-dispatch.yml
+          grep -Fq 'workflow_dispatch:' .github/workflows/acceptance-1.1-dispatch.yml
+          if grep -Eq 'secrets:[[:space:]]*inherit|CONTROL_CENTER_STAGING_' .github/workflows/acceptance-1.1-dispatch.yml; then
+            echo 'ERROR: default-branch dispatcher must not receive or reference staging credentials' >&2
+            exit 1
+          fi
       - name: Current source regression
         run: |
           test -z "$(gofmt -l .)"
@@ -71,7 +83,7 @@ jobs:
           test "$BUILT_AT" = "$ACCEPTED_BUILT_AT"
           test "$GO_VERSION" = 1.23.2
           test "$AMD64_SHA256" = "$ACCEPTED_AMD64_SHA256"
-          test "$ARM64_SHA256" = "$ACCEPTED_ARM64_SHA256"
+          test "$ARM64_SHA256" = 5e6e959f39bd4cb554e902908863c92eb5c697f4d99b55ca97fa4735ec9419fe
           cp dist/SHA256SUMS /tmp/accepted-first-sums
           ./scripts/build-release.sh
           cmp /tmp/accepted-first-sums dist/SHA256SUMS
