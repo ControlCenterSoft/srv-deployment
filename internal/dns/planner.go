@@ -23,14 +23,18 @@ type ResolverDesiredState struct {
 }
 
 type ResolverChangePlan struct {
-	Schema         int                  `json:"schema"`
-	NoOp           bool                 `json:"no_op"`
-	ApplySupported bool                 `json:"apply_supported"`
-	SourceKind     string               `json:"source_kind"`
-	Desired        ResolverDesiredState `json:"desired"`
-	Actual         ResolverDesiredState `json:"actual"`
-	Rollback       ResolverDesiredState `json:"rollback"`
-	Preconditions  []string             `json:"preconditions"`
+	Schema          int                  `json:"schema"`
+	NoOp            bool                 `json:"no_op"`
+	ApplySupported  bool                 `json:"apply_supported"`
+	SourceKind      string               `json:"source_kind"`
+	SourceMode      string               `json:"source_mode"`
+	SourceManager   string               `json:"source_manager"`
+	SourceAmbiguous bool                 `json:"source_ambiguous"`
+	Desired         ResolverDesiredState `json:"desired"`
+	Actual          ResolverDesiredState `json:"actual"`
+	Rollback        ResolverDesiredState `json:"rollback"`
+	Preconditions   []string             `json:"preconditions"`
+	Warnings        []string             `json:"warnings"`
 }
 
 func PreviewResolverChange(in ResolverChangeRequest, actual ResolverState) (ResolverChangePlan, error) {
@@ -55,13 +59,16 @@ func PreviewResolverChange(in ResolverChangeRequest, actual ResolverState) (Reso
 	}
 
 	return ResolverChangePlan{
-		Schema:         1,
-		NoOp:           resolverDesiredEqual(current, desired),
-		ApplySupported: false,
-		SourceKind:     actual.SourceKind,
-		Desired:        desired,
-		Actual:         current,
-		Rollback:       current,
+		Schema:          1,
+		NoOp:            resolverDesiredEqual(current, desired),
+		ApplySupported:  false,
+		SourceKind:      actual.SourceKind,
+		SourceMode:      actual.SourceMode,
+		SourceManager:   actual.SourceManager,
+		SourceAmbiguous: actual.SourceAmbiguous,
+		Desired:         desired,
+		Actual:          current,
+		Rollback:        current,
 		Preconditions: []string{
 			"resolver_inventory_available",
 			"resolver_source_unchanged",
@@ -69,6 +76,7 @@ func PreviewResolverChange(in ResolverChangeRequest, actual ResolverState) (Reso
 			"verify_resolution_before_commit",
 			"rollback_on_verify_failure",
 		},
+		Warnings: resolverSourceWarnings(actual),
 	}, nil
 }
 
