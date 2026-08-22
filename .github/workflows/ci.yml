@@ -42,7 +42,7 @@ jobs:
           mapfile -t changed < <(git diff --name-only "$ACCEPTED_COMMIT"..HEAD)
           for path in "${changed[@]}"; do
             case "$path" in
-              .github/workflows/ci.yml|.github/workflows/acceptance-1.1-dispatch.yml|.github/workflows/release-gate.yml|scripts/release_gate.py|tests/test_release_gate_policy.py|deployment.json|evidence/1.0.0-production-closure.md)
+              .github/workflows/ci.yml|.github/workflows/acceptance-1.1-dispatch.yml|.github/workflows/release-gate.yml|scripts/release_gate.py|scripts/release_gate_ai.py|scripts/ai_gateway.py|tests/test_release_gate_policy.py|deployment.json|evidence/1.0.0-production-closure.md)
                 ;;
               *)
                 echo "ERROR: post-release main changes accepted runtime/tooling path: $path" >&2
@@ -65,29 +65,44 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -f .github/workflows/release-gate.yml
-          test -f scripts/release_gate.py
+          for file in \
+            .github/workflows/release-gate.yml \
+            scripts/release_gate.py \
+            scripts/release_gate_ai.py \
+            scripts/ai_gateway.py; do
+            test -f "$file"
+          done
           grep -Fq 'pull_request_target:' .github/workflows/release-gate.yml
           grep -Fq 'ref: main' .github/workflows/release-gate.yml
           grep -Fq 'persist-credentials: false' .github/workflows/release-gate.yml
           grep -Fq 'contents: write' .github/workflows/release-gate.yml
           grep -Fq 'pull-requests: write' .github/workflows/release-gate.yml
+          grep -Fq 'GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}' .github/workflows/release-gate.yml
           if grep -Eq 'ref:[[:space:]]*\$\{\{[[:space:]]*(github\.head_ref|github\.event\.pull_request\.head)' .github/workflows/release-gate.yml; then
             echo 'ERROR: trusted release gate must never checkout PR-controlled refs' >&2
             exit 1
           fi
-          for protected in '.github/' 'scripts/' 'internal/auth/' 'internal/privileged/' 'internal/release/' 'internal/state/'; do
+          for protected in \
+            '.github/' 'cmd/' 'install/' 'packaging/' 'release/' 'scripts/' 'evidence/' \
+            'internal/auth/' 'internal/httpserver/' 'internal/network/' 'internal/operations/' \
+            'internal/privileged/' 'internal/release/' 'internal/state/'; do
             grep -Fq "\"$protected\"" scripts/release_gate.py || {
               echo "ERROR: release gate lost protected prefix $protected" >&2
               exit 1
             }
           done
+          grep -Fq 'application/vnd.github.v3.diff' scripts/release_gate.py
+          grep -Fq 'independent Gemini review' scripts/release_gate.py
+          grep -Fq 'CHANGES_REQUIRED' scripts/release_gate_ai.py
+          grep -Fq '"BLOCKER", "HIGH"' scripts/release_gate_ai.py
+          grep -Fq 'provider redirects are not allowed' scripts/ai_gateway.py
+          grep -Fq 'add_unredirected_header' scripts/ai_gateway.py
       - name: Current source regression
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
           go test ./...
-          python3 -m py_compile scripts/release_gate.py
+          python3 -m py_compile scripts/release_gate.py scripts/release_gate_ai.py scripts/ai_gateway.py
           python3 -m unittest tests.test_release_gate_policy -v
           bash -n install/install.sh install/uninstall.sh install/update.sh scripts/*.sh
           ./scripts/secret-scan.sh
