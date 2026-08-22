@@ -7,8 +7,14 @@ research work from Control Center development streams without weakening release 
 
 Routine AI implementation is integrated through the isolated `1.2.x` development line. The
 frozen `1.1.x` line remains release-only: routine AI work must not merge into it or trigger its
-protected acceptance/staging path. Default-branch dispatchers remain separate control-plane PRs
-and may activate only after their pinned implementation has passed the normal exact-SHA gates.
+protected acceptance/staging path.
+
+Issue-triggered activation has exactly one control-plane entrypoint: the default-branch dispatcher
+tracked by PR #151. The reusable implementation workflow intentionally has no top-level `issues`
+trigger. The dispatcher calls it at an exact reviewed commit SHA, and the callee rejects a non-empty
+`code_ref` unless it is a lowercase 40-character commit SHA before checkout. This prevents a later
+promotion of the implementation workflow to `main` from creating a second issue-trigger path and
+prevents mutable branch/tag refs from being accepted as implementation identity.
 
 ## Authority boundary
 
