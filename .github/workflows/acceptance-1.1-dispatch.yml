@@ -68,8 +68,11 @@ jobs:
           if set(p) != {'candidate_sha', 'candidate_version', 'dedupe_not_before'}:
               raise SystemExit('unexpected request keys')
           sha, version, cutoff = p['candidate_sha'], p['candidate_version'], p['dedupe_not_before']
+          dispatcher_sha = os.environ['GITHUB_SHA']
           if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
               raise SystemExit('invalid candidate_sha')
+          if not re.fullmatch(r'[0-9a-f]{40}', dispatcher_sha):
+              raise SystemExit('invalid dispatcher sha')
           if not isinstance(version, str) or not re.fullmatch(r'1\.1\.\d+-rc\.\d+', version):
               raise SystemExit('invalid candidate_version')
           if not isinstance(cutoff, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', cutoff):
@@ -84,6 +87,7 @@ jobs:
               out.write(f'candidate_sha={sha}\n')
               out.write(f'candidate_version={version}\n')
               out.write(f'dedupe_not_before={cutoff}\n')
+              out.write(f'dispatcher_sha={dispatcher_sha}\n')
           PY
 
       - name: Fail closed if any dispatch already exists in authorization window
@@ -109,12 +113,13 @@ jobs:
               raise SystemExit(f'{len(runs)} dispatcher run(s) already exist in authorization window; refusing duplicate')
           PY
 
-      - name: Recheck canonical candidate immediately before dispatch
+      - name: Recheck canonical candidate and dispatcher immediately before dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
           curl --fail-with-body --silent --show-error \
@@ -122,7 +127,13 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "https://api.github.com/repos/${REPO}/branches/1.1.x" -o /tmp/canonical.json
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/branches/main" -o /tmp/main.json
           test "$(python3 -c "import json; print(json.load(open('/tmp/canonical.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
+          test "$(python3 -c "import json; print(json.load(open('/tmp/main.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
 
       - name: Dispatch exact protected acceptance
         id: dispatch
@@ -132,8 +143,15 @@ jobs:
           REPO: ${{ github.repository }}
           CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
           CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/branches/main" -o /tmp/main-pre-dispatch.json
+          test "$(python3 -c "import json; print(json.load(open('/tmp/main-pre-dispatch.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
           payload="$(python3 - <<'PY'
           import json, os
           print(json.dumps({
@@ -152,12 +170,39 @@ jobs:
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "https://api.github.com/repos/${REPO}/actions/workflows/acceptance-1.1-dispatch.yml/dispatches" \
             --data "${payload}" -o /tmp/dispatch.json
+          run_id="$(python3 -c "import json; print(json.load(open('/tmp/dispatch.json'))['workflow_run_id'])")"
+          run_url="$(python3 -c "import json; print(json.load(open('/tmp/dispatch.json'))['html_url'])")"
+          for _ in $(seq 1 10); do
+            if curl --fail-with-body --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "https://api.github.com/repos/${REPO}/actions/runs/${run_id}" -o /tmp/dispatched-run.json; then
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/dispatched-run.json
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/dispatched-workflow.json
           python3 - <<'PY'
           import json, os
-          d = json.load(open('/tmp/dispatch.json'))
+          run = json.load(open('/tmp/dispatched-run.json'))
+          workflow = json.load(open('/tmp/dispatched-workflow.json'))
+          dispatcher_sha = os.environ['DISPATCHER_SHA']
+          if run.get('workflow_id') != workflow.get('id') or run.get('event') != 'workflow_dispatch':
+              raise SystemExit('dispatched workflow identity mismatch')
+          if run.get('head_branch') != 'main' or run.get('run_attempt') != 1:
+              raise SystemExit('dispatched run ref/attempt mismatch')
+          if run.get('head_sha') != dispatcher_sha:
+              raise SystemExit('dispatched workflow source drift')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f"run_id={d['workflow_run_id']}\n")
-              out.write(f"run_url={d['html_url']}\n")
+              out.write(f"run_id={run['id']}\n")
+              out.write(f"run_url={run['html_url']}\n")
+              out.write(f"dispatcher_sha={dispatcher_sha}\n")
           PY
 
       - name: Record immutable dispatch evidence and close request
@@ -170,9 +215,10 @@ jobs:
           CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
           RUN_ID: ${{ steps.dispatch.outputs.run_id }}
           RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          DISPATCHER_SHA: ${{ steps.dispatch.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
-          export COMMENT_BODY="DISPATCHED\ncandidate_sha=${CANDIDATE_SHA}\ncandidate_version=${CANDIDATE_VERSION}\nworkflow_run_id=${RUN_ID}\nrun_url=${RUN_URL}"
+          export COMMENT_BODY="DISPATCHED\ncandidate_sha=${CANDIDATE_SHA}\ncandidate_version=${CANDIDATE_VERSION}\nworkflow_run_id=${RUN_ID}\ndispatcher_sha=${DISPATCHER_SHA}\nrun_url=${RUN_URL}"
           payload="$(python3 -c 'import json,os; print(json.dumps({"body":os.environ["COMMENT_BODY"]}))')"
           curl --fail-with-body --silent --show-error -X POST \
             -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -216,20 +262,22 @@ jobs:
           if len(body.encode()) > 2048:
               raise SystemExit('request body too large')
           p = json.loads(body)
-          expected = {'dispatch_issue_number','workflow_run_id','candidate_sha','candidate_version'}
+          expected = {'dispatch_issue_number','workflow_run_id','candidate_sha','candidate_version','dispatcher_sha'}
           if set(p) != expected:
               raise SystemExit('unexpected request keys')
-          di, run_id, sha, version = p['dispatch_issue_number'], p['workflow_run_id'], p['candidate_sha'], p['candidate_version']
+          di, run_id, sha, version, dispatcher_sha = p['dispatch_issue_number'], p['workflow_run_id'], p['candidate_sha'], p['candidate_version'], p['dispatcher_sha']
           if not isinstance(di, int) or di <= 0 or not isinstance(run_id, int) or run_id <= 0:
               raise SystemExit('invalid ids')
           if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
               raise SystemExit('invalid candidate_sha')
+          if not isinstance(dispatcher_sha, str) or not re.fullmatch(r'[0-9a-f]{40}', dispatcher_sha):
+              raise SystemExit('invalid dispatcher_sha')
           if not isinstance(version, str) or not re.fullmatch(r'1\.1\.\d+-rc\.\d+', version):
               raise SystemExit('invalid candidate_version')
           if issue.get('title') != f'[CC-AUTONOMOUS-STAGING-APPROVAL] run {run_id} {version} {sha}':
               raise SystemExit('title mismatch')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'dispatch_issue_number={di}\nworkflow_run_id={run_id}\ncandidate_sha={sha}\ncandidate_version={version}\n')
+              out.write(f'dispatch_issue_number={di}\nworkflow_run_id={run_id}\ncandidate_sha={sha}\ncandidate_version={version}\ndispatcher_sha={dispatcher_sha}\n')
           PY
           curl --fail-with-body --silent --show-error \
             -H "Accept: application/vnd.github+json" \
@@ -247,6 +295,7 @@ jobs:
           RUN_ID: ${{ steps.request.outputs.workflow_run_id }}
           CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
           CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
           api="https://api.github.com/repos/${REPO}"
@@ -256,9 +305,11 @@ jobs:
           curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow.json
           curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run.json
           curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical.json
+          curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/main" -o /tmp/main.json
           python3 - <<'PY'
           import json, os
           sha, version, run_id = os.environ['CANDIDATE_SHA'], os.environ['CANDIDATE_VERSION'], int(os.environ['RUN_ID'])
+          dispatcher_sha = os.environ['DISPATCHER_SHA']
           issue = json.load(open('/tmp/issue.json'))
           if issue.get('user',{}).get('login') != 'ControlCenterSoft':
               raise SystemExit('dispatch issue author mismatch')
@@ -267,7 +318,7 @@ jobs:
           body = json.loads(issue.get('body') or '{}')
           if body.get('candidate_sha') != sha or body.get('candidate_version') != version:
               raise SystemExit('dispatch issue candidate mismatch')
-          required = {'DISPATCHED',f'candidate_sha={sha}',f'candidate_version={version}',f'workflow_run_id={run_id}'}
+          required = {'DISPATCHED',f'candidate_sha={sha}',f'candidate_version={version}',f'workflow_run_id={run_id}',f'dispatcher_sha={dispatcher_sha}'}
           evidence = [c for c in json.load(open('/tmp/comments.json'))
                       if c.get('user',{}).get('login') == 'github-actions[bot]'
                       and required.issubset(set((c.get('body') or '').splitlines()))]
@@ -278,8 +329,12 @@ jobs:
               raise SystemExit('workflow identity mismatch')
           if run.get('head_branch') != 'main' or run.get('run_attempt') != 1:
               raise SystemExit('run ref/attempt mismatch')
+          if run.get('head_sha') != dispatcher_sha:
+              raise SystemExit('workflow source sha mismatch')
           if json.load(open('/tmp/canonical.json'))['commit']['sha'] != sha:
               raise SystemExit('canonical 1.1.x moved before staging approval')
+          if json.load(open('/tmp/main.json'))['commit']['sha'] != dispatcher_sha:
+              raise SystemExit('main moved away from authorized dispatcher before staging approval')
           PY
 
       - name: Approve exact staging deployments while canonical identity remains frozen
@@ -291,6 +346,7 @@ jobs:
           RUN_ID: ${{ steps.request.outputs.workflow_run_id }}
           CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
           CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
           api="https://api.github.com/repos/${REPO}"
@@ -298,19 +354,23 @@ jobs:
           validate_run_identity() {
             local workflow_json="$1" run_json="$2"
             python3 - "$workflow_json" "$run_json" <<'PY'
-          import json, sys
+          import json, os, sys
           workflow = json.load(open(sys.argv[1]))
           run = json.load(open(sys.argv[2]))
           if run.get('workflow_id') != workflow.get('id') or run.get('event') != 'workflow_dispatch':
               raise SystemExit('workflow identity drift during staging approval')
           if run.get('head_branch') != 'main' or run.get('run_attempt') != 1:
               raise SystemExit('run ref/attempt drift during staging approval')
+          if run.get('head_sha') != os.environ['DISPATCHER_SHA']:
+              raise SystemExit('workflow source drift during staging approval')
           PY
           }
           final=""
           for _ in $(seq 1 190); do
             curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical-loop.json
             test "$(python3 -c "import json; print(json.load(open('/tmp/canonical-loop.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
+            curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/main" -o /tmp/main-loop.json
+            test "$(python3 -c "import json; print(json.load(open('/tmp/main-loop.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
 
             curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow-loop.json
             curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run-loop.json
@@ -333,6 +393,8 @@ jobs:
             if [ -n "${env_ids}" ]; then
               curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/1.1.x" -o /tmp/canonical-preapprove.json
               test "$(python3 -c "import json; print(json.load(open('/tmp/canonical-preapprove.json'))['commit']['sha'])")" = "${CANDIDATE_SHA}"
+              curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/branches/main" -o /tmp/main-preapprove.json
+              test "$(python3 -c "import json; print(json.load(open('/tmp/main-preapprove.json'))['commit']['sha'])")" = "${DISPATCHER_SHA}"
               curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/workflows/acceptance-1.1-dispatch.yml" -o /tmp/workflow-preapprove.json
               curl --fail-with-body --silent --show-error "${auth[@]}" "${api}/actions/runs/${RUN_ID}" -o /tmp/run-preapprove.json
               validate_run_identity /tmp/workflow-preapprove.json /tmp/run-preapprove.json
@@ -369,9 +431,10 @@ jobs:
           RUN_ID: ${{ steps.request.outputs.workflow_run_id }}
           CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
           CANDIDATE_VERSION: ${{ steps.request.outputs.candidate_version }}
+          DISPATCHER_SHA: ${{ steps.request.outputs.dispatcher_sha }}
         run: |
           set -Eeuo pipefail
-          export COMMENT_BODY="AUTONOMOUS_STAGING_APPROVAL_COMPLETE\nworkflow_run_id=${RUN_ID}\ncandidate_sha=${CANDIDATE_SHA}\ncandidate_version=${CANDIDATE_VERSION}\nprotected_acceptance=success"
+          export COMMENT_BODY="AUTONOMOUS_STAGING_APPROVAL_COMPLETE\nworkflow_run_id=${RUN_ID}\ncandidate_sha=${CANDIDATE_SHA}\ncandidate_version=${CANDIDATE_VERSION}\ndispatcher_sha=${DISPATCHER_SHA}\nprotected_acceptance=success"
           payload="$(python3 -c 'import json,os; print(json.dumps({"body":os.environ["COMMENT_BODY"]}))')"
           curl --fail-with-body --silent --show-error -X POST \
             -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" \

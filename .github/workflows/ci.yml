@@ -66,14 +66,28 @@ jobs:
           from pathlib import Path
 
           text = Path('.github/workflows/acceptance-1.1-dispatch.yml').read_text(encoding='utf-8')
+          operator_start = text.index('  trusted-operator-dispatch:')
+          approval_start = text.index('  trusted-autonomous-staging-approval:')
+          operator = text[operator_start:approval_start]
           start = text.index('      - name: Approve exact staging deployments while canonical identity remains frozen')
           end = text.index('      - name: Record completion and close staging command', start)
           approval = text[start:end]
 
+          # The issue-triggered dispatcher is authorized by the exact trusted main
+          # SHA that handled the issue. Ref movement before dispatch or a returned
+          # workflow run created from a different head_sha must fail closed.
+          for invariant in (
+              "dispatcher_sha = os.environ['GITHUB_SHA']",
+              "out.write(f'dispatcher_sha={dispatcher_sha}\\n')",
+              '"https://api.github.com/repos/${REPO}/branches/main" -o /tmp/main-pre-dispatch.json',
+              "run.get('head_sha') != dispatcher_sha",
+              'dispatcher_sha=${DISPATCHER_SHA}',
+          ):
+              assert invariant in operator, invariant
+
           # A rerun keeps the same workflow run ID but increments run_attempt. The
-          # approval loop must therefore revalidate immutable run identity both on
-          # every poll and again after reading pending deployments, immediately
-          # before an Environment approval POST can be emitted.
+          # approval loop must revalidate both execution identity and exact workflow
+          # source SHA on every poll and immediately before Environment approval.
           assert 'validate_run_identity() {' in approval
           assert approval.count('validate_run_identity /tmp/workflow-loop.json /tmp/run-loop.json') == 1
           assert approval.count('validate_run_identity /tmp/workflow-preapprove.json /tmp/run-preapprove.json') == 1
@@ -82,6 +96,7 @@ jobs:
               "run.get('event') != 'workflow_dispatch'",
               "run.get('head_branch') != 'main'",
               "run.get('run_attempt') != 1",
+              "run.get('head_sha') != os.environ['DISPATCHER_SHA']",
           ):
               assert invariant in approval, invariant
 
@@ -90,7 +105,9 @@ jobs:
           preapprove_check = approval.index('validate_run_identity /tmp/workflow-preapprove.json /tmp/run-preapprove.json')
           approval_post = approval.index('"${api}/actions/runs/${RUN_ID}/pending_deployments" --data "${payload}"')
           canonical_preapprove = approval.index('/branches/1.1.x" -o /tmp/canonical-preapprove.json')
-          assert pending_get < canonical_preapprove < preapprove_run < preapprove_check < approval_post
+          main_loop = approval.index('/branches/main" -o /tmp/main-loop.json')
+          main_preapprove = approval.index('/branches/main" -o /tmp/main-preapprove.json')
+          assert main_loop < pending_get < canonical_preapprove < main_preapprove < preapprove_run < preapprove_check < approval_post
           PY
       - name: Current source regression
         run: |
