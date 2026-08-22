@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ControlCenterSoft/srv-deployment/internal/auth"
+	"github.com/ControlCenterSoft/srv-deployment/internal/observability"
 	"github.com/ControlCenterSoft/srv-deployment/internal/state"
 )
 
@@ -36,16 +37,54 @@ func (s *Server) operationDetail(w http.ResponseWriter, r *http.Request, sess au
 		writeError(w, http.StatusNotFound, "operation_not_found", "Operation not found", operationID(r))
 		return
 	}
+
+	auditAuthorized := hasPermission(u.Role, "audit.read")
+	auditHealthy := s.audit != nil
+	auditAvailable := false
+	auditErrorCode := ""
+	auditEvents := []observability.AuditEvent{}
+	if auditAuthorized && auditHealthy {
+		correlated, err := s.audit.ForOperation(id, 100)
+		if err != nil {
+			auditHealthy = false
+			auditErrorCode = "audit_unavailable"
+			s.logger.Warn("operation audit correlation unavailable", "operation_id", operationID(r), "target_operation_id", id, "error", err)
+		} else {
+			auditEvents = correlated
+			auditAvailable = true
+		}
+	}
+	if auditAuthorized && !auditHealthy && auditErrorCode == "" {
+		auditErrorCode = "audit_unavailable"
+	}
+
+	healthStatus := "healthy"
+	if auditAuthorized && !auditHealthy {
+		healthStatus = "degraded"
+	}
+
 	s.auditEvent(r, u.Username, string(u.Role), "operations.detail.read", id, "success", "")
 	writeJSON(w, http.StatusOK, envelope{
 		"contract_version": 1,
 		"operation":        record,
+		"audit": envelope{
+			"events":     auditEvents,
+			"count":      len(auditEvents),
+			"available":  auditAvailable,
+			"authorized": auditAuthorized,
+			"bounded":    true,
+			"limit":      100,
+			"permission": "audit.read",
+			"error_code": auditErrorCode,
+		},
 		"permissions": envelope{
-			"read": "operations.read",
+			"read":  "operations.read",
+			"audit": "audit.read",
 		},
 		"health": envelope{
-			"status":          "healthy",
+			"status":          healthStatus,
 			"operation_store": true,
+			"audit_log":       auditHealthy,
 		},
 		"observed_at": time.Now().UTC().Format(time.RFC3339),
 	})
