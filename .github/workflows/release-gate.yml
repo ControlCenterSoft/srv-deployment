@@ -23,8 +23,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 18
     steps:
-      # pull_request_target is intentionally used so the gate implementation is
-      # always loaded from protected main. Never change this checkout to PR head.
+      # pull_request_target is intentional: the write-capable implementation is
+      # always loaded from protected main. Never checkout, import, source, or
+      # execute pull-request-controlled files in this job.
       - name: Checkout trusted gate implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,10 +33,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate exact PR head and automatically approve/merge
+      - name: Validate exact PR head, independently review, approve and merge
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.7-flash' }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
