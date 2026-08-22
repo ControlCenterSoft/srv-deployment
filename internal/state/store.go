@@ -274,8 +274,8 @@ func (s *Store) SetBlocked(username string, blocked bool) (User, error) {
 		}
 		if activeAdmins <= 1 {
 			return User{}, errors.New("cannot block the last active admin")
-			}
 		}
+	}
 	u.Blocked = blocked
 	s.doc.Users[username] = u
 	s.doc.Revision++
