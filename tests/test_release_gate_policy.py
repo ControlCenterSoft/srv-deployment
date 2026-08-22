@@ -9,6 +9,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 MODULE_PATH = SCRIPTS / "release_gate.py"
+WORKFLOW_PATH = ROOT / ".github" / "workflows" / "release-gate.yml"
 spec = importlib.util.spec_from_file_location("release_gate", MODULE_PATH)
 release_gate = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = release_gate
@@ -137,6 +138,95 @@ class ReleaseGatePolicyTests(unittest.TestCase):
         self.assertEqual(
             "Control Center 1.1.x Fast CI", release_gate.REQUIRED_WORKFLOWS["1.1.x"]
         )
+
+    def test_only_fixed_reviewer_exact_head_approval_is_accepted(self):
+        head = "a" * 40
+        reviews = [
+            {
+                "id": 10,
+                "state": "APPROVED",
+                "commit_id": head,
+                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
+            }
+        ]
+        decision = release_gate.independent_approval_decision(reviews, head)
+        self.assertTrue(decision.allowed, decision.reasons)
+
+    def test_stale_independent_approval_is_rejected(self):
+        head = "a" * 40
+        reviews = [
+            {
+                "id": 10,
+                "state": "APPROVED",
+                "commit_id": "b" * 40,
+                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
+            }
+        ]
+        decision = release_gate.independent_approval_decision(reviews, head)
+        self.assertFalse(decision.allowed)
+        self.assertTrue(any("exact PR head" in reason for reason in decision.reasons))
+
+    def test_latest_non_approved_independent_review_blocks(self):
+        head = "a" * 40
+        reviews = [
+            {
+                "id": 10,
+                "state": "APPROVED",
+                "commit_id": head,
+                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
+            },
+            {
+                "id": 11,
+                "state": "COMMENTED",
+                "commit_id": head,
+                "user": {"login": release_gate.INDEPENDENT_REVIEWER},
+            },
+        ]
+        self.assertFalse(release_gate.independent_approval_decision(reviews, head).allowed)
+
+    def test_other_reviewer_cannot_satisfy_fixed_reviewer_boundary(self):
+        head = "a" * 40
+        reviews = [
+            {
+                "id": 10,
+                "state": "APPROVED",
+                "commit_id": head,
+                "user": {"login": "github-actions[bot]"},
+            }
+        ]
+        decision = release_gate.independent_approval_decision(reviews, head)
+        self.assertFalse(decision.allowed)
+
+    def test_base_binding_rejects_moved_or_behind_base(self):
+        base = "b" * 40
+        self.assertTrue(
+            release_gate.base_compare_decision(
+                base, base, {"behind_by": 0, "status": "ahead"}
+            ).allowed
+        )
+        self.assertFalse(
+            release_gate.base_compare_decision(
+                base, "c" * 40, {"behind_by": 0, "status": "ahead"}
+            ).allowed
+        )
+        self.assertFalse(
+            release_gate.base_compare_decision(
+                base, base, {"behind_by": 1, "status": "diverged"}
+            ).allowed
+        )
+
+    def test_actions_identity_never_submits_approval(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn('"event": "APPROVE"', source)
+        self.assertNotIn("AUTOMATED_APPROVAL_SUBMITTED", source)
+        self.assertIn("require_independent_approval", source)
+        self.assertIn("require_current_base", source)
+
+    def test_review_event_retriggers_gate_without_self_approval(self):
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn("pull_request_review:", workflow)
+        self.assertIn("types: [submitted, dismissed]", workflow)
+        self.assertIn("controlcenter-release-reviewer", workflow)
 
     def test_independent_ai_blocks_high_and_blocker(self):
         for severity in ("HIGH", "BLOCKER"):
