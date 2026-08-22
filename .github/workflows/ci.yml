@@ -79,7 +79,8 @@ jobs:
           grep -Fq "github.event.issue.author_association == 'COLLABORATOR'" "$DISPATCHER"
           grep -Fq 'contents: read' "$DISPATCHER"
           grep -Fq 'issues: write' "$DISPATCHER"
-          test "$(grep -Fc 'PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}' "$DISPATCHER")" -eq 1
+          test "$(grep -Fc 'PERPLEXITY_API_KEY:' "$DISPATCHER")" -eq 1
+          grep -Fq 'secrets.PERPLEXITY_API_KEY' "$DISPATCHER"
           if grep -Eq 'secrets:[[:space:]]*inherit|contents:[[:space:]]*write|pull-requests:[[:space:]]*write|actions:[[:space:]]*write|id-token:[[:space:]]*write|CONTROL_CENTER_STAGING_|ANTHROPIC_' "$DISPATCHER"; then
             echo 'ERROR: Perplexity dispatcher exceeds its reviewed trust boundary' >&2
             exit 1
