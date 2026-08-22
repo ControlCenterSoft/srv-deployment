@@ -35,6 +35,7 @@ env:
   GO_VERSION: '1.23.2'
   CANDIDATE_SHA: ${{ inputs.candidate_sha }}
   CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  CANONICAL_REF: refs/remotes/origin/1.1.x
 
 jobs:
   full-validation:
@@ -42,19 +43,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Exact identity
+      - name: Exact GATE-FROZEN identity
+        shell: bash
         run: |
+          set -Eeuo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           [[ "$CANDIDATE_VERSION" =~ ^1\.1\.0-rc\.[0-9]+$ ]]
           test "$(go env GOVERSION)" = "go${GO_VERSION}"
+          git fetch --no-tags origin 1.1.x:"$CANONICAL_REF"
+          GATE_FROZEN_SHA="$(git rev-parse "$CANONICAL_REF")"
+          test "$GATE_FROZEN_SHA" = "$CANDIDATE_SHA"
       - name: Deterministic gates
         run: |
           set -Eeuo pipefail
@@ -73,11 +81,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -107,11 +116,12 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -135,7 +145,7 @@ jobs:
           sha256sum \
             "dist/control-center-${{ matrix.arch }}-1" \
             "dist/control-center-privileged-worker-${{ matrix.arch }}-1"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: control-center-${{ env.CANDIDATE_VERSION }}-${{ matrix.arch }}
           path: |
@@ -150,11 +160,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -218,14 +229,23 @@ jobs:
     outputs:
       configured: ${{ steps.config.outputs.configured }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Recheck GATE-FROZEN identity before secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags origin 1.1.x:"$CANONICAL_REF"
+          GATE_FROZEN_SHA="$(git rev-parse "$CANONICAL_REF")"
+          test "$GATE_FROZEN_SHA" = "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Detect remote staging configuration
         id: config
         env:
@@ -284,7 +304,7 @@ jobs:
           expected_entries=$'bootstrap-manifest.json\nbootstrap-manifest.sig\nmanifest.json\nmanifest.sig\ncontrol-center\ncontrol-center-privileged-worker'
           test "$(tar -tzf dist/control-center-staging.tar.gz)" = "$expected_entries"
           sha256sum dist/control-center-staging.tar.gz > dist/control-center-staging.tar.gz.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: steps.config.outputs.configured == 'true'
         with:
           name: control-center-staging-${{ env.CANDIDATE_VERSION }}
@@ -302,13 +322,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.CANDIDATE_SHA }}
-      - uses: actions/download-artifact@v4
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: control-center-staging-${{ env.CANDIDATE_VERSION }}
           path: staging
+      - name: Recheck GATE-FROZEN identity before SSH secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags origin 1.1.x:"$CANONICAL_REF"
+          GATE_FROZEN_SHA="$(git rev-parse "$CANONICAL_REF")"
+          test "$GATE_FROZEN_SHA" = "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Configure pinned SSH transport
         env:
           STAGING_SSH_KEY: ${{ secrets.CONTROL_CENTER_STAGING_SSH_KEY }}
